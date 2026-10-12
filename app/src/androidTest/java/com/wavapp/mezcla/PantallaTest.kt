@@ -84,7 +84,11 @@ class PantallaTest {
         regla.onNodeWithContentDescription("Solo pista $id").performClick()
         regla.waitUntil(2_000) { !Mesa.pistas.first().mute && !Mesa.pistas.first().solo }
 
-        // Análisis de la mezcla mientras suena.
+        // Análisis de la mezcla mientras suena (la canción de prueba dura 12 s: desde el inicio).
+        regla.runOnUiThread {
+            Mesa.saltar(0.0)
+            if (!NativeAudio.isPlaying()) Mesa.reproducirPausar()
+        }
         regla.onNodeWithText("Análisis").performClick()
         regla.waitUntil(2_000) { Analisis.abierto }
         avanzarMedidores()
@@ -114,7 +118,7 @@ class PantallaTest {
         captura("9-exportar")
         regla.onNodeWithText("Cancelar").performClick()
 
-        regla.onNodeWithText("❚❚ Pausar").performClick()
+        if (Mesa.reproduciendo) regla.onNodeWithText("❚❚ Pausar").performClick()
         regla.waitUntil(5_000) { !Mesa.reproduciendo }
         regla.onNodeWithText("■ Detener").performClick()
     }

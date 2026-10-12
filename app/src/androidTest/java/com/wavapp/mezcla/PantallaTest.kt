@@ -106,7 +106,7 @@ class PantallaTest {
         regla.onNodeWithTag("panelAnalisis").performScrollToNode(hasText("ESPECTROGRAMA", substring = true))
         avanzarMedidores()
         captura("8-espectrograma")
-        regla.onNodeWithText("Cerrar").performClick()
+        regla.onNodeWithText("Cerrar").performScrollTo().performClick()
         regla.waitUntil(2_000) { !Analisis.abierto }
 
         // Diálogo de exportar (sin abrir el selector de archivos del sistema).

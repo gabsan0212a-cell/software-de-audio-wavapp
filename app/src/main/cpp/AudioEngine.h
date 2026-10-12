@@ -24,6 +24,8 @@ public:
     bool start();
     void stop();
     int32_t deviceRate();
+    // [frecuencia real, ráfaga, búfer en cuadros, cortes (xruns), exclusivo 1/0]; ceros si está cerrado.
+    void outputInfo(int32_t out[5]);
     Mixer &mixer() { return mMixer; }
 
     // Devuelven el espacio (0..11) de la pista nueva, o -1 con `error`.

@@ -12,6 +12,8 @@ object NativeAudio {
     external fun sampleRate(): Int
     external fun deviceRate(): Int
     external fun maxTracks(): Int
+    /** Salida real: [frecuencia, ráfaga, búfer en cuadros, cortes, exclusivo 1/0]. */
+    external fun outputInfo(): IntArray
     /** Último error en el hilo que llama. */
     external fun lastError(): String
 

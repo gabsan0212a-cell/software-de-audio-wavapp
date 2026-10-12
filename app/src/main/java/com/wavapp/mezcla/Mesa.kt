@@ -108,6 +108,11 @@ object Mesa {
     private val bufMedidores = FloatArray(3 + 2 * MAX_PISTAS)
     private var ultimoTick = 0L
 
+    /** Diagnóstico de la salida de audio (frecuencia, búfer, cortes), una vez por segundo. */
+    var salida by mutableStateOf("")
+        private set
+    private var ultimaSalida = 0L
+
     // ------------------------------------------------------------------ inicio
 
     fun iniciar(context: Context) {
@@ -290,6 +295,10 @@ object Mesa {
     fun tick(ahoraMs: Long) {
         val dt = if (ultimoTick == 0L) 0.016f else ((ahoraMs - ultimoTick).coerceIn(0, 200) / 1000f)
         ultimoTick = ahoraMs
+        if (ahoraMs - ultimaSalida >= 1000) {
+            ultimaSalida = ahoraMs
+            salida = textoSalida()
+        }
         reproduciendo = NativeAudio.isPlaying()
         posicion = NativeAudio.positionSeconds()
         duracion = NativeAudio.durationSeconds()
@@ -431,6 +440,15 @@ object Mesa {
             "${pistas.size} pista(s) · 48000 Hz · ≈ ${Math.round(mb)} MB en disco"
         }
         estado = if (msg.isEmpty()) base else "$msg · $base"
+    }
+
+    private fun textoSalida(): String {
+        val i = NativeAudio.outputInfo()
+        if (i[0] == 0) return "Salida de audio cerrada"
+        val ms = String.format(Locale.US, "%.1f", i[2] * 1000.0 / i[0])
+        val modo = if (i[4] == 1) "exclusivo" else "compartido"
+        val cortes = if (i[3] < 0) "?" else i[3].toString()
+        return "Salida: ${i[0]} Hz · búfer ${i[2]} ($ms ms) · $modo · cortes $cortes"
     }
 
     private fun ganancia(db: Float, apagadoBajoDe: Float): Float =

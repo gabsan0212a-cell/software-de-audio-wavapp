@@ -39,6 +39,13 @@ JNI(void, stop)(JNIEnv *, jobject) { gEngine.stop(); }
 JNI(jint, sampleRate)(JNIEnv *, jobject) { return AudioEngine::kSampleRate; }
 JNI(jint, deviceRate)(JNIEnv *, jobject) { return gEngine.deviceRate(); }
 JNI(jint, maxTracks)(JNIEnv *, jobject) { return kMaxTracks; }
+JNI(jintArray, outputInfo)(JNIEnv *env, jobject) {
+    int32_t v[5];
+    gEngine.outputInfo(v);
+    jintArray arr = env->NewIntArray(5);
+    env->SetIntArrayRegion(arr, 0, 5, v);
+    return arr;
+}
 JNI(jstring, lastError)(JNIEnv *env, jobject) { return env->NewStringUTF(tError.c_str()); }
 
 // ---------- Pistas

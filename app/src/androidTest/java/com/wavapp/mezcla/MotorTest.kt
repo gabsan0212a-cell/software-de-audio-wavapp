@@ -49,6 +49,8 @@ class MotorTest {
             assertEquals(12L * 48000, r[2])
         }
         assertEquals(12.0, NativeAudio.durationSeconds(), 0.001)
+        val salida = NativeAudio.outputInfo()
+        assertTrue("la salida reporta su frecuencia (${salida.joinToString()})", salida[0] > 0 && salida[2] > 0)
         NativeAudio.seek(0.0)
         NativeAudio.play()
         Thread.sleep(1500)

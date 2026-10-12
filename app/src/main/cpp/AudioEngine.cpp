@@ -44,6 +44,8 @@ bool AudioEngine::openStream() {
         mStream.reset();
         return false;
     }
+    // 4 ráfagas de búfer (~8 ms): responde al instante y aguanta mejor los picos de trabajo.
+    mStream->setBufferSizeInFrames(mStream->getFramesPerBurst() * 4);
     r = mStream->requestStart();
     if (r != oboe::Result::OK) {
         LOGE("requestStart: %s", oboe::convertToText(r));
@@ -72,6 +74,18 @@ void AudioEngine::stop() {
 int32_t AudioEngine::deviceRate() {
     std::lock_guard<std::mutex> lk(mStreamMutex);
     return mStream ? mStream->getSampleRate() : 0;
+}
+
+void AudioEngine::outputInfo(int32_t out[5]) {
+    std::lock_guard<std::mutex> lk(mStreamMutex);
+    for (int i = 0; i < 5; ++i) out[i] = 0;
+    if (!mStream) return;
+    out[0] = mStream->getSampleRate();
+    out[1] = mStream->getFramesPerBurst();
+    out[2] = mStream->getBufferSizeInFrames();
+    auto x = mStream->getXRunCount();
+    out[3] = x ? x.value() : -1;
+    out[4] = mStream->getSharingMode() == oboe::SharingMode::Exclusive ? 1 : 0;
 }
 
 oboe::DataCallbackResult AudioEngine::onAudioReady(oboe::AudioStream *stream, void *audioData,

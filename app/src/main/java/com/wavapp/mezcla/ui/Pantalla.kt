@@ -309,7 +309,16 @@ private fun PanelMaster() {
             Boton("Limitador", { Mesa.alternarLimitador() }, presionado = Mesa.limitador)
         }
         TextoReduccion()
+        TextoSalida()
     }
+}
+
+@Composable
+private fun TextoSalida() {
+    Text(
+        Mesa.salida, color = LocalPaleta.current.tenue, fontFamily = Mono, fontSize = 10.sp,
+        textAlign = TextAlign.Center,
+    )
 }
 
 @Composable

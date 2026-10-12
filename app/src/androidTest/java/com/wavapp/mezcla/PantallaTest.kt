@@ -14,6 +14,7 @@ import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -78,15 +79,23 @@ class PantallaTest {
         regla.waitUntil(2_000) { Mesa.eqAbierta == null }
         regla.onNodeWithContentDescription("EQ pista $id").assertIsDisplayed()
 
+        // Quitar mute y solo para que la mezcla suene en el análisis.
+        regla.onNodeWithContentDescription("Mute pista $id").performClick()
+        regla.onNodeWithContentDescription("Solo pista $id").performClick()
+        regla.waitUntil(2_000) { !Mesa.pistas.first().mute && !Mesa.pistas.first().solo }
+
         // Análisis de la mezcla mientras suena.
         regla.onNodeWithText("Análisis").performClick()
         regla.waitUntil(2_000) { Analisis.abierto }
         avanzarMedidores()
-        regla.waitUntil(5_000) { Analisis.activo }
+        regla.waitUntil(5_000) { Analisis.activo && Analisis.fuerte }
+        avanzarMedidores()
         captura("7-analisis")
-        regla.onNodeWithText("60 Hz").performClick()
+        regla.onNodeWithText("60 Hz").performScrollTo().performClick()
         regla.waitUntil(2_000) { Analisis.notch == 60 }
-        regla.onNodeWithText("Notch off").performClick()
+        regla.onNodeWithText("Notch off").performScrollTo().performClick()
+        regla.waitUntil(2_000) { Analisis.notch == 0 }
+        regla.onNodeWithTag("panelAnalisis").performScrollToNode(hasText("DIAGNÓSTICO", substring = true))
         // Espectrograma de la segunda pista (la voz).
         regla.runOnUiThread { Analisis.fuenteId = Mesa.pistas[1].id }
         regla.waitUntil(20_000) { Analisis.espectrogramas.containsKey(Mesa.pistas[1].id) }

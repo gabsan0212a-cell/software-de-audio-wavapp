@@ -32,7 +32,7 @@ object Analisis {
         private set
     var fuerte by mutableStateOf(false)
         private set
-    var veredicto by mutableIntStateOf(0)  // 0 nada, 1 fuera de fase, 2 muy ancho, 3 estéreo, 4 mono
+    var codigoVeredicto by mutableIntStateOf(0)  // 0 nada, 1 fuera de fase, 2 muy ancho, 3 estéreo, 4 mono
         private set
     var desbalance by mutableIntStateOf(0)  // -1 L, 0, 1 R
         private set
@@ -66,7 +66,7 @@ object Analisis {
         fuerte = stats[1] != 0f
         correlacion = stats[2]
         paneo = stats[3]
-        veredicto = stats[4].toInt()
+        codigoVeredicto = stats[4].toInt()
         desbalance = stats[5].toInt()
         malo = stats[6] != 0f
         zumbidoHz = stats[7].toInt()
@@ -78,8 +78,8 @@ object Analisis {
 
     /** Veredicto de fase y paneo, con los mismos textos que el prototipo. */
     fun veredicto(): Pair<String, Boolean> {
-        if (veredicto == 0) return (if (Mesa.reproduciendo) "Silencio." else "Reproduce para medir.") to false
-        var t = when (veredicto) {
+        if (codigoVeredicto == 0) return (if (Mesa.reproduciendo) "Silencio." else "Reproduce para medir.") to false
+        var t = when (codigoVeredicto) {
             1 -> "Fuera de fase: se cancela en mono. Revisa polaridad o fase entre canales."
             2 -> "Muy ancho: revisa que no pierda cuerpo al sumar a mono."
             3 -> "Estéreo en fase: se mantiene bien en mono."

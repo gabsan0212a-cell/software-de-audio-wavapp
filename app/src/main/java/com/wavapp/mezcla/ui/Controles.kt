@@ -24,9 +24,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
@@ -306,30 +309,44 @@ fun Onda(
     }
     val saltar by rememberUpdatedState(alSaltar)
     val total by rememberUpdatedState(duracionTotal)
+    val ch = pista.canales
     Canvas(
         modifier
             .onSizeChanged { ancho = it.width }
             .semantics { contentDescription = "Forma de onda de ${pista.nombre}. Toca para mover el cursor." }
             .pointerInput(Unit) {
                 detectTapGestures { o -> if (total > 0) saltar(o.x / size.width * total) }
+            }
+            // La onda se dibuja una sola vez en una imagen; en cada cuadro solo se pinta esa
+            // imagen y el cursor encima (como el prototipo, que movía el cursor con CSS).
+            .drawWithCache {
+                val w = size.width.toInt()
+                val h = size.height.toInt()
+                if (w <= 0 || h <= 0) return@drawWithCache onDrawBehind {}
+                val img = ImageBitmap(w, h)
+                val lienzo = androidx.compose.ui.graphics.Canvas(img)
+                val pintura = Paint().apply { this.color = p.bg }
+                lienzo.drawRect(0f, 0f, w.toFloat(), h.toFloat(), pintura)
+                pintura.color = p.linea
+                lienzo.drawRect(0f, h / 2f - density / 2, w.toFloat(), h / 2f + density / 2, pintura)
+                val d = datos
+                if (d != null && ch > 0) {
+                    pintura.color = color
+                    val cols = d.size / (ch * 2)
+                    for (c in 0 until min(2, ch)) {
+                        val cy = if (ch == 2) h * (if (c == 0) 0.25f else 0.75f) else h / 2f
+                        val amp = if (ch == 2) h * 0.23f else h * 0.46f
+                        for (x in 0 until cols) {
+                            val mn = d[(x * ch + c) * 2]
+                            val mx = d[(x * ch + c) * 2 + 1]
+                            val arriba = cy - mx * amp
+                            lienzo.drawRect(x.toFloat(), arriba, x + 1f, arriba + max(1f, (mx - mn) * amp), pintura)
+                        }
+                    }
+                }
+                onDrawBehind { drawImage(img) }
             },
     ) {
-        drawRect(p.bg)
-        drawLine(p.linea, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), density)
-        val d = datos
-        val ch = pista.canales
-        if (d != null && ch > 0) {
-            val cols = d.size / (ch * 2)
-            for (c in 0 until min(2, ch)) {
-                val cy = if (ch == 2) size.height * (if (c == 0) 0.25f else 0.75f) else size.height / 2
-                val amp = if (ch == 2) size.height * 0.23f else size.height * 0.46f
-                for (x in 0 until cols) {
-                    val mn = d[(x * ch + c) * 2]
-                    val mx = d[(x * ch + c) * 2 + 1]
-                    drawRect(color, Offset(x.toFloat(), cy - mx * amp), Size(1f, max(1f, (mx - mn) * amp)))
-                }
-            }
-        }
         val px = if (total > 0) (posicion() / total * size.width).toFloat() else 0f
         drawRect(p.fg.copy(alpha = 0.08f), Offset.Zero, Size(px, size.height))
         drawRect(p.acento, Offset(px - density, 0f), Size(2 * density, size.height))

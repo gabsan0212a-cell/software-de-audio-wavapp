@@ -103,7 +103,7 @@ class PantallaTest {
         // Espectrograma de la segunda pista (la voz).
         regla.runOnUiThread { Analisis.fuenteId = Mesa.pistas[1].id }
         regla.waitUntil(20_000) { Analisis.espectrogramas.containsKey(Mesa.pistas[1].id) }
-        regla.onNodeWithTag("panelAnalisis").performScrollToNode(hasText("ESPECTROGRAMA", substring = true))
+        regla.onNodeWithTag("panelAnalisis").performScrollToNode(hasText("El fondo es silencio", substring = true))
         avanzarMedidores()
         captura("8-espectrograma")
         regla.onNodeWithText("Cerrar").performScrollTo().performClick()

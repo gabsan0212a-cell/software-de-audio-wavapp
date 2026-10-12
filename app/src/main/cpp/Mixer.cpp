@@ -49,6 +49,8 @@ Mixer::Mixer(int sampleRate) : mSampleRate(sampleRate) {
     mTauPanFrames = 0.015f * sampleRate;
     mLimiter.setup(sampleRate);
     for (Slot &s : mSlots) s.eq.setSampleRate(sampleRate);
+    mTapL.reset(new std::atomic<float>[kTapSize]());
+    mTapR.reset(new std::atomic<float>[kTapSize]());
 }
 
 Mixer::~Mixer() = default;
@@ -247,9 +249,15 @@ void Mixer::renderBlock(int n) {
     for (const Slot &s : mSlots)
         if (s.audio.load(std::memory_order_relaxed) && s.solo.load(std::memory_order_relaxed)) anySolo = true;
 
-    for (Slot &s : mSlots) {
+    const int tapSource = mTapSource.load(std::memory_order_relaxed);
+    std::fill(mBlkTapL, mBlkTapL + n, 0.0f);
+    std::fill(mBlkTapR, mBlkTapR + n, 0.0f);
+
+    for (int si = 0; si < kMaxTracks; ++si) {
+        Slot &s = mSlots[si];
         const MappedAudio *a = s.audio.load(std::memory_order_acquire);
         if (!a) continue;
+        const bool tap = si == tapSource;
         const float gainT = s.gain.load(std::memory_order_relaxed);
         const float panT = s.pan.load(std::memory_order_relaxed);
         const float invT = s.invert.load(std::memory_order_relaxed) ? -1.0f : 1.0f;
@@ -263,7 +271,7 @@ void Mixer::renderBlock(int n) {
             s.gainS = gainT;
             s.panS = panT;
             s.invS = invT;
-            s.onS = 0.0f;
+            s.onS = mOffline ? onT : 0.0f;  // al exportar no hay fundido de entrada
             s.eq.resetState();
         }
 
@@ -297,7 +305,7 @@ void Mixer::renderBlock(int n) {
             g += (gainT - g) * mCoefGain;
             onS += (onT - onS) * mCoefOn;
             invS += (invT - invS) * mCoefInv;
-            const float k = g * onS * invS * mRamp[i];
+            const float k = g * invS * mRamp[i];
             const float fi = static_cast<float>(i);
             float l, r;
             if (mono) {
@@ -311,6 +319,12 @@ void Mixer::renderBlock(int n) {
             }
             l *= k;
             r *= k;
+            if (tap) {  // el análisis de una pista va antes de mute/solo, como el prototipo
+                mBlkTapL[i] = l;
+                mBlkTapR[i] = r;
+            }
+            l *= onS;
+            r *= onS;
             mMixL[i] += l;
             mMixR[i] += r;
             pkL = std::max(pkL, std::fabs(l));
@@ -324,6 +338,22 @@ void Mixer::renderBlock(int n) {
         if (std::fabs(panT - s.panS) < 1e-7f) s.panS = panT;
         atomicMax(s.peakL, pkL);
         atomicMax(s.peakR, pkR);
+    }
+
+    // Bus: anti-zumbido; el análisis de la mezcla se toma aquí (antes del volumen master).
+    applyNotch(n);
+    if (tapSource < 0) {
+        std::copy(mMixL, mMixL + n, mBlkTapL);
+        std::copy(mMixR, mMixR + n, mBlkTapR);
+    }
+    if (!mOffline) {
+        const uint64_t w = mTapWrite.load(std::memory_order_relaxed);
+        for (int i = 0; i < n; ++i) {
+            const size_t k = static_cast<size_t>((w + i) & (kTapSize - 1));
+            mTapL[k].store(mBlkTapL[i], std::memory_order_relaxed);
+            mTapR[k].store(mBlkTapR[i], std::memory_order_relaxed);
+        }
+        mTapWrite.store(w + n, std::memory_order_release);
     }
 
     // Master: volumen → limitador → recorte suave.
@@ -357,4 +387,93 @@ void Mixer::renderBlock(int n) {
         mPos = 0;
         mTransport = 0.0f;
     }
+}
+
+void Mixer::applyNotch(int n) {
+    const int hz = mNotchHz.load(std::memory_order_relaxed);
+    if (hz != mNotchSeen) {
+        mNotchSeen = hz;
+        for (int k = 0; k < 4; ++k) {
+            const double f = static_cast<double>(hz) * (k + 1);
+            const bool on = hz > 0 && f < mSampleRate / 2.0 * 0.95;
+            if (on) mNotchC[k] = designBiquad(kNotch, f, 0, 30, mSampleRate);
+            if (!on || !mNotchOn[k]) std::fill(&mNotchZ[k][0][0], &mNotchZ[k][0][0] + 4, 0.0);
+            mNotchOn[k] = on;
+        }
+    }
+    if (hz == 0) return;
+    float *ch[2] = {mMixL, mMixR};
+    for (int k = 0; k < 4; ++k) {
+        if (!mNotchOn[k]) continue;
+        const Biquad &c = mNotchC[k];
+        for (int j = 0; j < 2; ++j) {
+            double z1 = mNotchZ[k][j][0], z2 = mNotchZ[k][j][1];
+            float *x = ch[j];
+            for (int i = 0; i < n; ++i) {
+                const double in = x[i];
+                const double y = c.b0 * in + z1;
+                z1 = c.b1 * in - c.a1 * y + z2;
+                z2 = c.b2 * in - c.a2 * y;
+                x[i] = static_cast<float>(y);
+            }
+            mNotchZ[k][j][0] = std::fabs(z1) < 1e-25 ? 0 : z1;
+            mNotchZ[k][j][1] = std::fabs(z2) < 1e-25 ? 0 : z2;
+        }
+    }
+}
+
+uint64_t Mixer::readTap(float *l, float *r, int n) const {
+    const uint64_t w = mTapWrite.load(std::memory_order_acquire);
+    n = std::min(n, kTapSize);
+    for (int i = 0; i < n; ++i) {
+        const int64_t pos = static_cast<int64_t>(w) - n + i;
+        if (pos < 0) {
+            l[i] = r[i] = 0.0f;
+            continue;
+        }
+        const size_t k = static_cast<size_t>(pos) & (kTapSize - 1);
+        l[i] = mTapL[k].load(std::memory_order_relaxed);
+        r[i] = mTapR[k].load(std::memory_order_relaxed);
+    }
+    return w;
+}
+
+bool Mixer::cloneInto(Mixer &dst, std::string &error) const {
+    std::lock_guard<std::mutex> lk(mMutex);
+    for (int i = 0; i < kMaxTracks; ++i) {
+        const Slot &s = mSlots[i];
+        if (!s.owned) continue;
+        auto a = MappedAudio::open(s.owned->path(), error);
+        if (!a || !dst.setTrack(i, std::move(a))) {
+            if (error.empty()) error = "No se pudo preparar la pista " + std::to_string(i + 1);
+            return false;
+        }
+        Slot &d = dst.mSlots[i];
+        d.gain.store(s.gain.load());
+        d.pan.store(s.pan.load());
+        d.mute.store(s.mute.load());
+        d.solo.store(s.solo.load());
+        d.invert.store(s.invert.load());
+        d.eq.copyFrom(s.eq);
+    }
+    dst.mMasterGain.store(mMasterGain.load());
+    dst.mLimiterOn.store(mLimiterOn.load());
+    dst.mNotchHz.store(mNotchHz.load());
+    return true;
+}
+
+void Mixer::prepareOffline() {
+    mOffline = true;
+    mPos = 0;
+    mSeekTarget.store(-1);
+    mPlaying.store(mLength.load() > 0);
+    mTransport = 1.0f;
+    mMasterS = mMasterGain.load();
+    mLimiterWasOn = mLimiterOn.load();
+}
+
+std::string Mixer::trackPath(int slot) const {
+    if (slot < 0 || slot >= kMaxTracks) return "";
+    std::lock_guard<std::mutex> lk(mMutex);
+    return mSlots[slot].owned ? mSlots[slot].owned->path() : "";
 }

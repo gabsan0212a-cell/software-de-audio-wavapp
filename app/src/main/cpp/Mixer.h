@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 
 #include "Equalizer.h"
 #include "Limiter.h"
@@ -41,6 +42,24 @@ public:
     Equalizer *trackEq(int slot) { return slot >= 0 && slot < kMaxTracks ? &mSlots[slot].eq : nullptr; }
     void setMasterGain(float gain);  // lineal (0 = mute)
     void setLimiter(bool on);
+    // Filtro anti-zumbido en el bus (fundamental y 3 armónicos, Q 30): 0 = apagado, 50 o 60 Hz.
+    void setNotch(int hz) { mNotchHz.store(hz == 50 || hz == 60 ? hz : 0); }
+    int notch() const { return mNotchHz.load(); }
+
+    // Análisis: qué se manda al analizador. -1 = la mezcla (bus, antes del volumen master);
+    // 0..11 = esa pista después de volumen y paneo (antes de mute/solo), como el prototipo.
+    void setAnalysisSource(int slot) { mTapSource.store(slot); }
+    int analysisSource() const { return mTapSource.load(); }
+    static constexpr int kTapSize = 32768;
+    // Copia los últimos `n` cuadros (n <= kTapSize) y devuelve cuántos cuadros se han escrito
+    // en total (sirve para saber si llegó audio nuevo).
+    uint64_t readTap(float *l, float *r, int n) const;
+
+    // Exportación: copia pistas y ajustes a otro mezclador, que renderiza fuera de tiempo real.
+    bool cloneInto(Mixer &dst, std::string &error) const;
+    // Prepara este mezclador para renderizar desde el inicio sin rampas de entrada.
+    void prepareOffline();
+    std::string trackPath(int slot) const;
 
     void play();
     void pause();
@@ -74,6 +93,7 @@ private:
     };
 
     void renderBlock(int n);
+    void applyNotch(int n);
     void updateLength();  // con mMutex
     bool waitForAudioThread();
 
@@ -93,6 +113,10 @@ private:
     std::atomic<bool> mRolling{false};
     std::atomic<uint64_t> mCallbacks{0};  // impar = callback en curso
     std::atomic<float> mPeakL{0.0f}, mPeakR{0.0f}, mReduction{0.0f};
+    std::atomic<int> mNotchHz{0};
+    std::atomic<int> mTapSource{-1};
+    std::unique_ptr<std::atomic<float>[]> mTapL, mTapR;
+    std::atomic<uint64_t> mTapWrite{0};
 
     // Estado del hilo de audio
     int64_t mPos = 0;
@@ -101,4 +125,10 @@ private:
     bool mLimiterWasOn = true;
     Limiter mLimiter;
     float mMixL[kBlock], mMixR[kBlock], mRamp[kBlock], mInL[kBlock], mInR[kBlock];
+    float mBlkTapL[kBlock], mBlkTapR[kBlock];
+    bool mOffline = false;
+    int mNotchSeen = 0;
+    Biquad mNotchC[4];
+    bool mNotchOn[4] = {false, false, false, false};
+    double mNotchZ[4][2][2] = {};
 };

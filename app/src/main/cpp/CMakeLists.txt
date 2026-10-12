@@ -4,8 +4,10 @@ project(wavapp LANGUAGES CXX)
 find_package(oboe REQUIRED CONFIG)
 
 add_library(wavapp SHARED
+    Analyzer.cpp
     AudioEngine.cpp
     Equalizer.cpp
+    Exporter.cpp
     Importer.cpp
     Limiter.cpp
     MappedAudio.cpp

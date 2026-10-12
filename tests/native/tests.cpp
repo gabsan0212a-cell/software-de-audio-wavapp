@@ -1,5 +1,7 @@
 // Pruebas del núcleo nativo (sin Oboe ni Android). Se compilan y corren en Linux:
 //   tests/native/run.sh
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -15,7 +17,9 @@
 #include <thread>
 #include <vector>
 
+#include "Analyzer.h"
 #include "Equalizer.h"
+#include "Exporter.h"
 #include "Importer.h"
 #include "Limiter.h"
 #include "MappedAudio.h"
@@ -807,6 +811,283 @@ TEST(eqSinBandasNoTocaElAudio) {
     CHECK(igual);
 }
 
+// ---------------------------------------------------------------- exportar
+static int crear(const std::string &p) { return ::open(p.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644); }
+
+static std::unique_ptr<MappedAudio> seno(const std::string &n, int ch, int64_t frames, double hz, double amp) {
+    return genTrack(n, ch, frames, [=](int64_t f, int c) {
+        return static_cast<float>((c ? -amp : amp) * std::sin(2 * M_PI * hz * f / 48000.0));
+    });
+}
+
+// Render de referencia: otra copia del mezclador procesada completa en bloques de 4096.
+static std::vector<float> referencia(const Mixer &live) {
+    Mixer m(48000);
+    std::string e;
+    live.cloneInto(m, e);
+    m.prepareOffline();
+    std::vector<float> out(static_cast<size_t>(m.length()) * 2), blk(4096 * 2);
+    int64_t done = 0;
+    while (done < m.length()) {
+        const int n = static_cast<int>(std::min<int64_t>(4096, m.length() - done));
+        m.process(blk.data(), n, 2);
+        std::copy(blk.begin(), blk.begin() + n * 2, out.begin() + done * 2);
+        done += n;
+    }
+    return out;
+}
+
+static Mixer *mezclaDePrueba() {
+    auto *m = new Mixer(48000);
+    m->setTrack(0, seno("ex1.wav", 2, 48000, 440, 0.3));
+    m->setTrack(5, seno("ex2.wav", 1, 30000, 1000, 0.4));
+    m->setTrackPan(5, -0.4f);
+    m->setTrackGain(5, 0.7f);
+    m->trackEq(5)->setBand(0, true, true, kPeaking, 1000, 4, 1.4f);
+    m->trackEq(0)->setBand(3, true, true, kHighPass, 100, 0, 0.7f);
+    m->setMasterGain(0.9f);
+    return m;
+}
+
+TEST(exportarFloatEsIgualALaMezcla) {
+    std::unique_ptr<Mixer> live(mezclaDePrueba());
+    live->play();  // que esté sonando en vivo no debe cambiar la exportación
+    run(*live, 1000);
+    const std::string p = tmpPath("mezcla-f32.wav");
+    std::atomic<float> prog{0};
+    ExportFormat f;
+    f.bits = 32;
+    f.isFloat = true;
+    ExportResult r = exportMix(*live, crear(p), f, &prog, nullptr);
+    CHECK(r.error.empty());
+    CHECK(r.frames == 48000);
+    CHECK_NEAR(prog.load(), 1.0, 1e-6);
+    Clip c;
+    CHECK(readWav(std::fopen(p.c_str(), "rb"), c).empty());
+    CHECK(c.channels == 2 && c.sampleRate == 48000 && c.isFloat && c.bits == 32 && c.frames == 48000);
+    const std::vector<float> ref = referencia(*live);
+    CHECK(c.data == ref);
+    // Sin rampa de entrada: la primera muestra ya trae señal completa (no un fundido).
+    float maxIni = 0;
+    for (int i = 0; i < 200; ++i) maxIni = std::max(maxIni, std::fabs(c.data[i]));
+    CHECK(maxIni > 0.1f);
+    struct stat st {};
+    stat(p.c_str(), &st);
+    CHECK(st.st_size == r.bytes);
+    CHECK(r.bytes == exportBytes(48000, f));
+}
+
+TEST(exportar24y16Bits) {
+    std::unique_ptr<Mixer> live(mezclaDePrueba());
+    const std::vector<float> ref = referencia(*live);
+    for (int bits : {24, 16}) {
+        const std::string p = tmpPath("mezcla-" + std::to_string(bits) + ".wav");
+        ExportFormat f;
+        f.bits = bits;
+        ExportResult r = exportMix(*live, crear(p), f, nullptr, nullptr);
+        CHECK(r.error.empty());
+        Clip c;
+        CHECK(readWav(std::fopen(p.c_str(), "rb"), c).empty());
+        CHECK(c.bits == bits && !c.isFloat && c.frames == 48000 && c.channels == 2);
+        const double lsb = std::ldexp(1.0, -(bits - 1));
+        double maxErr = 0, sumErr = 0;
+        for (size_t i = 0; i < ref.size(); ++i) {
+            maxErr = std::max(maxErr, std::fabs(c.data[i] - (double)ref[i]));
+            sumErr += c.data[i] - (double)ref[i];
+        }
+        std::printf("  %d bits: error máximo %.2f LSB, sesgo %.3f LSB\n", bits, maxErr / lsb, sumErr / ref.size() / lsb);
+        CHECK(maxErr <= 1.5 * lsb);                    // redondeo + dither de 1 LSB
+        CHECK(std::fabs(sumErr / ref.size()) < 0.05 * lsb);  // el dither no mete corriente directa
+    }
+}
+
+TEST(exportarA44100) {
+    std::unique_ptr<Mixer> live(mezclaDePrueba());
+    const std::string p = tmpPath("mezcla-441.wav");
+    ExportFormat f;
+    f.sampleRate = 44100;
+    ExportResult r = exportMix(*live, crear(p), f, nullptr, nullptr);
+    CHECK(r.error.empty());
+    CHECK(r.frames == Resampler::outputFrames(48000, 48000, 44100));
+    Clip c;
+    CHECK(readWav(std::fopen(p.c_str(), "rb"), c).empty());
+    CHECK(c.sampleRate == 44100 && c.frames == r.frames && c.bits == 24);
+}
+
+TEST(exportarErroresYCancelar) {
+    Mixer vacio(48000);
+    ExportFormat f;
+    CHECK(exportMix(vacio, crear(tmpPath("vacio.wav")), f, nullptr, nullptr).error == "No hay pistas para exportar");
+    CHECK(!exportMix(vacio, -1, f, nullptr, nullptr).error.empty());
+    std::unique_ptr<Mixer> live(mezclaDePrueba());
+    std::atomic<bool> cancelar{true};
+    CHECK(exportMix(*live, crear(tmpPath("cancelada.wav")), f, nullptr, &cancelar).error == "Exportación cancelada");
+}
+
+TEST(exportarRespetaSoloYMute) {
+    Mixer live(48000);
+    live.setLimiter(false);
+    live.setTrack(0, constTrack("s1.wav", 2, 4800, 0.25f, 0.25f));
+    live.setTrack(1, constTrack("s2.wav", 2, 4800, 0.5f, 0.5f));
+    live.setTrackSolo(1, true);
+    const std::string p = tmpPath("solo.wav");
+    ExportFormat f;
+    f.bits = 32;
+    CHECK(exportMix(live, crear(p), f, nullptr, nullptr).error.empty());
+    Clip c;
+    readWav(std::fopen(p.c_str(), "rb"), c);
+    CHECK_NEAR(c.data[0], 0.5, 1e-6);  // solo la pista 2, desde la primera muestra
+    CHECK_NEAR(c.data[2 * 4000], 0.5, 1e-6);
+    live.setTrackSolo(1, false);
+    live.setTrackMute(1, true);
+    CHECK(exportMix(live, crear(p), f, nullptr, nullptr).error.empty());
+    readWav(std::fopen(p.c_str(), "rb"), c);
+    CHECK_NEAR(c.data[2 * 4000], 0.25, 1e-6);
+}
+
+// ---------------------------------------------------------------- análisis
+TEST(fftBasica) {
+    FFT fft(1024);
+    std::vector<double> re(1024), im(1024, 0.0);
+    for (int i = 0; i < 1024; ++i) re[i] = std::cos(2 * M_PI * 37 * i / 1024);
+    fft.forward(re.data(), im.data());
+    CHECK_NEAR(std::hypot(re[37], im[37]), 512, 1e-6);
+    CHECK_NEAR(std::hypot(re[36], im[36]), 0, 1e-6);
+    CHECK_NEAR(std::hypot(re[0], im[0]), 0, 1e-6);
+}
+
+static void senal(std::vector<float> &l, std::vector<float> &r, const std::function<std::pair<double, double>(int)> &g) {
+    l.resize(Analyzer::kSpecSize);
+    r.resize(Analyzer::kSpecSize);
+    for (int i = 0; i < Analyzer::kSpecSize; ++i) {
+        auto [a, b] = g(i);
+        l[i] = static_cast<float>(a);
+        r[i] = static_cast<float>(b);
+    }
+}
+
+TEST(analizadorEspectroComoWebAudio) {
+    Analyzer an(48000);
+    std::vector<float> l, r;
+    senal(l, r, [](int i) {
+        const double v = 0.5 * std::sin(2 * M_PI * 1000 * i / 48000.0);
+        return std::make_pair(v, v);
+    });
+    for (int k = 0; k < 60; ++k) an.updateFrom(l.data(), r.data());
+    const float *db = an.spectrumDb();
+    int pk = 0;
+    for (int k = 1; k < Analyzer::kSpecBins; ++k)
+        if (db[k] > db[pk]) pk = k;
+    std::printf("  pico en %.1f Hz, %.2f dB\n", pk * an.binHz(), db[pk]);
+    CHECK(std::fabs(pk * an.binHz() - 1000) < 3);
+    CHECK_NEAR(db[pk], 20 * std::log10(0.5 * 0.42 / 2), 1.2);  // amplitud × ganancia Blackman / 2
+    CHECK(db[static_cast<int>(5000 / an.binHz())] < -100);
+    CHECK_NEAR(an.correlation, 1.0, 1e-6);
+    CHECK_NEAR(an.peakL, 0.5, 1e-3);
+    CHECK_NEAR(an.rmsL, 0.5 / std::sqrt(2.0), 2e-3);
+    CHECK(an.hum.freq == 0);
+}
+
+TEST(analizadorFaseYPaneo) {
+    Analyzer an(48000);
+    std::vector<float> l, r;
+    senal(l, r, [](int i) {
+        const double v = 0.4 * std::sin(2 * M_PI * 300 * i / 48000.0);
+        return std::make_pair(v, -v);  // polaridad invertida
+    });
+    an.updateFrom(l.data(), r.data());
+    CHECK_NEAR(an.correlation, -1.0, 1e-6);
+    senal(l, r, [](int i) { return std::make_pair(0.4 * std::sin(2 * M_PI * 300 * i / 48000.0), 0.0); });
+    an.reset();
+    for (int k = 0; k < 20; ++k) an.updateFrom(l.data(), r.data());
+    CHECK(an.rmsR == 0.0f && an.rmsL > 0.2f);
+    // En el goniómetro "por fuentes" todo queda a la izquierda.
+    const int b = static_cast<int>(std::lround(300.0 / (48000.0 / Analyzer::kFanSize)));
+    CHECK_NEAR(an.fanPan()[b], -1.0, 1e-6);
+}
+
+TEST(analizadorZumbido) {
+    Analyzer an(48000);
+    std::vector<float> l, r;
+    uint32_t seed = 1;
+    auto ruido = [&]() {
+        seed = seed * 1664525u + 1013904223u;
+        return (seed / 4294967296.0 - 0.5) * 2e-4;
+    };
+    senal(l, r, [&](int i) {
+        double v = 0.2 * std::sin(2 * M_PI * 440 * i / 48000.0);  // música
+        for (int k = 1; k <= 4; ++k) v += 0.01 / k * std::sin(2 * M_PI * 60 * k * i / 48000.0);
+        v += ruido();
+        return std::make_pair(v, v);
+    });
+    for (int k = 0; k < 30; ++k) an.updateFrom(l.data(), r.data());
+    std::printf("  zumbido: %d Hz, %d armónicos, +%.0f dB\n", an.hum.freq, an.hum.count, an.hum.db);
+    CHECK(an.hum.freq == 60);
+    CHECK(an.hum.count >= 3);
+}
+
+TEST(notchQuitaElZumbido) {
+    Mixer m(48000);
+    m.setLimiter(false);
+    m.setTrack(0, seno("hum.wav", 2, 480000, 60, 0.3));
+    m.play();
+    auto [l0, r0] = peakRun(m, 24000, 4800);
+    CHECK_NEAR(l0, 0.3, 0.003);
+    m.setNotch(60);
+    CHECK(m.notch() == 60);
+    auto [l1, r1] = peakRun(m, 48000, 4800);
+    std::printf("  notch 60 Hz: queda %.1f dB\n", 20 * std::log10(l1 / 0.3));
+    CHECK(l1 < 0.3 * 0.03);
+    m.setNotch(33);  // valor inválido: apagado
+    CHECK(m.notch() == 0);
+}
+
+TEST(tomaDeAnalisis) {
+    Mixer m(48000);
+    m.setLimiter(false);
+    m.setTrack(2, constTrack("tap.wav", 2, 96000, 0.4f, 0.2f));
+    m.setMasterGain(0.5f);
+    m.play();
+    run(m, 9600);
+    std::vector<float> l(256), r(256);
+    uint64_t w = m.readTap(l.data(), r.data(), 256);
+    CHECK(w >= 9600);
+    CHECK_NEAR(l[255], 0.4, 1e-4);  // la mezcla antes del volumen master
+    CHECK_NEAR(r[255], 0.2, 1e-4);
+    m.setTrackMute(2, true);
+    m.setAnalysisSource(2);
+    run(m, 9600);
+    m.readTap(l.data(), r.data(), 256);
+    CHECK_NEAR(l[255], 0.4, 1e-4);  // la pista se analiza aunque esté en mute
+    m.setAnalysisSource(7);  // espacio vacío: silencio
+    run(m, 9600);
+    m.readTap(l.data(), r.data(), 256);
+    CHECK(l[255] == 0.0f);
+    m.pause();
+    run(m, 4800);
+    const uint64_t w2 = m.readTap(l.data(), r.data(), 256);
+    run(m, 4800);
+    CHECK(m.readTap(l.data(), r.data(), 256) == w2);  // detenido no llega audio nuevo
+}
+
+TEST(espectrograma) {
+    auto a = seno("sg.wav", 1, 96000, 1000, 0.5);
+    float hi = 0;
+    std::vector<uint8_t> sg = spectrogram(*a, 100, 64, &hi);
+    CHECK(sg.size() == 6400);
+    CHECK_NEAR(hi, 20000, 1e-3);
+    const int fila1k = static_cast<int>(std::log(1000 / 20.0) / std::log(hi / 20.0) * 64);
+    const int fila100 = static_cast<int>(std::log(100 / 20.0) / std::log(hi / 20.0) * 64);
+    int v1k = 0, v100 = 0;
+    for (int c = 10; c < 90; ++c) {
+        v1k = std::max<int>(v1k, sg[c * 64 + fila1k]);
+        v100 = std::max<int>(v100, sg[c * 64 + fila100]);
+    }
+    std::printf("  espectrograma: 1 kHz=%d, 100 Hz=%d\n", v1k, v100);
+    CHECK(v1k > 200);
+    CHECK(v100 < 20);
+}
+
 TEST(concurrencia) {
     // Un hilo hace de audio; otro agrega y quita pistas y mueve controles sin parar.
     Mixer m(48000);
@@ -841,6 +1122,12 @@ TEST(concurrencia) {
                                  static_cast<int>(rng() % kFilterTypes), 20.0f + rng() % 18000,
                                  static_cast<float>(rng() % 31) - 15, 0.2f + (rng() % 100) / 10.0f);
         if (rng() % 9 == 0) m.trackEq(slot)->setBypass(rng() % 2 == 0);
+        if (rng() % 11 == 0) m.setNotch(rng() % 2 ? 50 : 0);
+        m.setAnalysisSource(static_cast<int>(rng() % (kMaxTracks + 1)) - 1);
+        {
+            std::vector<float> tl(1024), tr(1024);
+            m.readTap(tl.data(), tr.data(), 1024);
+        }
         if (rng() % 3 == 0) m.seek(rng() % 48000);
         if (rng() % 4 == 0) m.play();
         if (rng() % 7 == 0) m.pause();

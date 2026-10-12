@@ -104,6 +104,22 @@ void Equalizer::clear() {
     mTrimDb.store(0.0f);
 }
 
+void Equalizer::copyFrom(const Equalizer &o) {
+    for (int b = 0; b < kMaxBands; ++b) {
+        const Params &src = o.mParams[b];
+        Params &dst = mParams[b];
+        dst.type.store(src.type.load());
+        dst.freq.store(src.freq.load());
+        dst.gain.store(src.gain.load());
+        dst.q.store(src.q.load());
+        dst.on.store(src.on.load());
+        dst.present.store(src.present.load());
+    }
+    mBypass.store(o.mBypass.load());
+    mAuto.store(o.mAuto.load());
+    recomputeTrim();
+}
+
 Biquad Equalizer::targetBiquad(int band) const {
     const Params &p = mParams[band];
     return designBiquad(p.type.load(), p.freq.load(), p.gain.load(), p.q.load(), mRate);

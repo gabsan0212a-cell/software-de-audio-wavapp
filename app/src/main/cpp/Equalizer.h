@@ -29,6 +29,7 @@ public:
     void setBypass(bool on);
     void setAutoGain(bool on);
     void clear();  // sin bandas, sin bypass, auto-ganancia encendida
+    void copyFrom(const Equalizer &o);  // copia los ajustes (no el estado del audio)
     float trimDb() const { return mTrimDb.load(); }  // compensación actual (≤ 0)
     // Respuesta en dB en `freqs`. band = -1: todo el EQ (plano si está en bypass);
     // band >= 0: solo esa banda, si existe.

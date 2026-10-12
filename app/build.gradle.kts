@@ -15,7 +15,10 @@ android {
         versionName = "0.0.1"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         externalNativeBuild {
-            cmake { cppFlags += listOf("-std=c++17", "-O2") }
+            cmake {
+                cppFlags += listOf("-std=c++17", "-O2")
+                arguments += "-DANDROID_STL=c++_shared"  // Oboe lo requiere
+            }
         }
     }
 

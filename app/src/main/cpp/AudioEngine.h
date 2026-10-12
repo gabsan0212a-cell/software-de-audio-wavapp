@@ -1,41 +1,62 @@
 #pragma once
 
-#include <atomic>
-#include <memory>
-#include <string>
 #include <oboe/Oboe.h>
 
-#include "WavReader.h"
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
-// Etapa 1a: reproduce un WAV cargado en memoria.
+#include "Importer.h"
+#include "Mixer.h"
+
+// Une el mezclador con la salida de audio (Oboe) y administra las pistas.
+// El proyecto trabaja a 48 kHz; si el celular usa otra frecuencia, Oboe convierte.
 class AudioEngine : public oboe::AudioStreamDataCallback,
                     public oboe::AudioStreamErrorCallback {
 public:
+    static constexpr int kSampleRate = 48000;
+
+    ~AudioEngine() override;
+
     bool start();
     void stop();
-    int32_t deviceRate() const;
+    int32_t deviceRate();
+    Mixer &mixer() { return mMixer; }
 
-    std::string loadWav(int fd);  // "" si todo bien
-    void play() { mPlaying.store(true); }
-    void pause() { mPlaying.store(false); }
-    void stopPlayback() { mPlaying.store(false); mResetRequested.store(true); }
-    bool isPlaying() const { return mPlaying.load(); }
-    double positionSeconds() const;
-    const Clip *clip() const { return mClip.load(); }
+    // Devuelven el espacio (0..11) de la pista nueva, o -1 con `error`.
+    int importTrack(int fd, const std::string &dstPath, ImportInfo &info, std::string &error);
+    int addTrackFile(const std::string &path, std::string &error);
+    int addDemoTrack(int index, const std::string &path, std::string &error);
+    void removeTrack(int slot);
+    float importProgress() const { return mProgress.load(); }
+    int trackChannels(int slot) const;
+    int64_t trackFrames(int slot) const;
+    // Forma de onda para dibujar: [columna][canal][min, max].
+    std::vector<float> overview(int slot, int columns) const;
 
-    oboe::DataCallbackResult onAudioReady(oboe::AudioStream *stream,
-                                          void *audioData,
+    oboe::DataCallbackResult onAudioReady(oboe::AudioStream *stream, void *audioData,
                                           int32_t numFrames) override;
     void onErrorAfterClose(oboe::AudioStream *stream, oboe::Result error) override;
 
 private:
+    bool openStream();
+    int addMapped(std::unique_ptr<MappedAudio> audio, std::string &error);
+
+    Mixer mMixer{kSampleRate};
+    std::mutex mStreamMutex;
     std::shared_ptr<oboe::AudioStream> mStream;
-    // El hilo de audio solo lee mClip. El clip anterior se libera en la carga siguiente,
-    // cuando ya es seguro que el callback no lo usa.
-    std::atomic<Clip *> mClip{nullptr};
-    std::unique_ptr<Clip> mOwned, mRetired;
-    std::atomic<bool> mPlaying{false};
-    std::atomic<bool> mResetRequested{false};
-    std::atomic<double> mPos{0.0};  // en frames del clip (fraccional)
-    float mGain = 0.0f;             // rampa para evitar clics en play/pausa
+    bool mWanted = false;  // la app quiere el audio abierto
+
+    std::atomic<bool> mPrefetchRun{false};
+    std::thread mPrefetchThread;
+
+    mutable std::mutex mTracksMutex;
+    std::vector<float> mPeaks[kMaxTracks];
+    int mPeakChannels[kMaxTracks] = {};
+    int64_t mFrames[kMaxTracks] = {};
+    std::atomic<float> mProgress{0.0f};
+    static constexpr int kPeakBucket = 256;
 };

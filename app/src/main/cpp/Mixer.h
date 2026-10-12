@@ -1,0 +1,100 @@
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+
+#include "Limiter.h"
+#include "MappedAudio.h"
+
+constexpr int kMaxTracks = 12;
+// Medidores: [0] pico master L, [1] pico master R, [2] reducción del limitador (dB, ≥ 0),
+// luego pico L/R de cada pista: [3 + 2*slot], [4 + 2*slot]. Los picos son lineales.
+constexpr int kMeterCount = 3 + 2 * kMaxTracks;
+
+// Mezcla las pistas como el prototipo web ("Mesa de Audio"):
+// pista: polaridad → volumen → paneo (StereoPannerNode) → mute/solo → suma
+// master: volumen → limitador → recorte suave → salida.
+// Los cambios de parámetros se suavizan igual que setTargetAtTime en Web Audio.
+class Mixer {
+public:
+    explicit Mixer(int sampleRate);
+    ~Mixer();
+
+    // ---------- Hilo de la interfaz ----------
+    int sampleRate() const { return mSampleRate; }
+    int freeSlot() const;
+    bool setTrack(int slot, std::unique_ptr<MappedAudio> audio);
+    // Quita la pista (con un fundido corto si está sonando) y la devuelve cuando el hilo
+    // de audio ya no la usa.
+    std::unique_ptr<MappedAudio> takeTrack(int slot);
+    bool hasTrack(int slot) const;
+
+    void setTrackGain(int slot, float gain);  // lineal
+    void setTrackPan(int slot, float pan);    // -1 (L) .. 1 (R)
+    void setTrackMute(int slot, bool on);
+    void setTrackSolo(int slot, bool on);
+    void setTrackInvert(int slot, bool on);
+    void setMasterGain(float gain);  // lineal (0 = mute)
+    void setLimiter(bool on);
+
+    void play();
+    void pause();
+    void stop();
+    void seek(int64_t frame);
+    bool isPlaying() const { return mPlaying.load(); }
+    int64_t position() const;
+    int64_t length() const { return mLength.load(); }
+    void readMeters(float *out);  // picos desde la lectura anterior
+
+    // Pide al sistema que lea del disco lo que viene. Llamar cada ~100 ms desde otro hilo.
+    void prefetch();
+
+    // ---------- Hilo de audio ----------
+    void process(float *out, int frames, int channels);
+
+private:
+    static constexpr int kBlock = 64;
+
+    struct Slot {
+        std::atomic<const MappedAudio *> audio{nullptr};
+        std::unique_ptr<MappedAudio> owned;  // solo hilo de la interfaz (con mMutex)
+        std::atomic<uint32_t> gen{0};
+        std::atomic<float> gain{1.0f}, pan{0.0f};
+        std::atomic<bool> mute{false}, solo{false}, invert{false}, removing{false};
+        std::atomic<float> peakL{0.0f}, peakR{0.0f};
+        // Estado del hilo de audio
+        uint32_t seenGen = 0;
+        float gainS = 1.0f, panS = 0.0f, onS = 0.0f, invS = 1.0f;
+    };
+
+    void renderBlock(int n);
+    void updateLength();  // con mMutex
+    bool waitForAudioThread();
+
+    const int mSampleRate;
+    float mCoefGain, mCoefPan, mCoefOn, mCoefInv, mCoefMaster;
+    float mTauPanFrames;
+
+    Slot mSlots[kMaxTracks];
+    mutable std::mutex mMutex;
+
+    std::atomic<bool> mPlaying{false};
+    std::atomic<int64_t> mSeekTarget{-1};
+    std::atomic<int64_t> mPosition{0};
+    std::atomic<int64_t> mLength{0};
+    std::atomic<float> mMasterGain{1.0f};
+    std::atomic<bool> mLimiterOn{true};
+    std::atomic<bool> mRolling{false};
+    std::atomic<uint64_t> mCallbacks{0};  // impar = callback en curso
+    std::atomic<float> mPeakL{0.0f}, mPeakR{0.0f}, mReduction{0.0f};
+
+    // Estado del hilo de audio
+    int64_t mPos = 0;
+    float mTransport = 0.0f;  // rampa anti-clic de play/pausa/salto
+    float mMasterS = 1.0f;
+    bool mLimiterWasOn = true;
+    Limiter mLimiter;
+    float mMixL[kBlock], mMixR[kBlock], mRamp[kBlock];
+};

@@ -117,10 +117,8 @@ jobs:
           gh release delete ultimo -y --cleanup-tag || true
           gh release create ultimo wavapp.apk --prerelease --target "$GITHUB_SHA" \
             --title "Última compilación (v$VERSION)" --notes "$NOTAS"
-          # Una por versión, para poder regresar a una anterior.
-          if gh release view "v$VERSION" > /dev/null 2>&1; then
-            gh release upload "v$VERSION" wavapp.apk --clobber
-          else
-            gh release create "v$VERSION" wavapp.apk --target "$GITHUB_SHA" \
-              --title "WavApp $VERSION" --notes "$NOTAS"
-          fi
+          # Una por versión, para poder regresar a una anterior. Si se vuelve a publicar la
+          # misma versión, se reemplaza completa (etiqueta incluida) con el commit nuevo.
+          gh release delete "v$VERSION" -y --cleanup-tag || true
+          gh release create "v$VERSION" wavapp.apk --target "$GITHUB_SHA" \
+            --title "WavApp $VERSION" --notes "$NOTAS"

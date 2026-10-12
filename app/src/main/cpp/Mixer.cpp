@@ -301,9 +301,12 @@ void Mixer::renderBlock(int n) {
             pkL = std::max(pkL, std::fabs(l));
             pkR = std::max(pkR, std::fabs(r));
         }
-        s.gainS = g;
-        s.onS = onS;
-        s.invS = invS;
+        // Al llegar (casi) al objetivo se iguala: evita números diminutos (denormales) que
+        // en algunos procesadores vuelven lento el cálculo.
+        s.gainS = std::fabs(gainT - g) < 1e-7f ? gainT : g;
+        s.onS = std::fabs(onT - onS) < 1e-7f ? onT : onS;
+        s.invS = std::fabs(invT - invS) < 1e-7f ? invT : invS;
+        if (std::fabs(panT - s.panS) < 1e-7f) s.panS = panT;
         atomicMax(s.peakL, pkL);
         atomicMax(s.peakR, pkR);
     }
@@ -327,6 +330,7 @@ void Mixer::renderBlock(int n) {
         pkL = std::max(pkL, std::fabs(l));
         pkR = std::max(pkR, std::fabs(r));
     }
+    if (std::fabs(masterT - mMasterS) < 1e-7f) mMasterS = masterT;
     atomicMax(mPeakL, pkL);
     atomicMax(mPeakR, pkR);
     mReduction.store(limiterOn ? mLimiter.reductionDb() : 0.0f, std::memory_order_relaxed);

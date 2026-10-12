@@ -291,6 +291,11 @@ object Mesa {
         posicion = NativeAudio.positionSeconds()
     }
 
+    /** ¿Hay algo moviéndose en pantalla (audio, importación o medidores bajando)? */
+    fun activa(): Boolean =
+        reproduciendo || ocupada || master.l > -119f || master.r > -119f ||
+            pistas.any { it.medidor.l > -119f || it.medidor.r > -119f }
+
     /** Se llama en cada cuadro de pantalla: lee posición y medidores del motor. */
     fun tick(ahoraMs: Long) {
         val dt = if (ultimoTick == 0L) 0.016f else ((ahoraMs - ultimoTick).coerceIn(0, 200) / 1000f)

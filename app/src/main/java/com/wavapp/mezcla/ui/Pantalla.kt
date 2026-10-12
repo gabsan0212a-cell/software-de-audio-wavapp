@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wavapp.mezcla.Mesa
 import com.wavapp.mezcla.Pista
+import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
@@ -76,7 +77,10 @@ fun PantallaMesa() {
     // Posición y medidores, en cada cuadro de pantalla. (Como animación infinita: en las
     // pruebas automáticas se pausa sola.)
     LaunchedEffect(Unit) {
-        while (true) withInfiniteAnimationFrameMillis { Mesa.tick(it) }
+        while (true) {
+            withInfiniteAnimationFrameMillis { Mesa.tick(it) }
+            if (!Mesa.activa()) delay(250)  // quieta: 4 veces por segundo basta (ahorra batería)
+        }
     }
     // Mientras suena, la pantalla no se apaga (al apagarse se detendría el audio).
     val vista = LocalView.current

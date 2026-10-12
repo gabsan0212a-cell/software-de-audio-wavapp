@@ -35,6 +35,7 @@ std::string readWav(FILE *f, Clip &out) {
 
     bool haveFmt = false;
     int format = 0, bits = 0, validBits = 0, blockAlign = 0;
+    uint32_t byteRate = 0;
     uint32_t dataSize = 0;
     for (;;) {
         uint8_t ch[8];
@@ -48,6 +49,7 @@ std::string readWav(FILE *f, Clip &out) {
             format = le16(fm);
             out.channels = le16(fm + 2);
             out.sampleRate = static_cast<int32_t>(le32(fm + 4));
+            byteRate = le32(fm + 8);
             blockAlign = le16(fm + 12);
             bits = le16(fm + 14);
             if (format == 0xFFFE && size >= 26) {  // WAVE_FORMAT_EXTENSIBLE
@@ -67,7 +69,17 @@ std::string readWav(FILE *f, Clip &out) {
 
     // Algunos programas guardan, p. ej., 24 bits dentro de 32 (alineados a la izquierda)
     // o dejan blockAlign en 0. El tamaño real de cada muestra lo da blockAlign.
-    if (out.channels >= 1 && blockAlign == 0) blockAlign = out.channels * ((bits + 7) / 8);
+    // Algunas grabadoras escriben mal blockAlign (p. ej. 2 en estéreo de 16 bits). Si no cuadra
+    // con canales y bits, el dato de bytes por segundo decide cuál de los dos es el correcto.
+    const int sampleBytes = (bits + 7) / 8;
+    const int expected = out.channels * sampleBytes;
+    if (out.channels >= 1 && sampleBytes > 0 && blockAlign != expected && blockAlign < expected) {
+        if (blockAlign > 0 && blockAlign % sampleBytes == 0 &&
+            byteRate == static_cast<uint32_t>(out.sampleRate) * blockAlign)
+            out.channels = blockAlign / sampleBytes;  // los canales estaban mal
+        else
+            blockAlign = expected;  // blockAlign estaba mal (o en 0)
+    }
     const int container = out.channels >= 1 ? blockAlign / out.channels : 0;
     out.isFloat = (format == 3);
     out.bits = (validBits > 0 && validBits < bits) ? validBits : bits;

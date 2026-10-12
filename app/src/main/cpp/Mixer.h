@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "Equalizer.h"
 #include "Limiter.h"
@@ -14,6 +15,18 @@ constexpr int kMaxTracks = 12;
 // Medidores: [0] pico master L, [1] pico master R, [2] reducción del limitador (dB, ≥ 0),
 // luego pico L/R de cada pista: [3 + 2*slot], [4 + 2*slot]. Los picos son lineales.
 constexpr int kMeterCount = 3 + 2 * kMaxTracks;
+
+// Edición: una pista suena como una lista de pedazos (regiones) de su archivo, cada uno en
+// su lugar de la línea de tiempo. Todo en cuadros a la frecuencia del proyecto.
+struct Region {
+    int64_t start = 0;    // dónde empieza en la línea de tiempo
+    int64_t src = 0;      // desde qué cuadro del archivo
+    int64_t length = 0;
+    int64_t fadeIn = 0, fadeOut = 0;
+};
+constexpr int kMaxRegions = 256;
+// Fundido mínimo en un borde cortado (donde el audio no sigue en otro pedazo), para que no truene.
+constexpr int64_t kEdgeFade = 96;  // 2 ms
 
 // Mezcla las pistas como el prototipo web ("Mesa de Audio"):
 // pista: polaridad → EQ → auto-ganancia → volumen → paneo (StereoPannerNode) → mute/solo → suma
@@ -32,6 +45,10 @@ public:
     // de audio ya no la usa.
     std::unique_ptr<MappedAudio> takeTrack(int slot);
     bool hasTrack(int slot) const;
+    // Reemplaza los pedazos de la pista (se ajustan al archivo). Al agregar una pista queda un
+    // solo pedazo con el archivo completo desde 0.
+    bool setRegions(int slot, const std::vector<Region> &regions);
+    std::vector<Region> regions(int slot) const;
 
     void setTrackGain(int slot, float gain);  // lineal
     void setTrackPan(int slot, float pan);    // -1 (L) .. 1 (R)
@@ -79,8 +96,20 @@ public:
 private:
     static constexpr int kBlock = 64;
 
+    // Pedazo listo para el hilo de audio: con los fundidos ya resueltos.
+    struct Piece {
+        int64_t start, src, length, fadeIn, fadeOut;
+    };
+    struct PieceSet {
+        std::vector<Region> regions;  // como se pidieron (ya ajustadas)
+        std::vector<Piece> pieces;
+        int64_t end = 0;
+    };
+
     struct Slot {
         std::atomic<const MappedAudio *> audio{nullptr};
+        std::atomic<const PieceSet *> pieces{nullptr};
+        std::unique_ptr<PieceSet> ownedPieces;  // solo hilo de la interfaz (con mMutex)
         std::unique_ptr<MappedAudio> owned;  // solo hilo de la interfaz (con mMutex)
         std::atomic<uint32_t> gen{0};
         std::atomic<float> gain{1.0f}, pan{0.0f};
@@ -93,6 +122,9 @@ private:
     };
 
     void renderBlock(int n);
+    void readInput(const MappedAudio &a, const PieceSet &ps, int n);
+    static std::unique_ptr<PieceSet> makePieces(std::vector<Region> regions, int64_t fileFrames);
+    void publishPieces(Slot &s, std::unique_ptr<PieceSet> ps);  // con mMutex
     void applyNotch(int n);
     void updateLength();  // con mMutex
     bool waitForAudioThread();

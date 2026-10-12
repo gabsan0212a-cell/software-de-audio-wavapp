@@ -17,10 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,8 +29,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -48,7 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wavapp.mezcla.Medidor
 import com.wavapp.mezcla.MedidorMaster
-import com.wavapp.mezcla.NativeAudio
+import com.wavapp.mezcla.Mesa
 import com.wavapp.mezcla.Pista
 import kotlin.math.max
 import kotlin.math.min
@@ -287,8 +285,8 @@ fun FaderMaster(db: Float, alCambiar: (Float) -> Unit, modifier: Modifier = Modi
 }
 
 /**
- * Carril con la forma de onda de la pista sobre la línea de tiempo común. Tocar salta a ese
- * punto. La posición se lee al dibujar para no recomponer en cada cuadro.
+ * Carril con la forma de onda de la pista sobre la línea de tiempo común (con sus pedazos, si
+ * se editó). Tocar salta a ese punto. La posición se lee al dibujar para no recomponer en cada cuadro.
  */
 @Composable
 fun Onda(
@@ -300,25 +298,16 @@ fun Onda(
 ) {
     val p = LocalPaleta.current
     val color = ColoresPista[pista.color]
-    var ancho by remember { mutableIntStateOf(0) }
-    val columnas = if (ancho <= 0) 0
-    else if (duracionTotal > 0) max(1, (ancho * pista.segundos / duracionTotal).roundToInt()).coerceAtMost(ancho)
-    else ancho
-    val datos = remember(pista.slot, pista.id, columnas) {
-        if (columnas > 0) NativeAudio.overview(pista.slot, columnas) else null
-    }
     val saltar by rememberUpdatedState(alSaltar)
     val total by rememberUpdatedState(duracionTotal)
-    val ch = pista.canales
     Canvas(
         modifier
-            .onSizeChanged { ancho = it.width }
             .semantics { contentDescription = "Forma de onda de ${pista.nombre}. Toca para mover el cursor." }
             .pointerInput(Unit) {
                 detectTapGestures { o -> if (total > 0) saltar(o.x / size.width * total) }
             }
-            // La onda se dibuja una sola vez en una imagen; en cada cuadro solo se pinta esa
-            // imagen y el cursor encima (como el prototipo, que movía el cursor con CSS).
+            // La onda se dibuja una sola vez en una imagen (se rehace si cambian los pedazos o la
+            // duración); en cada cuadro solo se pinta esa imagen y el cursor encima.
             .drawWithCache {
                 val w = size.width.toInt()
                 val h = size.height.toInt()
@@ -329,19 +318,23 @@ fun Onda(
                 lienzo.drawRect(0f, 0f, w.toFloat(), h.toFloat(), pintura)
                 pintura.color = p.linea
                 lienzo.drawRect(0f, h / 2f - density / 2, w.toFloat(), h / 2f + density / 2, pintura)
-                val d = datos
-                if (d != null && ch > 0) {
-                    pintura.color = color
-                    val cols = d.size / (ch * 2)
-                    for (c in 0 until min(2, ch)) {
-                        val cy = if (ch == 2) h * (if (c == 0) 0.25f else 0.75f) else h / 2f
-                        val amp = if (ch == 2) h * 0.23f else h * 0.46f
-                        for (x in 0 until cols) {
-                            val mn = d[(x * ch + c) * 2]
-                            val mx = d[(x * ch + c) * 2 + 1]
-                            val arriba = cy - mx * amp
-                            lienzo.drawRect(x.toFloat(), arriba, x + 1f, arriba + max(1f, (mx - mn) * amp), pintura)
+                val dur = Mesa.duracion
+                val pedazos = pista.pedazos
+                if (dur > 0) {
+                    val nativo = lienzo.nativeCanvas
+                    val trazo = android.graphics.Paint().apply {
+                        this.color = color.toArgb()
+                        style = android.graphics.Paint.Style.STROKE
+                    }
+                    val editada = pista.editada
+                    for (pz in pedazos) {
+                        val x0 = (pz.inicio / Mesa.RATE / dur * w).toFloat()
+                        val x1 = (pz.fin / Mesa.RATE / dur * w).toFloat()
+                        if (editada) {
+                            pintura.color = color.copy(alpha = 0.12f)
+                            lienzo.drawRect(x0, 0f, x1, h.toFloat(), pintura)
                         }
+                        dibujarOndaPedazo(nativo, pista, pz, x0, x1, 0f, h.toFloat(), 0f, w.toFloat(), trazo)
                     }
                 }
                 onDrawBehind { drawImage(img) }

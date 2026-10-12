@@ -40,6 +40,8 @@ public:
     int64_t trackFrames(int slot) const;
     // Forma de onda para dibujar: [columna][canal][min, max].
     std::vector<float> overview(int slot, int columns) const;
+    // Igual, solo de los cuadros [from, to) del archivo (para dibujar un pedazo).
+    std::vector<float> overview(int slot, int columns, int64_t from, int64_t to) const;
 
     // Exportar (en un hilo de trabajo). Cierra fd.
     ExportResult exportMix(int fd, const ExportFormat &fmt);

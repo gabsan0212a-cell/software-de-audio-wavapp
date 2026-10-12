@@ -2,6 +2,7 @@ package com.wavapp.mezcla
 
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
@@ -16,8 +17,11 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -107,6 +111,44 @@ class PantallaTest {
         captura("8-espectrograma")
         regla.onNodeWithText("Cerrar").performScrollTo().performClick()
         regla.waitUntil(2_000) { !Analisis.abierto }
+
+        // Edición en la primera pista: elegir, cortar, mover, borrar, deshacer y rehacer.
+        regla.runOnUiThread {
+            if (NativeAudio.isPlaying()) Mesa.reproducirPausar()
+            Mesa.saltar(6.0)
+        }
+        regla.onNodeWithText("Editar").performClick()
+        regla.waitUntil(2_000) { Edicion.abierta }
+        val p0 = Mesa.pistas.first()
+        val original = p0.pedazos
+        regla.onNodeWithTag("carril-${p0.id}").performTouchInput { click() }
+        regla.waitUntil(2_000) { Edicion.seleccion?.pistaId == p0.id }
+        regla.onNodeWithText("✂ Cortar").performClick()
+        regla.waitUntil(2_000) { p0.pedazos.size == 2 }
+        assertEquals(6L * 48000, p0.pedazos[1].inicio)
+        // El pedazo de la derecha quedó elegido: se arrastra a la derecha.
+        regla.onNodeWithTag("carril-${p0.id}").performTouchInput {
+            swipe(Offset(width * 0.75f, height * 0.7f), Offset(width * 0.9f, height * 0.7f), 400)
+        }
+        regla.waitUntil(2_000) { p0.pedazos[1].inicio > 6L * 48000 }
+        assertTrue(Mesa.duracion > 12.0)
+        regla.waitForIdle()
+        captura("10-edicion")
+        regla.onNodeWithText("Borrar").performClick()
+        regla.waitUntil(2_000) { p0.pedazos.size == 1 }
+        regla.onNodeWithText("↶ Deshacer").performClick()
+        regla.waitUntil(2_000) { p0.pedazos.size == 2 && p0.pedazos[1].inicio > 6L * 48000 }
+        regla.onNodeWithText("↶ Deshacer").performClick()
+        regla.waitUntil(2_000) { p0.pedazos.size == 2 && p0.pedazos[1].inicio == 6L * 48000 }
+        regla.onNodeWithText("↶ Deshacer").performClick()
+        regla.waitUntil(2_000) { p0.pedazos == original }
+        regla.onNodeWithText("↷ Rehacer").performClick()
+        regla.waitUntil(2_000) { p0.pedazos.size == 2 }
+        regla.onNodeWithText("↶ Deshacer").performClick()
+        regla.waitUntil(2_000) { p0.pedazos == original }
+        assertEquals(12.0, Mesa.duracion, 0.001)
+        regla.onNodeWithText("Cerrar").performClick()
+        regla.waitUntil(2_000) { !Edicion.abierta }
 
         // Diálogo de exportar (sin abrir el selector de archivos del sistema).
         regla.onNodeWithText("Exportar").performClick()

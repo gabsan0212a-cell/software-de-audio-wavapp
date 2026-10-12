@@ -9,6 +9,7 @@ import android.os.ParcelFileDescriptor
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -73,6 +74,31 @@ class MotorTest {
         NativeAudio.pause()
         Thread.sleep(200)
         assertFalse(NativeAudio.isPlaying())
+    }
+
+    @Test
+    fun pedazosDeEdicion() {
+        val r = NativeAudio.addDemoTrack(1, File(dir, "edicion.wav").path)
+        assertNotNull(NativeAudio.lastError(), r)
+        val slot = r!![0].toInt()
+        espacios += slot
+        assertArrayEquals(longArrayOf(0, 0, 12L * 48000, 0, 0), NativeAudio.regions(slot))
+        // Dos pedazos; el segundo después de los 12 s de cualquier otra pista.
+        assertTrue(NativeAudio.setRegions(slot, longArrayOf(48000, 0, 96000, 4800, 4800, 600000, 300000, 48000, 0, 0)))
+        val rs = NativeAudio.regions(slot)
+        assertEquals(10, rs.size)
+        assertEquals(600000L, rs[5])
+        assertEquals(13.5, NativeAudio.durationSeconds(), 0.001)
+        NativeAudio.seek(12.6)
+        NativeAudio.play()
+        Thread.sleep(500)
+        assertTrue(NativeAudio.positionSeconds() > 12.6)
+        NativeAudio.pause()
+        // Lo imposible se ajusta: no pasa del final del archivo.
+        assertTrue(NativeAudio.setRegions(slot, longArrayOf(0, 12L * 48000 - 100, 999999, 0, 0)))
+        assertArrayEquals(longArrayOf(0, 12L * 48000 - 100, 100, 0, 0), NativeAudio.regions(slot))
+        assertTrue(NativeAudio.setRegions(slot, LongArray(0)))
+        assertEquals(0, NativeAudio.regions(slot).size)
     }
 
     @Test

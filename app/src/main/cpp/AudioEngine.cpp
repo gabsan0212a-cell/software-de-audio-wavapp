@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 
 #define LOG_TAG "WavApp"
@@ -176,16 +177,25 @@ int64_t AudioEngine::trackFrames(int slot) const {
 }
 
 std::vector<float> AudioEngine::overview(int slot, int columns) const {
+    return overview(slot, columns, 0, INT64_MAX);
+}
+
+std::vector<float> AudioEngine::overview(int slot, int columns, int64_t from, int64_t to) const {
     std::lock_guard<std::mutex> lk(mTracksMutex);
     std::vector<float> out;
     if (slot < 0 || slot >= kMaxTracks || columns <= 0 || mPeaks[slot].empty()) return out;
     const int ch = mPeakChannels[slot];
     const std::vector<float> &p = mPeaks[slot];
     const int64_t buckets = static_cast<int64_t>(p.size()) / (ch * 2);
+    const int64_t first = std::clamp<int64_t>(from / kPeakBucket, 0, buckets);
+    const int64_t last = std::clamp<int64_t>(to >= INT64_MAX - kPeakBucket ? buckets : (to + kPeakBucket - 1) / kPeakBucket,
+                                             first, buckets);
+    const int64_t span = last - first;
     out.assign(static_cast<size_t>(columns) * ch * 2, 0.0f);
+    if (span <= 0) return out;
     for (int col = 0; col < columns; ++col) {
-        int64_t b0 = buckets * col / columns, b1 = buckets * (col + 1) / columns;
-        if (b1 <= b0) b1 = std::min(buckets, b0 + 1);
+        int64_t b0 = first + span * col / columns, b1 = first + span * (col + 1) / columns;
+        if (b1 <= b0) b1 = std::min(last, b0 + 1);
         for (int c = 0; c < ch; ++c) {
             float mn = 0.0f, mx = 0.0f;
             for (int64_t b = b0; b < b1; ++b) {

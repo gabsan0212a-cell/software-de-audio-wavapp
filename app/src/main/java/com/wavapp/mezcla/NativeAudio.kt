@@ -30,6 +30,13 @@ object NativeAudio {
     external fun importProgress(): Float
     /** Forma de onda: [columna][canal][min, max]. */
     external fun overview(slot: Int, columns: Int): FloatArray?
+    /** Igual, solo de los cuadros [from, to) del archivo. */
+    external fun overviewRange(slot: Int, columns: Int, from: Long, to: Long): FloatArray?
+
+    // Edición: pedazos de la pista, 5 números cada uno (cuadros a 48 kHz):
+    // inicio en la línea de tiempo, origen en el archivo, largo, fundido de entrada y de salida.
+    external fun setRegions(slot: Int, data: LongArray): Boolean
+    external fun regions(slot: Int): LongArray
 
     external fun setTrackGain(slot: Int, gain: Float)
     external fun setTrackPan(slot: Int, pan: Float)

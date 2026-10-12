@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wavapp.mezcla.Analisis
+import com.wavapp.mezcla.Edicion
 import com.wavapp.mezcla.Mesa
 import com.wavapp.mezcla.Pista
 import kotlinx.coroutines.delay
@@ -123,6 +124,7 @@ fun PantallaMesa() {
     }
     // El EQ de una pista y el análisis se abren encima de todo, a pantalla completa.
     if (Analisis.abierto) PanelAnalisis(alCerrar = { Analisis.abierto = false })
+    if (Edicion.abierta) PanelEdicion(alCerrar = { Edicion.abierta = false })
     Mesa.eqAbierta?.let { pista -> PanelEq(pista, alCerrar = { Mesa.eqAbierta = null }) }
     }
 
@@ -156,7 +158,7 @@ private fun Encabezado(alAgregar: () -> Unit, alExportar: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
         Text("Mesa de Audio", color = p.fg, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "Multipista · EQ por pista · análisis · master con limitador · exportar WAV",
+            "Multipista · EQ por pista · análisis · edición · master con limitador · exportar WAV",
             color = p.tenue, fontSize = 12.sp,
         )
         Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -166,6 +168,7 @@ private fun Encabezado(alAgregar: () -> Unit, alExportar: () -> Unit) {
         Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Boton("Exportar", alTocar = alExportar, habilitado = !Mesa.ocupada && Mesa.pistas.isNotEmpty())
             Boton("Análisis", alTocar = { Analisis.abierto = true }, habilitado = Mesa.pistas.isNotEmpty())
+            Boton("Editar", alTocar = { Edicion.abierta = true }, habilitado = Mesa.pistas.isNotEmpty())
         }
     }
 }

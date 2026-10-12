@@ -945,6 +945,117 @@ TEST(exportarRespetaSoloYMute) {
     CHECK_NEAR(c.data[2 * 4000], 0.25, 1e-6);
 }
 
+// ---------------------------------------------------------------- edición (pedazos)
+static bool igualDesde(const std::vector<float> &a, int64_t da, const std::vector<float> &b, int64_t db, int64_t n) {
+    for (int64_t i = 0; i < 2 * n; ++i)
+        if (a[2 * da + i] != b[2 * db + i]) return false;
+    return true;
+}
+
+TEST(edicionMoverRecortarYCortar) {
+    Mixer m(48000);
+    m.setLimiter(false);
+    CHECK(!m.setRegions(0, {}));  // espacio vacío
+    m.setTrack(0, genTrack("ed.wav", 2, 48000, [](int64_t f, int c) {
+        return static_cast<float>((c ? 0.3 : 0.5) * std::sin(2 * M_PI * 440 * f / 48000.0));
+    }));
+    std::vector<Region> r = m.regions(0);
+    CHECK(r.size() == 1 && r[0].start == 0 && r[0].src == 0 && r[0].length == 48000);
+    const std::vector<float> base = referencia(m);
+    CHECK(base.size() == 96000);
+
+    // Cortar en dos sin mover nada suena exactamente igual.
+    CHECK(m.setRegions(0, {{0, 0, 20000, 0, 0}, {20000, 20000, 28000, 0, 0}}));
+    CHECK(referencia(m) == base);
+    CHECK(m.length() == 48000);
+
+    // Mover: silencio antes y el audio corrido, sin cambios.
+    m.setRegions(0, {{12000, 0, 48000, 0, 0}});
+    CHECK(m.length() == 60000);
+    std::vector<float> o = referencia(m);
+    CHECK(std::all_of(o.begin(), o.begin() + 24000, [](float x) { return x == 0.0f; }));
+    CHECK(igualDesde(o, 12000, base, 0, 48000));
+
+    // Recortar: suena solo ese pedazo; los bordes cortados llevan un fundido de 2 ms.
+    m.setRegions(0, {{0, 10000, 5000, 0, 0}});
+    CHECK(m.length() == 5000);
+    o = referencia(m);
+    CHECK(igualDesde(o, kEdgeFade, base, 10000 + kEdgeFade, 5000 - 2 * kEdgeFade));
+    CHECK(std::fabs(o[0]) < 0.01f && std::fabs(o[2 * 4999]) < 0.01f);
+    CHECK(std::fabs(base[2 * 10000]) > 0.1f || std::fabs(base[2 * 14999]) > 0.1f);
+
+    // Los dos pedazos de un corte, separados: cada borde cortado lleva su fundido.
+    m.setRegions(0, {{0, 0, 20000, 0, 0}, {30000, 20000, 28000, 0, 0}});
+    o = referencia(m);
+    CHECK(m.length() == 58000);
+    CHECK(igualDesde(o, 0, base, 0, 20000 - kEdgeFade));
+    CHECK(igualDesde(o, 30000 + kEdgeFade, base, 20000 + kEdgeFade, 28000 - kEdgeFade));
+
+    // Sin pedazos la pista no suena ni cuenta para la duración.
+    m.setRegions(0, {});
+    CHECK(m.length() == 0 && m.regions(0).empty());
+}
+
+TEST(edicionFundidos) {
+    Mixer m(48000);
+    m.setLimiter(false);
+    m.setTrack(0, constTrack("fd.wav", 2, 48000, 0.5f, 0.5f));
+    m.setRegions(0, {{0, 0, 48000, 4800, 9600}});
+    std::vector<float> o = referencia(m);
+    CHECK_NEAR(o[2 * 2400], 0.25, 1e-3);        // a la mitad del fundido de entrada: sin²(45°)
+    CHECK_NEAR(o[2 * 24000], 0.5, 1e-6);        // en medio, completo
+    CHECK_NEAR(o[2 * (48000 - 4800)], 0.25, 1e-3);
+    CHECK(o[0] < 0.001f && o[2 * 47999] < 0.001f);
+    bool sube = true, baja = true;
+    for (int i = 1; i < 4800; ++i) sube = sube && o[2 * i] >= o[2 * (i - 1)];
+    for (int i = 48000 - 9600 + 1; i < 48000; ++i) baja = baja && o[2 * i] <= o[2 * (i - 1)];
+    CHECK(sube && baja);
+
+    // Cruce: el final de uno y el principio del otro, encimados con fundidos, suman 1.
+    m.setRegions(0, {{0, 0, 24000, 0, 4800}, {19200, 19200, 28800, 4800, 0}});
+    o = referencia(m);
+    float err = 0;
+    for (int i = 0; i < 48000; ++i) err = std::max(err, std::fabs(o[2 * i] - 0.5f));
+    CHECK(err < 1e-5f);
+
+    // Encimados sin fundidos: suenan los dos.
+    m.setRegions(0, {{0, 0, 48000, 0, 0}, {0, 0, 48000, 0, 0}});
+    o = referencia(m);
+    CHECK_NEAR(o[2 * 1000], 1.0, 1e-6);
+}
+
+TEST(edicionAjustaLoImposible) {
+    Mixer m(48000);
+    m.setTrack(2, constTrack("aj.wav", 1, 48000, 0.1f));
+    m.setRegions(2, {{-5, 47000, 99999, 99999, 99999}, {100, 60000, 10, 0, 0}, {100, 5, 0, 0, 0}});
+    std::vector<Region> r = m.regions(2);
+    CHECK(r.size() == 1);
+    CHECK(r[0].start == 0 && r[0].src == 47000 && r[0].length == 1000);
+    CHECK(r[0].fadeIn + r[0].fadeOut == 1000);
+    std::vector<Region> muchas(kMaxRegions + 10, Region{0, 0, 100, 0, 0});
+    m.setRegions(2, muchas);
+    CHECK(static_cast<int>(m.regions(2).size()) == kMaxRegions);
+    // Al quitar la pista y poner otra en su lugar, vuelve a ser el archivo completo.
+    m.takeTrack(2);
+    m.setTrack(2, constTrack("aj2.wav", 1, 4800, 0.1f));
+    r = m.regions(2);
+    CHECK(r.size() == 1 && r[0].length == 4800 && m.length() == 4800);
+}
+
+TEST(edicionSeExporta) {
+    std::unique_ptr<Mixer> live(mezclaDePrueba());
+    live->setRegions(0, {{0, 0, 10000, 0, 1000}, {30000, 10000, 20000, 500, 0}});
+    CHECK(live->length() == 50000);
+    const std::string p = tmpPath("edicion-f32.wav");
+    ExportFormat f;
+    f.bits = 32;
+    ExportResult r = exportMix(*live, crear(p), f, nullptr, nullptr);
+    CHECK(r.error.empty() && r.frames == 50000);
+    Clip c;
+    CHECK(readWav(std::fopen(p.c_str(), "rb"), c).empty());
+    CHECK(c.data == referencia(*live));
+}
+
 // ---------------------------------------------------------------- análisis
 TEST(fftBasica) {
     FFT fft(1024);
@@ -1151,6 +1262,15 @@ TEST(concurrencia) {
                                  static_cast<int>(rng() % kFilterTypes), 20.0f + rng() % 18000,
                                  static_cast<float>(rng() % 31) - 15, 0.2f + (rng() % 100) / 10.0f);
         if (rng() % 9 == 0) m.trackEq(slot)->setBypass(rng() % 2 == 0);
+        if (rng() % 3 == 0) {
+            std::vector<Region> rs;
+            for (int k = static_cast<int>(rng() % 5); k > 0; --k)
+                rs.push_back({static_cast<int64_t>(rng() % 60000), static_cast<int64_t>(rng() % 48000),
+                              static_cast<int64_t>(rng() % 48000), static_cast<int64_t>(rng() % 5000),
+                              static_cast<int64_t>(rng() % 5000)});
+            m.setRegions(slot, rs);
+            (void)m.regions(slot);
+        }
         if (rng() % 11 == 0) m.setNotch(rng() % 2 ? 50 : 0);
         m.setAnalysisSource(static_cast<int>(rng() % (kMaxTracks + 1)) - 1);
         {

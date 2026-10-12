@@ -72,6 +72,9 @@ class Pista(
     var autoGanancia by mutableStateOf(true)
     var eqVersion by mutableIntStateOf(0)  // cambia con cada ajuste: la curva se vuelve a dibujar
     val eqActivo: Boolean get() = !eqBypass && bandas.any { it.on }
+    // Edición: al agregarla es un solo pedazo con el archivo completo desde 0.
+    var pedazos by mutableStateOf(listOf(Pedazo(0, 0, cuadros)))
+    val editada: Boolean get() = pedazos != listOf(Pedazo(0, 0, cuadros))
     val segundos: Double get() = cuadros / Mesa.RATE
     val color: Int get() = (id - 1) % 12
 }
@@ -286,6 +289,7 @@ object Mesa {
     fun quitar(p: Pista) {
         if (eqAbierta == p) eqAbierta = null
         Analisis.olvidar(p)
+        Edicion.olvidar(p)
         if (!pistas.remove(p)) return
         if (pistas.isEmpty()) NativeAudio.stopTransport()
         scope.launch {
@@ -326,6 +330,23 @@ object Mesa {
         NativeAudio.setEqBypass(p.slot, p.eqBypass)
         NativeAudio.setEqAutoGain(p.slot, p.autoGanancia)
         p.bandas.forEach { enviarBanda(p, it) }
+    }
+
+    // ------------------------------------------------------------------ edición
+
+    /** Manda los pedazos al motor y se queda con lo que el motor aceptó. */
+    fun ponerPedazos(p: Pista, lista: List<Pedazo>) {
+        val arr = LongArray(lista.size * 5)
+        lista.forEachIndexed { i, pz ->
+            arr[5 * i] = pz.inicio; arr[5 * i + 1] = pz.origen; arr[5 * i + 2] = pz.largo
+            arr[5 * i + 3] = pz.fadeIn; arr[5 * i + 4] = pz.fadeOut
+        }
+        NativeAudio.setRegions(p.slot, arr)
+        val r = NativeAudio.regions(p.slot)
+        p.pedazos = (0 until r.size / 5).map { Pedazo(r[5 * it], r[5 * it + 1], r[5 * it + 2], r[5 * it + 3], r[5 * it + 4]) }
+        duracion = NativeAudio.durationSeconds()
+        posicion = NativeAudio.positionSeconds()
+        pedirGuardar()
     }
 
     // ------------------------------------------------------------------ EQ
@@ -582,6 +603,11 @@ object Mesa {
                 put("id", p.id); put("nombre", p.nombre); put("archivo", p.archivo); put("info", p.info)
                 put("volDb", p.volDb.toDouble()); put("pan", p.pan)
                 put("mute", p.mute); put("solo", p.solo); put("fase", p.fase)
+                if (p.editada) put("pedazos", JSONArray().apply {
+                    for (pz in p.pedazos) put(JSONArray().apply {
+                        put(pz.inicio); put(pz.origen); put(pz.largo); put(pz.fadeIn); put(pz.fadeOut)
+                    })
+                })
                 put("eq", JSONObject().apply {
                     put("bypass", p.eqBypass); put("auto", p.autoGanancia)
                     put("bandas", JSONArray().apply {
@@ -659,6 +685,13 @@ object Mesa {
                 siguienteId = max(siguienteId, p.id + 1)
                 pistas.add(p)
                 aplicar(p)
+                o.optJSONArray("pedazos")?.let { js ->
+                    val lista = (0 until js.length()).mapNotNull { k ->
+                        val a = js.optJSONArray(k) ?: return@mapNotNull null
+                        Pedazo(a.optLong(0), a.optLong(1), a.optLong(2), a.optLong(3), a.optLong(4))
+                    }
+                    ponerPedazos(p, lista)
+                }
             }
             limpiarHuerfanos()
             ocupada = false

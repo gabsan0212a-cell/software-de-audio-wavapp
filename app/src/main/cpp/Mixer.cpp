@@ -36,6 +36,12 @@ PanMatrix panMatrix(float pan, bool mono) {
     return {std::cos(pan * kHalfPi), 0.0f, std::sin(pan * kHalfPi), 1.0f};
 }
 
+// Curva de los fundidos: sin² (un fundido de salida y uno de entrada encimados suman 1).
+float fadeCurve(double x) {
+    const double s = std::sin(x * 1.57079632679489661923);
+    return static_cast<float>(s * s);
+}
+
 }  // namespace
 
 Mixer::Mixer(int sampleRate) : mSampleRate(sampleRate) {
@@ -83,6 +89,11 @@ bool Mixer::setTrack(int slot, std::unique_ptr<MappedAudio> audio) {
     s.removing.store(false);
     s.peakL.store(0.0f);
     s.peakR.store(0.0f);
+    // Nadie lee los pedazos de un espacio vacío: se cambian sin esperar.
+    Region whole;
+    whole.length = s.owned->frames();
+    s.ownedPieces = makePieces({whole}, s.owned->frames());
+    s.pieces.store(s.ownedPieces.get(), std::memory_order_release);
     s.gen.fetch_add(1, std::memory_order_relaxed);
     s.audio.store(s.owned.get(), std::memory_order_release);
     updateLength();
@@ -98,10 +109,13 @@ std::unique_ptr<MappedAudio> Mixer::takeTrack(int slot) {
     s.removing.store(true);
     if (mRolling.load()) std::this_thread::sleep_for(std::chrono::milliseconds(40));
     s.audio.store(nullptr);
+    s.pieces.store(nullptr);
     std::unique_ptr<MappedAudio> a = std::move(s.owned);
+    std::unique_ptr<PieceSet> ps = std::move(s.ownedPieces);
     if (!waitForAudioThread()) {
         // El hilo de audio no respondió: no liberamos para no arriesgar un cierre.
         a.release();
+        ps.release();
     }
     s.removing.store(false);
     updateLength();
@@ -123,8 +137,70 @@ bool Mixer::waitForAudioThread() {
 void Mixer::updateLength() {
     int64_t len = 0;
     for (const Slot &s : mSlots)
-        if (s.owned) len = std::max(len, s.owned->frames());
+        if (s.owned && s.ownedPieces) len = std::max(len, s.ownedPieces->end);
     mLength.store(len);
+}
+
+std::unique_ptr<Mixer::PieceSet> Mixer::makePieces(std::vector<Region> in, int64_t fileFrames) {
+    auto ps = std::make_unique<PieceSet>();
+    for (Region r : in) {
+        if (static_cast<int>(ps->regions.size()) >= kMaxRegions) break;
+        r.src = std::clamp<int64_t>(r.src, 0, fileFrames);
+        r.start = std::max<int64_t>(0, r.start);
+        r.length = std::min(r.length, fileFrames - r.src);
+        if (r.length <= 0) continue;
+        r.fadeIn = std::clamp<int64_t>(r.fadeIn, 0, r.length);
+        r.fadeOut = std::clamp<int64_t>(r.fadeOut, 0, r.length);
+        if (r.fadeIn + r.fadeOut > r.length) {  // se reparten lo que cabe
+            const double k = static_cast<double>(r.length) / (r.fadeIn + r.fadeOut);
+            r.fadeIn = static_cast<int64_t>(r.fadeIn * k);
+            r.fadeOut = r.length - r.fadeIn;
+        }
+        ps->regions.push_back(r);
+    }
+    // Un borde cortado lleva un fundido mínimo, salvo que el audio siga justo en otro pedazo
+    // (así cortar en dos sin mover nada suena igual que antes).
+    auto continues = [&](const Region &a, const Region &b) {  // b sigue a a, sin hueco
+        return a.start + a.length == b.start && a.src + a.length == b.src;
+    };
+    for (const Region &r : ps->regions) {
+        bool cutIn = r.src > 0, cutOut = r.src + r.length < fileFrames;
+        for (const Region &o : ps->regions) {
+            if (&o == &r) continue;
+            if (cutIn && continues(o, r)) cutIn = false;
+            if (cutOut && continues(r, o)) cutOut = false;
+        }
+        const int64_t edge = std::min<int64_t>(kEdgeFade, r.length / 2);
+        ps->pieces.push_back({r.start, r.src, r.length, std::max(r.fadeIn, cutIn ? edge : 0),
+                              std::max(r.fadeOut, cutOut ? edge : 0)});
+        ps->end = std::max(ps->end, r.start + r.length);
+    }
+    return ps;
+}
+
+void Mixer::publishPieces(Slot &s, std::unique_ptr<PieceSet> ps) {
+    std::unique_ptr<PieceSet> old = std::move(s.ownedPieces);
+    s.ownedPieces = std::move(ps);
+    s.pieces.store(s.ownedPieces.get(), std::memory_order_release);
+    // Un callback en curso podría estar leyendo los anteriores.
+    if (!waitForAudioThread()) old.release();
+}
+
+bool Mixer::setRegions(int slot, const std::vector<Region> &regions) {
+    if (slot < 0 || slot >= kMaxTracks) return false;
+    std::lock_guard<std::mutex> lk(mMutex);
+    Slot &s = mSlots[slot];
+    if (!s.owned) return false;
+    publishPieces(s, makePieces(regions, s.owned->frames()));
+    updateLength();
+    return true;
+}
+
+std::vector<Region> Mixer::regions(int slot) const {
+    if (slot < 0 || slot >= kMaxTracks) return {};
+    std::lock_guard<std::mutex> lk(mMutex);
+    const Slot &s = mSlots[slot];
+    return s.owned && s.ownedPieces ? s.ownedPieces->regions : std::vector<Region>();
 }
 
 void Mixer::setTrackGain(int slot, float gain) {
@@ -173,8 +249,15 @@ void Mixer::readMeters(float *out) {
 void Mixer::prefetch() {
     std::lock_guard<std::mutex> lk(mMutex);
     const int64_t pos = position();
-    for (const Slot &s : mSlots)
-        if (s.owned) s.owned->prefetch(pos, mSampleRate * 3);
+    const int64_t ahead = mSampleRate * 3;
+    for (const Slot &s : mSlots) {
+        if (!s.owned || !s.ownedPieces) continue;
+        // Lo que va a sonar en los próximos 3 s, en el lugar del archivo donde está.
+        for (const Piece &p : s.ownedPieces->pieces) {
+            const int64_t from = std::max(pos, p.start), to = std::min(pos + ahead, p.start + p.length);
+            if (from < to) s.owned->prefetch(p.src + (from - p.start), to - from);
+        }
+    }
 }
 
 void Mixer::process(float *out, int frames, int channels) {
@@ -256,7 +339,8 @@ void Mixer::renderBlock(int n) {
     for (int si = 0; si < kMaxTracks; ++si) {
         Slot &s = mSlots[si];
         const MappedAudio *a = s.audio.load(std::memory_order_acquire);
-        if (!a) continue;
+        const PieceSet *ps = s.pieces.load(std::memory_order_acquire);
+        if (!a || !ps) continue;
         const bool tap = si == tapSource;
         const float gainT = s.gain.load(std::memory_order_relaxed);
         const float panT = s.pan.load(std::memory_order_relaxed);
@@ -283,20 +367,8 @@ void Mixer::renderBlock(int n) {
         const PanMatrix dm = {(m1.a - m0.a) * inv, (m1.b - m0.b) * inv, (m1.c - m0.c) * inv, (m1.d - m0.d) * inv};
         s.panS = panEnd;
 
-        // Entrada del bloque (ceros pasado el final; el EQ puede seguir sonando un poco).
-        const float *data = a->data();
-        const int64_t frames = a->frames();
-        for (int i = 0; i < n; ++i) {
-            const int64_t f = mPos + i;
-            if (f >= frames) {
-                mInL[i] = mInR[i] = 0.0f;
-            } else if (mono) {
-                mInL[i] = data[f];
-            } else {
-                mInL[i] = data[2 * f];
-                mInR[i] = data[2 * f + 1];
-            }
-        }
+        // Entrada del bloque (ceros fuera de los pedazos; el EQ puede seguir sonando un poco).
+        readInput(*a, *ps, n);
         s.eq.process(mInL, mono ? nullptr : mInR, n);
 
         float pkL = 0.0f, pkR = 0.0f;
@@ -389,6 +461,31 @@ void Mixer::renderBlock(int n) {
     }
 }
 
+void Mixer::readInput(const MappedAudio &a, const PieceSet &ps, int n) {
+    const bool mono = a.channels() == 1;
+    std::fill(mInL, mInL + n, 0.0f);
+    if (!mono) std::fill(mInR, mInR + n, 0.0f);
+    const float *data = a.data();
+    const int64_t frames = a.frames();
+    for (const Piece &p : ps.pieces) {
+        const int64_t from = std::max(mPos, p.start);
+        const int64_t to = std::min({mPos + n, p.start + p.length, p.start + (frames - p.src)});
+        for (int64_t f = from; f < to; ++f) {
+            const int64_t k = f - p.start, src = p.src + k, rest = p.length - k;
+            float g = 1.0f;
+            if (k < p.fadeIn) g *= fadeCurve((k + 0.5) / p.fadeIn);
+            if (rest <= p.fadeOut) g *= fadeCurve((rest - 0.5) / p.fadeOut);
+            const int i = static_cast<int>(f - mPos);
+            if (mono) {
+                mInL[i] += g * data[src];
+            } else {
+                mInL[i] += g * data[2 * src];
+                mInR[i] += g * data[2 * src + 1];
+            }
+        }
+    }
+}
+
 void Mixer::applyNotch(int n) {
     const int hz = mNotchHz.load(std::memory_order_relaxed);
     if (hz != mNotchSeen) {
@@ -448,6 +545,7 @@ bool Mixer::cloneInto(Mixer &dst, std::string &error) const {
             if (error.empty()) error = "No se pudo preparar la pista " + std::to_string(i + 1);
             return false;
         }
+        if (s.ownedPieces) dst.setRegions(i, s.ownedPieces->regions);
         Slot &d = dst.mSlots[i];
         d.gain.store(s.gain.load());
         d.pan.store(s.pan.load());

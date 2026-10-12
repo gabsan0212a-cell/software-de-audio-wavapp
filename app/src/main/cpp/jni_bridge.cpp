@@ -75,6 +75,32 @@ JNI(jfloatArray, overview)(JNIEnv *env, jobject, jint slot, jint columns) {
     return arr;
 }
 
+JNI(jfloatArray, overviewRange)(JNIEnv *env, jobject, jint slot, jint columns, jlong from, jlong to) {
+    std::vector<float> v = gEngine.overview(slot, columns, from, to);
+    if (v.empty()) return nullptr;
+    jfloatArray arr = env->NewFloatArray(static_cast<jsize>(v.size()));
+    env->SetFloatArrayRegion(arr, 0, static_cast<jsize>(v.size()), v.data());
+    return arr;
+}
+
+// ---------- Edición: pedazos como [inicio, origen, largo, fundido entrada, fundido salida] seguidos.
+JNI(jboolean, setRegions)(JNIEnv *env, jobject, jint slot, jlongArray data) {
+    const jsize n = data ? env->GetArrayLength(data) : 0;
+    std::vector<jlong> v(static_cast<size_t>(n));
+    if (n > 0) env->GetLongArrayRegion(data, 0, n, v.data());
+    std::vector<Region> rs;
+    for (jsize i = 0; i + 4 < n; i += 5) rs.push_back({v[i], v[i + 1], v[i + 2], v[i + 3], v[i + 4]});
+    return gEngine.mixer().setRegions(slot, rs) ? JNI_TRUE : JNI_FALSE;
+}
+JNI(jlongArray, regions)(JNIEnv *env, jobject, jint slot) {
+    const std::vector<Region> rs = gEngine.mixer().regions(slot);
+    std::vector<jlong> v;
+    for (const Region &r : rs) v.insert(v.end(), {r.start, r.src, r.length, r.fadeIn, r.fadeOut});
+    jlongArray arr = env->NewLongArray(static_cast<jsize>(v.size()));
+    env->SetLongArrayRegion(arr, 0, static_cast<jsize>(v.size()), v.data());
+    return arr;
+}
+
 JNI(void, setTrackGain)(JNIEnv *, jobject, jint slot, jfloat gain) { gEngine.mixer().setTrackGain(slot, gain); }
 JNI(void, setTrackPan)(JNIEnv *, jobject, jint slot, jfloat pan) { gEngine.mixer().setTrackPan(slot, pan); }
 JNI(void, setTrackMute)(JNIEnv *, jobject, jint slot, jboolean on) { gEngine.mixer().setTrackMute(slot, on); }

@@ -26,7 +26,8 @@ El APK solo se publica si pasan todas las pruebas.
 - [x] 3. Exportar la mezcla a WAV 16/24 bits (con dither) o 32 bits float, a 48 o 44.1 kHz
 - [x] 4. Análisis como el prototipo: goniómetro, fase y paneo, espectro con detección de zumbido
       y notch 50/60 Hz, espectrograma; espectro de fondo en el EQ
-- [ ] 5. Edición
+- [x] 5. Edición: mover pistas en el tiempo, recortar, fundidos de entrada/salida, cortar en
+      pedazos, borrar, imán, zoom y deshacer/rehacer
 - [ ] 6. Grabación
 - [ ] 7. Guardar/abrir proyectos (por ahora la mezcla actual se guarda sola)
 
@@ -38,12 +39,14 @@ Sin plugins VST en Android.
   - `Resampler`: convierte a 48 kHz al importar (filtro sinc, ~120 dB de precisión).
   - `MappedAudio`: las pistas se guardan como WAV float a 48 kHz y se mapean en memoria
     (no llenan la RAM; el sistema lee del disco lo que va sonando).
-  - `Mixer` + `Limiter`: la mezcla en tiempo real, igual que la cadena del prototipo.
+  - `Mixer` + `Limiter`: la mezcla en tiempo real, igual que la cadena del prototipo. Cada
+    pista suena como una lista de pedazos (`Region`) de su archivo, con fundidos.
   - `Equalizer`: EQ por pista (filtros biquad como Web Audio); solo procesa las bandas que existen.
   - `Exporter`: renderiza la mezcla fuera de tiempo real con una copia del mezclador.
   - `Analyzer`: FFT, espectro como AnalyserNode, fase, zumbido y espectrograma.
   - `AudioEngine`: salida con Oboe a 48 kHz; `jni_bridge.cpp`: puente con Kotlin.
-- `app/src/main/java/.../`: `Mesa.kt` (estado, importación, sesión), `Decodificador.kt`
+- `app/src/main/java/.../`: `Mesa.kt` (estado, importación, sesión), `Edicion.kt` (pedazos,
+  deshacer/rehacer), `Decodificador.kt`
   (formatos comprimidos → WAV con MediaCodec) y `ui/` (pantalla en Compose).
 
 ## Pruebas

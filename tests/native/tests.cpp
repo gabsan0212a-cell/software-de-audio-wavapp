@@ -1026,6 +1026,35 @@ TEST(analizadorZumbido) {
     CHECK(an.hum.count >= 3);
 }
 
+TEST(analizadorNoConfundeUnBajoConZumbido) {
+    // Un bajo en La (55 Hz) con armónicos está cerca de 50 Hz, pero no es zumbido.
+    Analyzer an(48000);
+    std::vector<float> l, r;
+    senal(l, r, [](int i) {
+        double v = 0;
+        for (int k = 1; k <= 4; ++k) v += 0.2 / k * std::sin(2 * M_PI * 55 * k * i / 48000.0);
+        return std::make_pair(v, v);
+    });
+    for (int k = 0; k < 30; ++k) an.updateFrom(l.data(), r.data());
+    CHECK(an.hum.freq == 0);
+}
+
+TEST(analizadorIgnoraLaFuenteAnterior) {
+    Mixer m(48000);
+    m.setLimiter(false);
+    m.setTrack(0, seno("fa.wav", 1, 480000, 1000, 0.5));  // suena fuerte en la mezcla
+    m.setTrack(1, seno("fb.wav", 1, 480000, 300, 0.001)); // casi nada
+    m.play();
+    run(m, 48000);
+    Analyzer an(48000);
+    m.setAnalysisSource(1);
+    an.reset(m);
+    run(m, 2048);  // muy poco audio nuevo: el resto de la ventana es de antes
+    an.update(m);
+    const int b1k = static_cast<int>(std::lround(1000 / an.binHz()));
+    CHECK(an.spectrumDb()[b1k] < -100);  // el tono de 1 kHz de la mezcla no se cuela
+}
+
 TEST(notchQuitaElZumbido) {
     Mixer m(48000);
     m.setLimiter(false);

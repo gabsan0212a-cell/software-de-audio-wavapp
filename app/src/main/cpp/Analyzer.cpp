@@ -83,10 +83,21 @@ void Analyzer::reset() {
     mLastWrite = ~0ull;
 }
 
+void Analyzer::reset(const Mixer &m) {
+    reset();
+    float l, r;
+    mIgnoreBefore = m.readTap(&l, &r, 0);
+}
+
 bool Analyzer::update(const Mixer &m) {
     const uint64_t w = m.readTap(mL.data(), mR.data(), kSpecSize);
     if (w == mLastWrite) return false;
     mLastWrite = w;
+    // Lo que llegó antes del último cambio de fuente no cuenta.
+    for (int i = 0; i < kSpecSize; ++i) {
+        if (static_cast<int64_t>(w) - kSpecSize + i >= static_cast<int64_t>(mIgnoreBefore)) break;
+        mL[i] = mR[i] = 0.0f;
+    }
     analyze();
     return true;
 }
@@ -158,6 +169,16 @@ void Analyzer::detectHum() {
         const int w = std::max(1, static_cast<int>(std::lround(3 / hz)));
         double pk = -200;
         for (int i = std::max(0, c - w); i <= std::min(kSpecBins - 1, c + w); ++i) pk = std::max(pk, (double)mSpecDb[i]);
+        // Un zumbido real cae justo en 50/60 Hz: si el pico más cercano está corrido (p. ej. un
+        // bajo tocando La de 55 Hz), no cuenta. (Mejora sobre el prototipo.)
+        int arg = c;
+        const int ancho = static_cast<int>(std::lround(9 / hz));
+        for (int i = std::max(0, c - ancho); i <= std::min(kSpecBins - 1, c + ancho); ++i)
+            if (mSpecDb[i] > mSpecDb[arg]) arg = i;
+        if (std::fabs(arg * hz - f) > 4.5) {
+            lvl = pk;
+            return -100.0;
+        }
         std::vector<float> nb;
         const double rangos[2][2] = {{f - 30, f - 12}, {f + 12, f + 30}};
         for (const auto &rg : rangos)

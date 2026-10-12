@@ -44,6 +44,9 @@ public:
     // Igual, con señal propia (para pruebas): kSpecSize cuadros, el más reciente al final.
     void updateFrom(const float *l, const float *r);
     void reset();
+    // Igual, y además ignora el audio que el mezclador ya había mandado (al cambiar de fuente,
+    // para que no se cuele lo anterior).
+    void reset(const Mixer &m);
 
     const float *spectrumDb() const { return mSpecDb.data(); }  // kSpecBins valores
     const float *fanDb() const { return mFanE.data(); }         // energía L+R por bin (dB)
@@ -62,6 +65,7 @@ private:
 
     int mRate;
     uint64_t mLastWrite = ~0ull;
+    uint64_t mIgnoreBefore = 0;
     FFT mSpecFft, mFanFft;
     std::vector<double> mSpecWin, mFanWin, mRe, mIm;
     std::vector<float> mL, mR;

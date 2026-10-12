@@ -135,10 +135,10 @@ JNI(void, setNotch)(JNIEnv *, jobject, jint hz) { gEngine.mixer().setNotch(hz); 
 JNI(void, setAnalysisSource)(JNIEnv *, jobject, jint slot) {
     if (gEngine.mixer().analysisSource() != slot) {
         gEngine.mixer().setAnalysisSource(slot);
-        gEngine.analyzer().reset();
+        gEngine.analyzer().reset(gEngine.mixer());
     }
 }
-JNI(void, analysisReset)(JNIEnv *, jobject) { gEngine.analyzer().reset(); }
+JNI(void, analysisReset)(JNIEnv *, jobject) { gEngine.analyzer().reset(gEngine.mixer()); }
 // Llena los arreglos y devuelve true si llegó audio nuevo.
 // espectro[8192] dB · fanE[1024] dB · fanP[1024] · tiempo[4096] (L y luego R) ·
 // stats[8] = picoL, picoR, rmsL, rmsR, correlación, zumbido Hz, armónicos, dB sobre el piso.

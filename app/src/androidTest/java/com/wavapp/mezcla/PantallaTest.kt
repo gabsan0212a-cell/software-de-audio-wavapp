@@ -10,8 +10,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.isRoot
-import androidx.compose.ui.test.onLast
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -115,7 +114,8 @@ class PantallaTest {
         regla.onNodeWithText("32 bits float").performClick()
         regla.waitUntil(2_000) { Mesa.exportBits == 32 }
         regla.onNodeWithText("24 bits").performClick()
-        captura("9-exportar")
+        regla.waitForIdle()
+        capturaPantalla("9-exportar")
         regla.onNodeWithText("Cancelar").performClick()
 
         if (Mesa.reproduciendo) regla.onNodeWithText("❚❚ Pausar").performClick()
@@ -132,14 +132,27 @@ class PantallaTest {
         regla.waitForIdle()
     }
 
+    /** Captura de la pantalla completa (incluye diálogos), con UiAutomation. */
+    private fun capturaPantalla(nombre: String) {
+        val dir = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir") ?: return
+        val modo = regla.activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        val prefijo = if (modo == Configuration.UI_MODE_NIGHT_YES) "oscuro-" else "claro-"
+        try {
+            val bmp = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot() ?: return
+            File(dir).mkdirs()
+            FileOutputStream(File(dir, "$prefijo$nombre.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        } catch (e: Exception) {
+            println("No se pudo guardar la captura $nombre: $e")
+        }
+    }
+
     /** Guarda una captura donde Gradle la recoge (build/outputs/connected_android_test_additional_output). */
     private fun captura(nombre: String) {
         val dir = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir") ?: return
         val modo = regla.activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         val prefijo = if (modo == Configuration.UI_MODE_NIGHT_YES) "oscuro-" else "claro-"
         try {
-            // La última raíz es la ventana de encima (p. ej. un diálogo).
-            val bmp = regla.onAllNodes(isRoot()).onLast().captureToImage().asAndroidBitmap()
+            val bmp = regla.onRoot().captureToImage().asAndroidBitmap()
             File(dir).mkdirs()
             FileOutputStream(File(dir, "$prefijo$nombre.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
         } catch (e: Exception) {

@@ -91,13 +91,15 @@ class PantallaTest {
 
         // Análisis de la mezcla mientras suena (la canción de prueba dura 12 s: desde el inicio).
         regla.runOnUiThread {
-            Mesa.saltar(0.0)
-            if (!Nucleo.isPlaying()) Mesa.reproducirPausar()
+            Nucleo.seek(0.0)
+            Nucleo.play()
         }
         regla.onNodeWithText("Análisis").performClick()
         regla.waitUntil(2_000) { Analisis.abierto }
-        avanzarMedidores()
-        regla.waitUntil(5_000) { Analisis.activo && Analisis.fuerte }
+        avanzarHasta(8_000, {
+            "el análisis no arrancó: sonando=${Nucleo.isPlaying()}, posición=${Nucleo.positionSeconds()}, " +
+                "salida=${Nucleo.outputInfo().joinToString()}, activo=${Analisis.activo}, fuerte=${Analisis.fuerte}"
+        }) { Analisis.activo && Analisis.fuerte }
         avanzarMedidores()
         captura("7-analisis")
         regla.onNodeWithText("60 Hz").performScrollTo().performClick()
@@ -165,6 +167,18 @@ class PantallaTest {
         if (Mesa.reproduciendo) regla.onNodeWithText("❚❚ Pausar").performClick()
         regla.waitUntil(5_000) { !Mesa.reproduciendo }
         regla.onNodeWithText("■ Detener").performClick()
+    }
+
+    /** Avanza cuadros a mano (el bucle de pantalla está pausado en las pruebas) hasta que se cumpla [cond]. */
+    private fun avanzarHasta(ms: Long, mensaje: () -> String, cond: () -> Boolean) {
+        val fin = System.currentTimeMillis() + ms
+        while (System.currentTimeMillis() < fin) {
+            regla.runOnUiThread { Mesa.tick(System.currentTimeMillis()) }
+            if (cond()) return
+            Thread.sleep(33)
+        }
+        regla.waitForIdle()
+        assertTrue(mensaje(), cond())
     }
 
     /** En las pruebas el bucle de cuadros está pausado: lo avanzamos a mano ~1 s. */

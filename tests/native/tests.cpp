@@ -622,6 +622,24 @@ TEST(transporte) {
     CHECK(!m.isPlaying());
 }
 
+TEST(saltoJustoAlFinalNoDetiene) {
+    Mixer m(48000);
+    m.setLimiter(false);
+    m.setTrack(0, constTrack("fin.wav", 1, 48000, 0.1f));  // 1 s
+    m.seek(46000);
+    m.play();
+    run(m, 1792, 64);  // quedan 208 cuadros: menos que la rampa del salto (256)
+    CHECK(m.isPlaying());
+    m.seek(0);
+    run(m, 512, 64);
+    CHECK(m.isPlaying());  // siguió desde el inicio
+    CHECK(m.position() > 0 && m.position() < 1000);
+    // Sin salto pendiente, al llegar al final se detiene y vuelve al inicio.
+    m.seek(47000);
+    run(m, 2048, 64);
+    CHECK(!m.isPlaying() && m.position() == 0);
+}
+
 TEST(pistaMasCortaSeCalla) {
     Mixer m(48000);
     m.setLimiter(false);

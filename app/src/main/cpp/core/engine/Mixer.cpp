@@ -453,11 +453,17 @@ void Mixer::renderBlock(int n) {
     mReduction.store(limiterOn ? mLimiter.reductionDb() : 0.0f, std::memory_order_relaxed);
 
     mPos += n;
-    if (mPos >= length) {  // fin de la canción: se detiene y vuelve al inicio
-        bool expected = true;
-        mPlaying.compare_exchange_strong(expected, false);
-        mPos = 0;
-        mTransport = 0.0f;
+    if (mPos >= length) {
+        if (mSeekTarget.load() >= 0) {
+            // Llegó al final con un salto pendiente (p. ej. "al inicio" justo antes de que
+            // termine): no se detiene; espera en silencio a que el salto se aplique.
+            mPos = length;
+        } else {  // fin de la canción: se detiene y vuelve al inicio
+            bool expected = true;
+            mPlaying.compare_exchange_strong(expected, false);
+            mPos = 0;
+            mTransport = 0.0f;
+        }
     }
 }
 

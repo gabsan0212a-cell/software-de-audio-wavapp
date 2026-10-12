@@ -1,5 +1,6 @@
 package com.wavapp.mezcla
 
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.assertIsDisplayed
@@ -11,6 +12,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -40,18 +42,19 @@ class PantallaTest {
         avanzarMedidores()
         captura("2-reproduciendo")
 
+        regla.onNode(hasScrollAction()).performScrollToNode(hasText("MASTER"))
+        avanzarMedidores()
+        captura("3-master")
+
         // Mute y solo en la primera pista.
+        regla.onNode(hasScrollAction()).performScrollToIndex(0)
         val id = Mesa.pistas.first().id
         regla.onNodeWithContentDescription("Mute pista $id").performClick()
         regla.waitUntil(2_000) { Mesa.pistas.first().mute }
         regla.onNodeWithContentDescription("Solo pista $id").performClick()
         regla.waitUntil(2_000) { Mesa.pistas.first().solo }
         avanzarMedidores()
-        captura("3-mute-solo")
-
-        regla.onNode(hasScrollAction()).performScrollToNode(hasText("MASTER"))
-        avanzarMedidores()
-        captura("4-master")
+        captura("4-mute-solo")
 
         regla.onNodeWithText("❚❚ Pausar").performClick()
         regla.waitUntil(5_000) { !Mesa.reproduciendo }
@@ -70,10 +73,12 @@ class PantallaTest {
     /** Guarda una captura donde Gradle la recoge (build/outputs/connected_android_test_additional_output). */
     private fun captura(nombre: String) {
         val dir = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir") ?: return
+        val modo = regla.activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+        val prefijo = if (modo == Configuration.UI_MODE_NIGHT_YES) "oscuro-" else "claro-"
         try {
             val bmp = regla.onRoot().captureToImage().asAndroidBitmap()
             File(dir).mkdirs()
-            FileOutputStream(File(dir, "$nombre.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            FileOutputStream(File(dir, "$prefijo$nombre.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
         } catch (e: Exception) {
             println("No se pudo guardar la captura $nombre: $e")
         }

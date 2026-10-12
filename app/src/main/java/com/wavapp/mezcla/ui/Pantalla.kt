@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,6 +42,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -54,7 +54,7 @@ import com.wavapp.mezcla.Mesa
 import com.wavapp.mezcla.Pista
 import java.util.Locale
 import kotlin.math.abs
-import kotlin.math.roundToInt
+import kotlin.math.max
 
 private fun tiempo(s: Double): String {
     val m = (s / 60).toInt()
@@ -138,21 +138,38 @@ private fun Encabezado(alAgregar: () -> Unit) {
     }
 }
 
+/** Botones a la izquierda y tiempo a la derecha; si no cabe, el tiempo baja completo al renglón siguiente. */
 @Composable
 private fun Transporte() {
-    val p = LocalPaleta.current
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Boton(
-            if (Mesa.reproduciendo) "❚❚ Pausar" else "▶ Reproducir",
-            alTocar = { Mesa.reproducirPausar() }, estilo = Estilo.Reproducir,
-        )
-        Boton("■ Detener", alTocar = { Mesa.detener() })
-        Spacer(Modifier.weight(1f))
-        TextoTiempo()
+    Layout(
+        content = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Boton(
+                    if (Mesa.reproduciendo) "❚❚ Pausar" else "▶ Reproducir",
+                    alTocar = { Mesa.reproducirPausar() }, estilo = Estilo.Reproducir,
+                )
+                Boton("■ Detener", alTocar = { Mesa.detener() })
+            }
+            TextoTiempo()
+        },
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+    ) { medibles, restricciones ->
+        val libre = restricciones.copy(minWidth = 0, minHeight = 0)
+        val botones = medibles[0].measure(libre)
+        val tiempo = medibles[1].measure(libre)
+        val ancho = restricciones.maxWidth
+        val sep = 8.dp.roundToPx()
+        val unaLinea = botones.width + sep + tiempo.width <= ancho
+        val alto = if (unaLinea) max(botones.height, tiempo.height) else botones.height + sep / 2 + tiempo.height
+        layout(ancho, alto) {
+            if (unaLinea) {
+                botones.placeRelative(0, (alto - botones.height) / 2)
+                tiempo.placeRelative(ancho - tiempo.width, (alto - tiempo.height) / 2)
+            } else {
+                botones.placeRelative(0, 0)
+                tiempo.placeRelative(ancho - tiempo.width, botones.height + sep / 2)
+            }
+        }
     }
 }
 
@@ -160,7 +177,7 @@ private fun Transporte() {
 private fun TextoTiempo() {
     Text(
         "${tiempo(Mesa.posicion)} / ${tiempo(Mesa.duracion)}",
-        color = LocalPaleta.current.fg, fontFamily = Mono, fontSize = 13.sp, textAlign = TextAlign.End,
+        color = LocalPaleta.current.fg, fontFamily = Mono, fontSize = 13.sp, maxLines = 1, softWrap = false,
     )
 }
 

@@ -28,6 +28,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.Role
@@ -249,7 +250,10 @@ fun FaderMaster(db: Float, alCambiar: (Float) -> Unit, modifier: Modifier = Modi
         Canvas(Modifier.matchParentSize()) {
             val cap = capAlto.toPx()
             val xRiel = 48.dp.toPx()
-            drawRect(p.bg, Offset(xRiel - 2.dp.toPx(), 9.dp.toPx()), Size(4.dp.toPx(), size.height - 18.dp.toPx()))
+            val riel = Offset(xRiel - 2.dp.toPx(), 9.dp.toPx())
+            val rielTam = Size(4.dp.toPx(), size.height - 18.dp.toPx())
+            drawRect(p.bg, riel, rielTam)
+            drawRect(p.linea, riel, rielTam, style = Stroke(density))
             val y = uDesdeDb(db) * (size.height - cap)
             val xCap = 31.dp.toPx()
             val anchoCap = 34.dp.toPx()

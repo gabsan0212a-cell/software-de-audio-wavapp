@@ -15,6 +15,7 @@
 #include <thread>
 #include <vector>
 
+#include "Equalizer.h"
 #include "Importer.h"
 #include "Limiter.h"
 #include "MappedAudio.h"
@@ -177,6 +178,40 @@ static std::unique_ptr<MappedAudio> constTrack(const std::string &name, int chan
     auto a = MappedAudio::open(p, err);
     if (!a) std::printf("  no se pudo abrir %s: %s\n", p.c_str(), err.c_str());
     return a;
+}
+
+// Escribe una pista interna con muestras gen(cuadro, canal).
+static std::unique_ptr<MappedAudio> genTrack(const std::string &name, int channels, int64_t frames,
+                                             const std::function<float(int64_t, int)> &gen) {
+    const std::string p = tmpPath(name);
+    WavWriter w;
+    w.open(p, channels, 48000);
+    std::vector<float> buf(static_cast<size_t>(frames) * channels);
+    for (int64_t f = 0; f < frames; ++f)
+        for (int c = 0; c < channels; ++c) buf[f * channels + c] = gen(f, c);
+    w.write(buf.data(), static_cast<size_t>(frames));
+    w.close();
+    std::string err;
+    return MappedAudio::open(p, err);
+}
+
+// Corre el mezclador y devuelve el pico de salida (L, R) de los últimos `medir` cuadros.
+static std::pair<float, float> peakRun(Mixer &m, int frames, int medir) {
+    std::vector<float> out(192 * 2);
+    float pl = 0, pr = 0;
+    int done = 0;
+    while (done < frames) {
+        const int n = std::min(192, frames - done);
+        m.process(out.data(), n, 2);
+        for (int i = 0; i < n; ++i) {
+            if (done + i >= frames - medir) {
+                pl = std::max(pl, std::fabs(out[2 * i]));
+                pr = std::max(pr, std::fabs(out[2 * i + 1]));
+            }
+        }
+        done += n;
+    }
+    return {pl, pr};
 }
 
 // Corre el mezclador `frames` cuadros y devuelve el último cuadro L/R.
@@ -657,6 +692,121 @@ TEST(salidaMonoYMultiCanal) {
     CHECK_NEAR(out[191], 0.3, 1e-4);
 }
 
+// ---------------------------------------------------------------- EQ
+TEST(eqCurvasComoWebAudio) {
+    const double sr = 48000;
+    Biquad c = designBiquad(kPeaking, 1000, 6, 1.4, sr);
+    CHECK_NEAR(biquadMagnitudeDb(c, 1000, sr), 6.0, 0.01);
+    CHECK_NEAR(biquadMagnitudeDb(c, 20, sr), 0.0, 0.05);
+    CHECK_NEAR(biquadMagnitudeDb(c, 15000, sr), 0.0, 0.1);
+    c = designBiquad(kPeaking, 1000, -9, 4, sr);
+    CHECK_NEAR(biquadMagnitudeDb(c, 1000, sr), -9.0, 0.01);
+
+    c = designBiquad(kLowShelf, 100, 6, 1, sr);
+    CHECK_NEAR(biquadMagnitudeDb(c, 20, sr), 6.0, 0.4);
+    CHECK_NEAR(biquadMagnitudeDb(c, 100, sr), 3.0, 0.05);  // a la mitad en su frecuencia
+    CHECK_NEAR(biquadMagnitudeDb(c, 10000, sr), 0.0, 0.05);
+    c = designBiquad(kHighShelf, 8000, -6, 1, sr);
+    CHECK_NEAR(biquadMagnitudeDb(c, 20000, sr), -6.0, 0.5);
+    CHECK_NEAR(biquadMagnitudeDb(c, 8000, sr), -3.0, 0.05);
+    CHECK_NEAR(biquadMagnitudeDb(c, 100, sr), 0.0, 0.05);
+
+    c = designBiquad(kHighPass, 1000, 0, std::sqrt(0.5), sr);
+    CHECK_NEAR(biquadMagnitudeDb(c, 1000, sr), -3.01, 0.02);
+    CHECK(biquadMagnitudeDb(c, 100, sr) < -38);  // 12 dB por octava
+    CHECK_NEAR(biquadMagnitudeDb(c, 10000, sr), 0.0, 0.05);
+    c = designBiquad(kLowPass, 1000, 0, std::sqrt(0.5), sr);
+    CHECK_NEAR(biquadMagnitudeDb(c, 1000, sr), -3.01, 0.02);
+    CHECK(biquadMagnitudeDb(c, 10000, sr) < -38);
+    c = designBiquad(kNotch, 60, 0, 30, sr);
+    CHECK(biquadMagnitudeDb(c, 60, sr) < -60);
+    CHECK_NEAR(biquadMagnitudeDb(c, 120, sr), 0.0, 0.1);
+    CHECK(filterHasGain(kPeaking) && filterHasGain(kHighShelf) && !filterHasGain(kHighPass));
+}
+
+TEST(eqAutoGananciaYRespuesta) {
+    Equalizer e;
+    e.setSampleRate(48000);
+    CHECK(e.trimDb() == 0.0f);
+    e.setBand(3, true, true, kPeaking, 1000, 6, 1.4f);
+    CHECK_NEAR(e.trimDb(), -6.0, 0.05);
+    float f[3] = {100, 1000, 10000}, db[3];
+    e.response(-1, f, db, 3);
+    CHECK_NEAR(db[1], 6.0, 0.01);
+    e.setBand(5, true, true, kPeaking, 100, -12, 1.4f);
+    e.response(-1, f, db, 3);
+    CHECK(db[0] < -11.5);  // se suman
+    CHECK_NEAR(e.trimDb(), -6.0, 0.1);
+    e.response(5, f, db, 3);  // una sola banda
+    CHECK_NEAR(db[1], 0.0, 0.2);
+    e.setBand(3, true, false, kPeaking, 1000, 6, 1.4f);  // apagada
+    CHECK_NEAR(e.trimDb(), 0.0, 1e-6);
+    e.setBand(3, true, true, kPeaking, 1000, 6, 1.4f);
+    e.setAutoGain(false);
+    CHECK(e.trimDb() == 0.0f);
+    e.setAutoGain(true);
+    e.setBypass(true);
+    CHECK(e.trimDb() == 0.0f);
+    e.response(-1, f, db, 3);
+    CHECK(db[0] == 0.0f && db[1] == 0.0f);
+    e.clear();
+    e.response(-1, f, db, 3);
+    CHECK(db[1] == 0.0f && e.trimDb() == 0.0f);
+}
+
+TEST(eqSuenaComoLaCurva) {
+    Mixer m(48000);
+    m.setLimiter(false);
+    // Tono de 1 kHz a 0.25 en estéreo y en mono.
+    m.setTrack(0, genTrack("eq1k.wav", 2, 480000, [](int64_t f, int) {
+                   return static_cast<float>(0.25 * std::sin(2 * M_PI * 1000 * f / 48000.0));
+               }));
+    m.play();
+    auto [l, r] = peakRun(m, 24000, 4800);
+    CHECK_NEAR(l, 0.25, 0.002);
+    Equalizer *eq = m.trackEq(0);
+    eq->setAutoGain(false);
+    eq->setBand(0, true, true, kPeaking, 1000, 6, 1.4f);
+    std::tie(l, r) = peakRun(m, 24000, 4800);
+    CHECK_NEAR(l, 0.25 * std::pow(10, 6 / 20.0), 0.004);
+    CHECK_NEAR(r, 0.25 * std::pow(10, 6 / 20.0), 0.004);
+    eq->setAutoGain(true);  // la compensación lo regresa al nivel original
+    std::tie(l, r) = peakRun(m, 24000, 4800);
+    CHECK_NEAR(l, 0.25, 0.003);
+    eq->setBand(0, true, true, kHighPass, 8000, 0, 0.7071f);  // pasa-altos: el tono casi desaparece
+    std::tie(l, r) = peakRun(m, 24000, 4800);
+    CHECK(l < 0.25 * 0.02);
+    eq->setBypass(true);
+    std::tie(l, r) = peakRun(m, 24000, 4800);
+    CHECK_NEAR(l, 0.25, 0.002);
+}
+
+TEST(eqSinBandasNoTocaElAudio) {
+    // Sin bandas (o en bypass) el resultado es idéntico bit a bit a no tener EQ.
+    auto mk = [](const char *n) {
+        return genTrack(n, 1, 48000, [](int64_t f, int) {
+            return static_cast<float>(0.3 * std::sin(2 * M_PI * 440 * f / 48000.0));
+        });
+    };
+    Mixer a(48000), b(48000);
+    a.setLimiter(false);
+    b.setLimiter(false);
+    a.setTrack(0, mk("nb1.wav"));
+    b.setTrack(0, mk("nb2.wav"));
+    b.trackEq(0)->setBand(2, true, true, kPeaking, 440, 12, 2);
+    b.trackEq(0)->setBypass(true);
+    a.play();
+    b.play();
+    std::vector<float> oa(384), ob(384);
+    bool igual = true;
+    for (int i = 0; i < 100; ++i) {
+        a.process(oa.data(), 192, 2);
+        b.process(ob.data(), 192, 2);
+        igual = igual && oa == ob;
+    }
+    CHECK(igual);
+}
+
 TEST(concurrencia) {
     // Un hilo hace de audio; otro agrega y quita pistas y mueve controles sin parar.
     Mixer m(48000);
@@ -687,6 +837,10 @@ TEST(concurrencia) {
         m.setTrackGain(slot, (rng() % 100) / 50.0f);
         m.setTrackPan(slot, ((rng() % 200) - 100) / 100.0f);
         m.setTrackSolo(slot, rng() % 5 == 0);
+        m.trackEq(slot)->setBand(static_cast<int>(rng() % kMaxBands), rng() % 4 != 0, rng() % 5 != 0,
+                                 static_cast<int>(rng() % kFilterTypes), 20.0f + rng() % 18000,
+                                 static_cast<float>(rng() % 31) - 15, 0.2f + (rng() % 100) / 10.0f);
+        if (rng() % 9 == 0) m.trackEq(slot)->setBypass(rng() % 2 == 0);
         if (rng() % 3 == 0) m.seek(rng() % 48000);
         if (rng() % 4 == 0) m.play();
         if (rng() % 7 == 0) m.pause();

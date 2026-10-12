@@ -91,6 +91,7 @@ fun PantallaMesa() {
     }
     var aQuitar by remember { mutableStateOf<Pista?>(null) }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(p.bg).safeDrawingPadding()) {
         Encabezado(alAgregar = { elegir.launch(arrayOf("audio/*")) })
         Transporte()
@@ -110,6 +111,9 @@ fun PantallaMesa() {
             }
             item { PanelMaster() }
         }
+    }
+    // El EQ de una pista se abre encima de todo, a pantalla completa.
+    Mesa.eqAbierta?.let { pista -> PanelEq(pista, alCerrar = { Mesa.eqAbierta = null }) }
     }
 
     aQuitar?.let { pista ->
@@ -231,6 +235,8 @@ private fun TarjetaPista(pista: Pista, alQuitar: () -> Unit) {
                 tamano = 12.sp, relleno = 9.dp, descripcion = "Solo pista ${pista.id}")
             Boton("Ø", { Mesa.alternarFase(pista) }, presionado = pista.fase,
                 tamano = 12.sp, relleno = 9.dp, descripcion = "Invertir polaridad pista ${pista.id}")
+            Boton("EQ", { Mesa.eqAbierta = pista }, presionado = pista.eqActivo,
+                tamano = 12.sp, relleno = 8.dp, descripcion = "EQ pista ${pista.id}")
             MedidorPista(pista.medidor, Modifier.weight(1f).height(16.dp))
         }
         FilaControl(

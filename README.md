@@ -21,7 +21,8 @@ El APK solo se publica si pasan todas las pruebas.
         y también MP3, AAC/M4A, FLAC, OGG y Opus (los decodifica Android)
   - [x] 1b. Volumen, paneo, mute, solo y polaridad por pista
   - [x] 1c. Hasta 12 pistas mezcladas + master (fader, limitador, medidores, clip)
-- [ ] 2. EQ de 12 bandas
+- [x] 2. EQ paramétrico por pista: hasta 12 bandas que se agregan y quitan (6 tipos de filtro,
+      curva con nodos, auto-ganancia, bypass)
 - [ ] 3. Exportación WAV 24 y 32 bits
 - [ ] 4. Análisis (espectro, espectrograma, fase, zumbido)
 - [ ] 5. Edición
@@ -37,6 +38,7 @@ Sin plugins VST en Android.
   - `MappedAudio`: las pistas se guardan como WAV float a 48 kHz y se mapean en memoria
     (no llenan la RAM; el sistema lee del disco lo que va sonando).
   - `Mixer` + `Limiter`: la mezcla en tiempo real, igual que la cadena del prototipo.
+  - `Equalizer`: EQ por pista (filtros biquad como Web Audio); solo procesa las bandas que existen.
   - `AudioEngine`: salida con Oboe a 48 kHz; `jni_bridge.cpp`: puente con Kotlin.
 - `app/src/main/java/.../`: `Mesa.kt` (estado, importación, sesión), `Decodificador.kt`
   (formatos comprimidos → WAV con MediaCodec) y `ui/` (pantalla en Compose).

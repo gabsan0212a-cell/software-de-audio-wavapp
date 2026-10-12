@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 
+#include "Equalizer.h"
 #include "Limiter.h"
 #include "MappedAudio.h"
 
@@ -14,7 +15,7 @@ constexpr int kMaxTracks = 12;
 constexpr int kMeterCount = 3 + 2 * kMaxTracks;
 
 // Mezcla las pistas como el prototipo web ("Mesa de Audio"):
-// pista: polaridad → volumen → paneo (StereoPannerNode) → mute/solo → suma
+// pista: polaridad → EQ → auto-ganancia → volumen → paneo (StereoPannerNode) → mute/solo → suma
 // master: volumen → limitador → recorte suave → salida.
 // Los cambios de parámetros se suavizan igual que setTargetAtTime en Web Audio.
 class Mixer {
@@ -36,6 +37,8 @@ public:
     void setTrackMute(int slot, bool on);
     void setTrackSolo(int slot, bool on);
     void setTrackInvert(int slot, bool on);
+    // EQ de la pista (sus métodos de interfaz son seguros desde este hilo).
+    Equalizer *trackEq(int slot) { return slot >= 0 && slot < kMaxTracks ? &mSlots[slot].eq : nullptr; }
     void setMasterGain(float gain);  // lineal (0 = mute)
     void setLimiter(bool on);
 
@@ -64,6 +67,7 @@ private:
         std::atomic<float> gain{1.0f}, pan{0.0f};
         std::atomic<bool> mute{false}, solo{false}, invert{false}, removing{false};
         std::atomic<float> peakL{0.0f}, peakR{0.0f};
+        Equalizer eq;
         // Estado del hilo de audio
         uint32_t seenGen = 0;
         float gainS = 1.0f, panS = 0.0f, onS = 0.0f, invS = 1.0f;
@@ -96,5 +100,5 @@ private:
     float mMasterS = 1.0f;
     bool mLimiterWasOn = true;
     Limiter mLimiter;
-    float mMixL[kBlock], mMixR[kBlock], mRamp[kBlock];
+    float mMixL[kBlock], mMixR[kBlock], mRamp[kBlock], mInL[kBlock], mInR[kBlock];
 };

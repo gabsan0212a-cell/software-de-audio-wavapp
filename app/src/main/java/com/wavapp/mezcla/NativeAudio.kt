@@ -37,6 +37,16 @@ object NativeAudio {
     external fun setTrackSolo(slot: Int, on: Boolean)
     external fun setTrackInvert(slot: Int, on: Boolean)
 
+    // EQ por pista (hasta 12 bandas). Tipos: 0 campana, 1 shelf grave, 2 shelf agudo,
+    // 3 pasa-altos, 4 pasa-bajos, 5 notch.
+    external fun setEqBand(slot: Int, band: Int, present: Boolean, on: Boolean, type: Int, freq: Float, gain: Float, q: Float)
+    external fun setEqBypass(slot: Int, on: Boolean)
+    external fun setEqAutoGain(slot: Int, on: Boolean)
+    /** Compensación de la auto-ganancia en dB (≤ 0). */
+    external fun eqTrimDb(slot: Int): Float
+    /** Respuesta en dB para cada frecuencia. band = -1: todo el EQ; band ≥ 0: solo esa banda. */
+    external fun eqResponse(slot: Int, band: Int, freqs: FloatArray, out: FloatArray)
+
     // Master
     external fun setMasterGain(gain: Float)
     external fun setLimiter(on: Boolean)

@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../.."
 
 SRC=app/src/main/cpp
 FILES="$SRC/WavReader.cpp $SRC/WavWriter.cpp $SRC/Resampler.cpp $SRC/MappedAudio.cpp \
-       $SRC/Limiter.cpp $SRC/Mixer.cpp $SRC/Importer.cpp tests/native/tests.cpp"
+       $SRC/Equalizer.cpp $SRC/Limiter.cpp $SRC/Mixer.cpp $SRC/Importer.cpp tests/native/tests.cpp"
 OUT="${TMPDIR:-/tmp}/wavapp-tests"
 mkdir -p "$OUT"
 CXX="${CXX:-g++}"

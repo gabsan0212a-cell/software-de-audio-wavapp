@@ -48,6 +48,7 @@ Mixer::Mixer(int sampleRate) : mSampleRate(sampleRate) {
     mCoefMaster = smoothCoef(0.020f, sampleRate);
     mTauPanFrames = 0.015f * sampleRate;
     mLimiter.setup(sampleRate);
+    for (Slot &s : mSlots) s.eq.setSampleRate(sampleRate);
 }
 
 Mixer::~Mixer() = default;
@@ -76,6 +77,7 @@ bool Mixer::setTrack(int slot, std::unique_ptr<MappedAudio> audio) {
     s.mute.store(false);
     s.solo.store(false);
     s.invert.store(false);
+    s.eq.clear();
     s.removing.store(false);
     s.peakL.store(0.0f);
     s.peakR.store(0.0f);
@@ -262,6 +264,7 @@ void Mixer::renderBlock(int n) {
             s.panS = panT;
             s.invS = invT;
             s.onS = 0.0f;
+            s.eq.resetState();
         }
 
         // El paneo se suaviza por bloque y la matriz se interpola dentro del bloque.
@@ -272,25 +275,37 @@ void Mixer::renderBlock(int n) {
         const PanMatrix dm = {(m1.a - m0.a) * inv, (m1.b - m0.b) * inv, (m1.c - m0.c) * inv, (m1.d - m0.d) * inv};
         s.panS = panEnd;
 
+        // Entrada del bloque (ceros pasado el final; el EQ puede seguir sonando un poco).
         const float *data = a->data();
         const int64_t frames = a->frames();
+        for (int i = 0; i < n; ++i) {
+            const int64_t f = mPos + i;
+            if (f >= frames) {
+                mInL[i] = mInR[i] = 0.0f;
+            } else if (mono) {
+                mInL[i] = data[f];
+            } else {
+                mInL[i] = data[2 * f];
+                mInR[i] = data[2 * f + 1];
+            }
+        }
+        s.eq.process(mInL, mono ? nullptr : mInR, n);
+
         float pkL = 0.0f, pkR = 0.0f;
         float g = s.gainS, onS = s.onS, invS = s.invS;
         for (int i = 0; i < n; ++i) {
             g += (gainT - g) * mCoefGain;
             onS += (onT - onS) * mCoefOn;
             invS += (invT - invS) * mCoefInv;
-            const int64_t f = mPos + i;
-            if (f >= frames) continue;
             const float k = g * onS * invS * mRamp[i];
             const float fi = static_cast<float>(i);
             float l, r;
             if (mono) {
-                const float x = data[f];
+                const float x = mInL[i];
                 l = x * (m0.a + dm.a * fi);
                 r = x * (m0.c + dm.c * fi);
             } else {
-                const float xl = data[2 * f], xr = data[2 * f + 1];
+                const float xl = mInL[i], xr = mInR[i];
                 l = xl * (m0.a + dm.a * fi) + xr * (m0.b + dm.b * fi);
                 r = xl * (m0.c + dm.c * fi) + xr * (m0.d + dm.d * fi);
             }

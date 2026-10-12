@@ -32,6 +32,22 @@ class Medidor {
     var r by mutableFloatStateOf(-120f)
 }
 
+/** Tipos de filtro del EQ (mismos que el prototipo y Web Audio). */
+object Filtros {
+    val nombres = listOf("Campana", "Shelf grave", "Shelf agudo", "Pasa-altos", "Pasa-bajos", "Notch")
+    fun conGanancia(tipo: Int) = tipo <= 2
+    fun conQ(tipo: Int) = tipo == 0 || tipo >= 3
+}
+
+/** Una banda del EQ. [indice] es su lugar en el motor (0..11). */
+class Banda(val indice: Int, tipo: Int, f: Float, g: Float, q: Float, on: Boolean = true) {
+    var tipo by mutableIntStateOf(tipo)
+    var f by mutableFloatStateOf(f)
+    var g by mutableFloatStateOf(g)
+    var q by mutableFloatStateOf(q)
+    var on by mutableStateOf(on)
+}
+
 class Pista(
     val slot: Int,
     val id: Int,
@@ -47,6 +63,12 @@ class Pista(
     var solo by mutableStateOf(false)
     var fase by mutableStateOf(false)
     val medidor = Medidor()
+    // EQ: empieza sin bandas (no procesa nada); se agregan y quitan.
+    val bandas = mutableStateListOf<Banda>()
+    var eqBypass by mutableStateOf(false)
+    var autoGanancia by mutableStateOf(true)
+    var eqVersion by mutableIntStateOf(0)  // cambia con cada ajuste: la curva se vuelve a dibujar
+    val eqActivo: Boolean get() = !eqBypass && bandas.any { it.on }
     val segundos: Double get() = cuadros / Mesa.RATE
     val color: Int get() = (id - 1) % 12
 }
@@ -72,6 +94,7 @@ object Mesa {
     const val VOL_MIN = -60f
     const val VOL_MAX = 6f
     const val MASTER_MIN = -70f
+    const val MAX_BANDAS = 12
 
     private lateinit var carpeta: File
     private lateinit var archivoSesion: File
@@ -104,6 +127,9 @@ object Mesa {
         private set
     var progreso by mutableFloatStateOf(-1f)  // -1 = sin barra
         private set
+
+    /** Pista cuyo EQ está abierto en pantalla (null = ninguno). */
+    var eqAbierta by mutableStateOf<Pista?>(null)
 
     val master = MedidorMaster()
     private val bufMedidores = FloatArray(3 + 2 * MAX_PISTAS)
@@ -247,6 +273,7 @@ object Mesa {
     }
 
     fun quitar(p: Pista) {
+        if (eqAbierta == p) eqAbierta = null
         if (!pistas.remove(p)) return
         if (pistas.isEmpty()) NativeAudio.stopTransport()
         scope.launch {
@@ -284,6 +311,74 @@ object Mesa {
         NativeAudio.setTrackMute(p.slot, p.mute)
         NativeAudio.setTrackSolo(p.slot, p.solo)
         NativeAudio.setTrackInvert(p.slot, p.fase)
+        NativeAudio.setEqBypass(p.slot, p.eqBypass)
+        NativeAudio.setEqAutoGain(p.slot, p.autoGanancia)
+        p.bandas.forEach { enviarBanda(p, it) }
+    }
+
+    // ------------------------------------------------------------------ EQ
+
+    /** Agrega una banda (campana, 0 dB) en el hueco de frecuencias más grande. */
+    fun agregarBanda(p: Pista): Banda? {
+        if (p.bandas.size >= MAX_BANDAS) return null
+        val indice = (0 until MAX_BANDAS).first { i -> p.bandas.none { it.indice == i } }
+        val b = Banda(indice, 0, frecuenciaLibre(p), 0f, 1.4f)
+        p.bandas.add(b)
+        enviarBanda(p, b)
+        cambioEq(p)
+        return b
+    }
+
+    fun quitarBanda(p: Pista, b: Banda) {
+        if (!p.bandas.remove(b)) return
+        NativeAudio.setEqBand(p.slot, b.indice, false, false, b.tipo, b.f, b.g, b.q)
+        cambioEq(p)
+    }
+
+    fun cambiarBanda(
+        p: Pista, b: Banda, tipo: Int = b.tipo, f: Float = b.f, g: Float = b.g, q: Float = b.q, on: Boolean = b.on,
+    ) {
+        b.tipo = tipo.coerceIn(0, Filtros.nombres.size - 1)
+        b.f = Math.round(f.coerceIn(20f, 20000f) * 10) / 10f
+        b.g = Math.round(g.coerceIn(-15f, 15f) * 2) / 2f
+        b.q = Math.round(q.coerceIn(0.1f, 18f) * 100) / 100f
+        b.on = on
+        enviarBanda(p, b)
+        cambioEq(p)
+    }
+
+    fun alternarEqBypass(p: Pista) { p.eqBypass = !p.eqBypass; NativeAudio.setEqBypass(p.slot, p.eqBypass); cambioEq(p) }
+    fun alternarAutoGanancia(p: Pista) {
+        p.autoGanancia = !p.autoGanancia
+        NativeAudio.setEqAutoGain(p.slot, p.autoGanancia)
+        cambioEq(p)
+    }
+
+    /** Quita todas las bandas: el EQ queda plano y sin procesar. */
+    fun restablecerEq(p: Pista) {
+        for (b in p.bandas) NativeAudio.setEqBand(p.slot, b.indice, false, false, b.tipo, b.f, b.g, b.q)
+        p.bandas.clear()
+        cambioEq(p)
+    }
+
+    private fun enviarBanda(p: Pista, b: Banda) =
+        NativeAudio.setEqBand(p.slot, b.indice, true, b.on, b.tipo, b.f, b.g, b.q)
+
+    private fun cambioEq(p: Pista) {
+        p.eqVersion++
+        pedirGuardar()
+    }
+
+    /** Centro (en escala logarítmica) del hueco más grande entre 20 Hz, las bandas y 20 kHz. */
+    private fun frecuenciaLibre(p: Pista): Float {
+        if (p.bandas.isEmpty()) return 1000f
+        val puntos = (listOf(20f, 20000f) + p.bandas.map { it.f }).map { log10(it) }.sorted()
+        var mejor = 0
+        for (i in 1 until puntos.size - 1) if (puntos[i + 1] - puntos[i] > puntos[mejor + 1] - puntos[mejor]) mejor = i
+        val f = 10f.pow((puntos[mejor] + puntos[mejor + 1]) / 2)
+        // Redondeo amable: 2 cifras significativas (p. ej. 3162 → 3200).
+        val escala = 10f.pow(kotlin.math.floor(log10(f)) - 1)
+        return Math.round(f / escala) * escala
     }
 
     // ------------------------------------------------------------------ master
@@ -407,6 +502,15 @@ object Mesa {
                 put("id", p.id); put("nombre", p.nombre); put("archivo", p.archivo); put("info", p.info)
                 put("volDb", p.volDb.toDouble()); put("pan", p.pan)
                 put("mute", p.mute); put("solo", p.solo); put("fase", p.fase)
+                put("eq", JSONObject().apply {
+                    put("bypass", p.eqBypass); put("auto", p.autoGanancia)
+                    put("bandas", JSONArray().apply {
+                        for (b in p.bandas) put(JSONObject().apply {
+                            put("tipo", b.tipo); put("f", b.f.toDouble()); put("g", b.g.toDouble())
+                            put("q", b.q.toDouble()); put("on", b.on)
+                        })
+                    })
+                })
             })
         }
         return JSONObject().apply {
@@ -455,6 +559,16 @@ object Mesa {
                 p.mute = o.optBoolean("mute", false)
                 p.solo = o.optBoolean("solo", false)
                 p.fase = o.optBoolean("fase", false)
+                o.optJSONObject("eq")?.let { eq ->
+                    p.eqBypass = eq.optBoolean("bypass", false)
+                    p.autoGanancia = eq.optBoolean("auto", true)
+                    val bs = eq.optJSONArray("bandas") ?: JSONArray()
+                    for (k in 0 until minOf(bs.length(), MAX_BANDAS)) {
+                        val jb = bs.getJSONObject(k)
+                        p.bandas.add(Banda(k, jb.optInt("tipo", 0), jb.optDouble("f", 1000.0).toFloat(),
+                            jb.optDouble("g", 0.0).toFloat(), jb.optDouble("q", 1.4).toFloat(), jb.optBoolean("on", true)))
+                    }
+                }
                 siguienteId = max(siguienteId, p.id + 1)
                 pistas.add(p)
                 aplicar(p)

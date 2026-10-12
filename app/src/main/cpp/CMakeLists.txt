@@ -5,6 +5,7 @@ find_package(oboe REQUIRED CONFIG)
 
 add_library(wavapp SHARED
     AudioEngine.cpp
+    Equalizer.cpp
     Importer.cpp
     Limiter.cpp
     MappedAudio.cpp

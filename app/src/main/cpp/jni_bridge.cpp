@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include "AudioEngine.h"
 
@@ -80,6 +81,31 @@ JNI(void, setTrackMute)(JNIEnv *, jobject, jint slot, jboolean on) { gEngine.mix
 JNI(void, setTrackSolo)(JNIEnv *, jobject, jint slot, jboolean on) { gEngine.mixer().setTrackSolo(slot, on); }
 JNI(void, setTrackInvert)(JNIEnv *, jobject, jint slot, jboolean on) {
     gEngine.mixer().setTrackInvert(slot, on);
+}
+
+// ---------- EQ por pista
+JNI(void, setEqBand)(JNIEnv *, jobject, jint slot, jint band, jboolean present, jboolean on, jint type,
+                     jfloat freq, jfloat gain, jfloat q) {
+    if (Equalizer *eq = gEngine.mixer().trackEq(slot)) eq->setBand(band, present, on, type, freq, gain, q);
+}
+JNI(void, setEqBypass)(JNIEnv *, jobject, jint slot, jboolean on) {
+    if (Equalizer *eq = gEngine.mixer().trackEq(slot)) eq->setBypass(on);
+}
+JNI(void, setEqAutoGain)(JNIEnv *, jobject, jint slot, jboolean on) {
+    if (Equalizer *eq = gEngine.mixer().trackEq(slot)) eq->setAutoGain(on);
+}
+JNI(jfloat, eqTrimDb)(JNIEnv *, jobject, jint slot) {
+    Equalizer *eq = gEngine.mixer().trackEq(slot);
+    return eq ? eq->trimDb() : 0.0f;
+}
+JNI(void, eqResponse)(JNIEnv *env, jobject, jint slot, jint band, jfloatArray freqs, jfloatArray out) {
+    Equalizer *eq = gEngine.mixer().trackEq(slot);
+    const jsize n = std::min(env->GetArrayLength(freqs), env->GetArrayLength(out));
+    if (!eq || n <= 0) return;
+    std::vector<float> f(n), db(n);
+    env->GetFloatArrayRegion(freqs, 0, n, f.data());
+    eq->response(band, f.data(), db.data(), n);
+    env->SetFloatArrayRegion(out, 0, n, db.data());
 }
 
 // ---------- Master

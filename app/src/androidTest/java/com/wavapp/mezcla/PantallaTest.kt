@@ -59,6 +59,23 @@ class PantallaTest {
         avanzarMedidores()
         captura("4-mute-solo")
 
+        // EQ: empieza sin bandas; se agregan dos y se ajustan.
+        regla.onNodeWithContentDescription("EQ pista $id").performClick()
+        regla.waitUntil(2_000) { Mesa.eqAbierta != null }
+        regla.onNodeWithText("+ Banda").performClick()
+        regla.onNodeWithText("+ Banda").performClick()
+        regla.waitUntil(2_000) { Mesa.pistas.first().bandas.size == 2 }
+        regla.runOnUiThread {
+            val p = Mesa.pistas.first()
+            Mesa.cambiarBanda(p, p.bandas[0], tipo = 1, f = 120f, g = 5f)
+            Mesa.cambiarBanda(p, p.bandas[1], f = 3000f, g = -4f, q = 2f)
+        }
+        regla.waitForIdle()
+        captura("6-eq")
+        regla.onNodeWithText("Cerrar").performClick()
+        regla.waitUntil(2_000) { Mesa.eqAbierta == null }
+        regla.onNodeWithContentDescription("EQ pista $id").assertIsDisplayed()
+
         regla.onNodeWithText("❚❚ Pausar").performClick()
         regla.waitUntil(5_000) { !Mesa.reproduciendo }
         regla.onNodeWithText("■ Detener").performClick()

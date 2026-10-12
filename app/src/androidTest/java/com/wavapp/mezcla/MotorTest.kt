@@ -76,6 +76,27 @@ class MotorTest {
     }
 
     @Test
+    fun eqPorPista() {
+        val r = NativeAudio.addDemoTrack(0, File(dir, "eq.wav").path)
+        assertNotNull(NativeAudio.lastError(), r)
+        val slot = r!![0].toInt()
+        espacios += slot
+        assertEquals(0f, NativeAudio.eqTrimDb(slot), 0f)  // sin bandas
+        NativeAudio.setEqBand(slot, 4, true, true, 0, 1000f, 6f, 1.4f)
+        val f = floatArrayOf(100f, 1000f, 10000f)
+        val db = FloatArray(3)
+        NativeAudio.eqResponse(slot, -1, f, db)
+        assertEquals(6f, db[1], 0.05f)
+        assertEquals(-6f, NativeAudio.eqTrimDb(slot), 0.1f)
+        NativeAudio.setEqBypass(slot, true)
+        assertEquals(0f, NativeAudio.eqTrimDb(slot), 0f)
+        NativeAudio.setEqBand(slot, 4, false, true, 0, 1000f, 6f, 1.4f)
+        NativeAudio.setEqBypass(slot, false)
+        NativeAudio.eqResponse(slot, -1, f, db)
+        assertEquals(0f, db[1], 0f)
+    }
+
+    @Test
     fun importaWavDelCelular() {
         // Estéreo 16 bits a 44.1 kHz con el encabezado mal escrito (bloque = 2), como el del celular.
         val src = File(dir, "celular.wav")

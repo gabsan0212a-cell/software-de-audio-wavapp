@@ -47,6 +47,25 @@ object NativeAudio {
     /** Respuesta en dB para cada frecuencia. band = -1: todo el EQ; band ≥ 0: solo esa banda. */
     external fun eqResponse(slot: Int, band: Int, freqs: FloatArray, out: FloatArray)
 
+    // Exportar la mezcla completa a WAV. Cierra el descriptor. Devuelve [cuadros, bytes] o null.
+    external fun exportMix(fd: Int, bits: Int, isFloat: Boolean, rate: Int): LongArray?
+    external fun exportProgress(): Float
+    external fun cancelExport()
+    external fun exportBytes(bits: Int, isFloat: Boolean, rate: Int): Long
+
+    // Análisis. Fuente: -1 = mezcla, 0..11 = pista.
+    external fun setNotch(hz: Int)
+    external fun setAnalysisSource(slot: Int)
+    external fun analysisReset()
+    /**
+     * Llena espectro[8192] (dB), fanE[1024] (dB), fanP[1024] (-1..1), tiempo[4096] (L y luego R)
+     * y stats[8] = picoL, picoR, rmsL, rmsR, correlación, zumbido Hz, armónicos, dB sobre el piso.
+     * Devuelve true si llegó audio nuevo.
+     */
+    external fun analyze(spec: FloatArray, fanE: FloatArray, fanP: FloatArray, time: FloatArray, stats: FloatArray): Boolean
+    /** Espectrograma 0..255, [col * rows + fila], fila 0 = 20 Hz, arriba 20 kHz. */
+    external fun spectrogram(slot: Int, cols: Int, rows: Int): ByteArray?
+
     // Master
     external fun setMasterGain(gain: Float)
     external fun setLimiter(on: Boolean)

@@ -9,6 +9,8 @@
 #include <thread>
 #include <vector>
 
+#include "Analyzer.h"
+#include "Exporter.h"
 #include "Importer.h"
 #include "Mixer.h"
 
@@ -39,6 +41,15 @@ public:
     // Forma de onda para dibujar: [columna][canal][min, max].
     std::vector<float> overview(int slot, int columns) const;
 
+    // Exportar (en un hilo de trabajo). Cierra fd.
+    ExportResult exportMix(int fd, const ExportFormat &fmt);
+    float exportProgress() const { return mExportProgress.load(); }
+    void cancelExport() { mExportCancel.store(true); }
+
+    // Análisis (desde el hilo de la pantalla).
+    Analyzer &analyzer() { return mAnalyzer; }
+    std::vector<uint8_t> spectrogram(int slot, int cols, int rows, std::string &error);
+
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *stream, void *audioData,
                                           int32_t numFrames) override;
     void onErrorAfterClose(oboe::AudioStream *stream, oboe::Result error) override;
@@ -60,5 +71,8 @@ private:
     int mPeakChannels[kMaxTracks] = {};
     int64_t mFrames[kMaxTracks] = {};
     std::atomic<float> mProgress{0.0f};
+    std::atomic<float> mExportProgress{0.0f};
+    std::atomic<bool> mExportCancel{false};
+    Analyzer mAnalyzer{kSampleRate};
     static constexpr int kPeakBucket = 256;
 };

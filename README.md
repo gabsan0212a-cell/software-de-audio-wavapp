@@ -23,8 +23,9 @@ El APK solo se publica si pasan todas las pruebas.
   - [x] 1c. Hasta 12 pistas mezcladas + master (fader, limitador, medidores, clip)
 - [x] 2. EQ paramétrico por pista: hasta 12 bandas que se agregan y quitan (6 tipos de filtro,
       curva con nodos, auto-ganancia, bypass)
-- [ ] 3. Exportación WAV 24 y 32 bits
-- [ ] 4. Análisis (espectro, espectrograma, fase, zumbido)
+- [x] 3. Exportar la mezcla a WAV 16/24 bits (con dither) o 32 bits float, a 48 o 44.1 kHz
+- [x] 4. Análisis como el prototipo: goniómetro, fase y paneo, espectro con detección de zumbido
+      y notch 50/60 Hz, espectrograma; espectro de fondo en el EQ
 - [ ] 5. Edición
 - [ ] 6. Grabación
 - [ ] 7. Guardar/abrir proyectos (por ahora la mezcla actual se guarda sola)
@@ -39,6 +40,8 @@ Sin plugins VST en Android.
     (no llenan la RAM; el sistema lee del disco lo que va sonando).
   - `Mixer` + `Limiter`: la mezcla en tiempo real, igual que la cadena del prototipo.
   - `Equalizer`: EQ por pista (filtros biquad como Web Audio); solo procesa las bandas que existen.
+  - `Exporter`: renderiza la mezcla fuera de tiempo real con una copia del mezclador.
+  - `Analyzer`: FFT, espectro como AnalyserNode, fase, zumbido y espectrograma.
   - `AudioEngine`: salida con Oboe a 48 kHz; `jni_bridge.cpp`: puente con Kotlin.
 - `app/src/main/java/.../`: `Mesa.kt` (estado, importación, sesión), `Decodificador.kt`
   (formatos comprimidos → WAV con MediaCodec) y `ui/` (pantalla en Compose).

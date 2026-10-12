@@ -3,6 +3,7 @@ package com.wavapp.mezcla
 import android.content.Context
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
@@ -20,6 +21,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.log10
@@ -130,6 +133,14 @@ object Mesa {
 
     /** Pista cuyo EQ está abierto en pantalla (null = ninguno). */
     var eqAbierta by mutableStateOf<Pista?>(null)
+
+    // Exportación: 16, 24 o 32 (= 32 bits float) y frecuencia.
+    var exportBits by mutableIntStateOf(24)
+        private set
+    var exportRate by mutableIntStateOf(48000)
+        private set
+    var exportando by mutableStateOf(false)
+        private set
 
     val master = MedidorMaster()
     private val bufMedidores = FloatArray(3 + 2 * MAX_PISTAS)
@@ -274,6 +285,7 @@ object Mesa {
 
     fun quitar(p: Pista) {
         if (eqAbierta == p) eqAbierta = null
+        Analisis.olvidar(p)
         if (!pistas.remove(p)) return
         if (pistas.isEmpty()) NativeAudio.stopTransport()
         scope.launch {
@@ -442,8 +454,13 @@ object Mesa {
         posicion = NativeAudio.positionSeconds()
         duracion = NativeAudio.durationSeconds()
         if (ocupada && progreso >= 0f) {
-            progreso = if (decodificando) progresoDecodificacion else NativeAudio.importProgress()
+            progreso = when {
+                exportando -> NativeAudio.exportProgress()
+                decodificando -> progresoDecodificacion
+                else -> NativeAudio.importProgress()
+            }
         }
+        Analisis.tick(reproduciendo)
 
         NativeAudio.readMeters(bufMedidores)
         // Caídas del prototipo (por cuadro de ~33 ms): pistas 1.5 dB, master 1.2 dB; la marca
@@ -468,7 +485,70 @@ object Mesa {
         m.reduccion = bufMedidores[2]
     }
 
+    // ------------------------------------------------------------------ exportar
+
+    fun ponerExportacion(bits: Int, rate: Int) {
+        exportBits = if (bits == 16 || bits == 32) bits else 24
+        exportRate = if (rate == 44100) 44100 else 48000
+        pedirGuardar()
+    }
+
+    fun tamanoExportacion(): Long = NativeAudio.exportBytes(exportBits, exportBits == 32, exportRate)
+
+    fun nombreExportacion(): String =
+        "Mezcla " + SimpleDateFormat("yyyy-MM-dd HHmm", Locale.US).format(Date()) + ".wav"
+
+    fun textoFormato(bits: Int = exportBits, rate: Int = exportRate): String =
+        (if (bits == 32) "32 bits float" else "$bits bits") + " · $rate Hz"
+
+    /** Renderiza la mezcla completa y la guarda en [uri] (elegido por el usuario). */
+    fun exportar(context: Context, uri: Uri) {
+        if (ocupada || pistas.isEmpty()) return
+        scope.launch {
+            ocupada = true
+            exportando = true
+            ocupadaTexto = "Exportando la mezcla…"
+            progreso = 0f
+            val bits = exportBits
+            val rate = exportRate
+            val (r, error) = withContext(Dispatchers.IO) {
+                try {
+                    val fd = context.contentResolver.openFileDescriptor(uri, "w")?.use { it.detachFd() }
+                    if (fd == null) {
+                        null to "no se pudo crear el archivo"
+                    } else {
+                        val res = NativeAudio.exportMix(fd, bits, bits == 32, rate)
+                        res to (if (res == null) NativeAudio.lastError() else "")
+                    }
+                } catch (e: Exception) {
+                    null to (e.message ?: "no se pudo crear el archivo")
+                }
+            }
+            val nombre = if (r != null) nombreDe(context, uri) else ""
+            if (r == null) {
+                withContext(Dispatchers.IO) {
+                    try { DocumentsContract.deleteDocument(context.contentResolver, uri) } catch (_: Exception) {}
+                }
+            }
+            progreso = -1f
+            exportando = false
+            ocupada = false
+            if (r != null) {
+                val seg = (r[0] / rate).toInt()
+                val mb = String.format(Locale.US, "%.1f", r[1] / 1048576.0)
+                actualizarEstado("Mezcla exportada: $nombre (${textoFormato(bits, rate)} · ${seg / 60}:" +
+                    String.format(Locale.US, "%02d", seg % 60) + " · $mb MB)")
+            } else {
+                actualizarEstado("No se exportó: $error")
+            }
+        }
+    }
+
+    fun cancelarExportacion() = NativeAudio.cancelExport()
+
     // ------------------------------------------------------------------ sesión
+
+    internal fun pedirGuardarDesdeFuera() = pedirGuardar()
 
     fun guardarYa() {
         if (!iniciada) return
@@ -518,7 +598,9 @@ object Mesa {
             put("siguienteId", siguienteId)
             put("master", JSONObject().apply {
                 put("volDb", masterDb.toDouble()); put("mute", masterMute); put("limitador", limitador)
+                put("notch", Analisis.notch)
             })
+            put("exportar", JSONObject().apply { put("bits", exportBits); put("rate", exportRate) })
             put("pistas", arr)
         }
     }
@@ -539,6 +621,11 @@ object Mesa {
                 masterDb = it.optDouble("volDb", 0.0).toFloat()
                 masterMute = it.optBoolean("mute", false)
                 limitador = it.optBoolean("limitador", true)
+                Analisis.ponerNotch(it.optInt("notch", 0), guardar = false)
+            }
+            json.optJSONObject("exportar")?.let {
+                exportBits = it.optInt("bits", 24)
+                exportRate = it.optInt("rate", 48000)
             }
             aplicarMaster()
             siguienteId = json.optInt("siguienteId", 1)

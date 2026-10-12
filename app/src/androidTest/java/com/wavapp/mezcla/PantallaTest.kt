@@ -10,7 +10,9 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.isRoot
+import androidx.compose.ui.test.onLast
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
@@ -76,6 +78,33 @@ class PantallaTest {
         regla.waitUntil(2_000) { Mesa.eqAbierta == null }
         regla.onNodeWithContentDescription("EQ pista $id").assertIsDisplayed()
 
+        // Análisis de la mezcla mientras suena.
+        regla.onNodeWithText("Análisis").performClick()
+        regla.waitUntil(2_000) { Analisis.abierto }
+        avanzarMedidores()
+        regla.waitUntil(5_000) { Analisis.activo }
+        captura("7-analisis")
+        regla.onNodeWithText("60 Hz").performClick()
+        regla.waitUntil(2_000) { Analisis.notch == 60 }
+        regla.onNodeWithText("Notch off").performClick()
+        // Espectrograma de la segunda pista (la voz).
+        regla.runOnUiThread { Analisis.fuenteId = Mesa.pistas[1].id }
+        regla.waitUntil(20_000) { Analisis.espectrogramas.containsKey(Mesa.pistas[1].id) }
+        regla.onNodeWithTag("panelAnalisis").performScrollToNode(hasText("ESPECTROGRAMA", substring = true))
+        avanzarMedidores()
+        captura("8-espectrograma")
+        regla.onNodeWithText("Cerrar").performClick()
+        regla.waitUntil(2_000) { !Analisis.abierto }
+
+        // Diálogo de exportar (sin abrir el selector de archivos del sistema).
+        regla.onNodeWithText("Exportar").performClick()
+        regla.onNodeWithText("Exportar la mezcla").assertIsDisplayed()
+        regla.onNodeWithText("32 bits float").performClick()
+        regla.waitUntil(2_000) { Mesa.exportBits == 32 }
+        regla.onNodeWithText("24 bits").performClick()
+        captura("9-exportar")
+        regla.onNodeWithText("Cancelar").performClick()
+
         regla.onNodeWithText("❚❚ Pausar").performClick()
         regla.waitUntil(5_000) { !Mesa.reproduciendo }
         regla.onNodeWithText("■ Detener").performClick()
@@ -96,7 +125,8 @@ class PantallaTest {
         val modo = regla.activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         val prefijo = if (modo == Configuration.UI_MODE_NIGHT_YES) "oscuro-" else "claro-"
         try {
-            val bmp = regla.onRoot().captureToImage().asAndroidBitmap()
+            // La última raíz es la ventana de encima (p. ej. un diálogo).
+            val bmp = regla.onAllNodes(isRoot()).onLast().captureToImage().asAndroidBitmap()
             File(dir).mkdirs()
             FileOutputStream(File(dir, "$prefijo$nombre.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
         } catch (e: Exception) {

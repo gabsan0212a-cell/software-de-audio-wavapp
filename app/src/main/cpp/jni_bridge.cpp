@@ -108,6 +108,62 @@ JNI(void, eqResponse)(JNIEnv *env, jobject, jint slot, jint band, jfloatArray fr
     env->SetFloatArrayRegion(out, 0, n, db.data());
 }
 
+// ---------- Exportar
+// [cuadros, bytes] o null (ver lastError()).
+JNI(jlongArray, exportMix)(JNIEnv *env, jobject, jint fd, jint bits, jboolean isFloat, jint rate) {
+    ExportFormat f;
+    f.bits = bits;
+    f.isFloat = isFloat;
+    f.sampleRate = rate;
+    ExportResult r = gEngine.exportMix(fd, f);
+    tError = r.error;
+    if (!r.error.empty()) return nullptr;
+    return longs(env, {r.frames, r.bytes});
+}
+JNI(jfloat, exportProgress)(JNIEnv *, jobject) { return gEngine.exportProgress(); }
+JNI(void, cancelExport)(JNIEnv *, jobject) { gEngine.cancelExport(); }
+JNI(jlong, exportBytes)(JNIEnv *, jobject, jint bits, jboolean isFloat, jint rate) {
+    ExportFormat f;
+    f.bits = isFloat ? 32 : bits;
+    f.isFloat = isFloat;
+    f.sampleRate = rate;
+    return exportBytes(gEngine.mixer().length(), f);
+}
+
+// ---------- Análisis
+JNI(void, setNotch)(JNIEnv *, jobject, jint hz) { gEngine.mixer().setNotch(hz); }
+JNI(void, setAnalysisSource)(JNIEnv *, jobject, jint slot) {
+    if (gEngine.mixer().analysisSource() != slot) {
+        gEngine.mixer().setAnalysisSource(slot);
+        gEngine.analyzer().reset();
+    }
+}
+JNI(void, analysisReset)(JNIEnv *, jobject) { gEngine.analyzer().reset(); }
+// Llena los arreglos y devuelve true si llegó audio nuevo.
+// espectro[8192] dB · fanE[1024] dB · fanP[1024] · tiempo[4096] (L y luego R) ·
+// stats[8] = picoL, picoR, rmsL, rmsR, correlación, zumbido Hz, armónicos, dB sobre el piso.
+JNI(jboolean, analyze)(JNIEnv *env, jobject, jfloatArray spec, jfloatArray fanE, jfloatArray fanP,
+                       jfloatArray time, jfloatArray stats) {
+    Analyzer &a = gEngine.analyzer();
+    if (!a.update(gEngine.mixer())) return JNI_FALSE;
+    env->SetFloatArrayRegion(spec, 0, Analyzer::kSpecBins, a.spectrumDb());
+    env->SetFloatArrayRegion(fanE, 0, Analyzer::kFanBins, a.fanDb());
+    env->SetFloatArrayRegion(fanP, 0, Analyzer::kFanBins, a.fanPan());
+    env->SetFloatArrayRegion(time, 0, Analyzer::kTime, a.timeL());
+    env->SetFloatArrayRegion(time, Analyzer::kTime, Analyzer::kTime, a.timeR());
+    const float st[8] = {a.peakL, a.peakR, a.rmsL, a.rmsR, a.correlation, (float)a.hum.freq,
+                         (float)a.hum.count, a.hum.db};
+    env->SetFloatArrayRegion(stats, 0, 8, st);
+    return JNI_TRUE;
+}
+JNI(jbyteArray, spectrogram)(JNIEnv *env, jobject, jint slot, jint cols, jint rows) {
+    std::vector<uint8_t> v = gEngine.spectrogram(slot, cols, rows, tError);
+    if (v.empty()) return nullptr;
+    jbyteArray arr = env->NewByteArray(static_cast<jsize>(v.size()));
+    env->SetByteArrayRegion(arr, 0, static_cast<jsize>(v.size()), reinterpret_cast<const jbyte *>(v.data()));
+    return arr;
+}
+
 // ---------- Master
 JNI(void, setMasterGain)(JNIEnv *, jobject, jfloat gain) { gEngine.mixer().setMasterGain(gain); }
 JNI(void, setLimiter)(JNIEnv *, jobject, jboolean on) { gEngine.mixer().setLimiter(on); }

@@ -42,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.wavapp.mezcla.Analisis
 import com.wavapp.mezcla.Banda
 import com.wavapp.mezcla.Filtros
 import com.wavapp.mezcla.Mesa
@@ -91,6 +92,7 @@ fun PanelEq(p: Pista, alCerrar: () -> Unit) {
             }
             Boton("Cerrar", alCerrar)
         }
+        Transporte(horizontal = 0.dp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Boton("Auto-ganancia", { Mesa.alternarAutoGanancia(p) }, presionado = p.autoGanancia, tamano = 13.sp, relleno = 10.dp)
             Boton("Bypass", { Mesa.alternarEqBypass(p) }, presionado = p.eqBypass, tamano = 13.sp, relleno = 10.dp)
@@ -129,7 +131,8 @@ fun PanelEq(p: Pista, alCerrar: () -> Unit) {
         }
         Text(
             "Arrastra los nodos de la curva: horizontal cambia la frecuencia y vertical la ganancia. " +
-                "Doble toque en un nodo lo regresa a 0 dB. Solo las bandas que agregas se procesan.",
+                "Doble toque en un nodo lo regresa a 0 dB. Solo las bandas que agregas se procesan. " +
+                "Con la música sonando, el espectro de la pista aparece al fondo.",
             color = pal.tenue, fontSize = 12.sp,
         )
     }
@@ -288,6 +291,10 @@ private fun CurvaEq(p: Pista, sel: Int, alElegir: (Int) -> Unit, modifier: Modif
             fun x(f: Float) = (ln(f / 20f) / ln(1000f)) * w
             fun y(db: Float) = h / 2f - db / 15f * (h / 2f - 14 * d)
             val estiloTexto = TextStyle(color = pal.tenue, fontSize = 9.sp, fontFamily = Mono)
+
+            // Con la música sonando, el espectro de la pista aparece al fondo (como el prototipo).
+            @Suppress("UNUSED_VARIABLE") val va = Analisis.version
+            if (Mesa.reproduciendo && Analisis.activo) lineaEspectro(pal.verde.copy(alpha = 0.16f), relleno = true)
 
             // Rejilla
             for (db in listOf(-12, -6, 0, 6, 12)) {

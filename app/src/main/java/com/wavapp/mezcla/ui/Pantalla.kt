@@ -48,8 +48,10 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.wavapp.mezcla.Analisis
 import com.wavapp.mezcla.Mesa
 import com.wavapp.mezcla.Pista
 import kotlinx.coroutines.delay
@@ -90,10 +92,17 @@ fun PantallaMesa() {
         onDispose { vista.keepScreenOn = false }
     }
     var aQuitar by remember { mutableStateOf<Pista?>(null) }
+    var dialogoExportar by remember { mutableStateOf(false) }
+    val guardarComo = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/wav")) { uri ->
+        if (uri != null) Mesa.exportar(context, uri)
+    }
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().background(p.bg).safeDrawingPadding()) {
-        Encabezado(alAgregar = { elegir.launch(arrayOf("audio/*")) })
+        Encabezado(
+            alAgregar = { elegir.launch(arrayOf("audio/*")) },
+            alExportar = { dialogoExportar = true },
+        )
         Transporte()
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
@@ -112,8 +121,19 @@ fun PantallaMesa() {
             item { PanelMaster() }
         }
     }
-    // El EQ de una pista se abre encima de todo, a pantalla completa.
+    // El EQ de una pista y el análisis se abren encima de todo, a pantalla completa.
+    if (Analisis.abierto) PanelAnalisis(alCerrar = { Analisis.abierto = false })
     Mesa.eqAbierta?.let { pista -> PanelEq(pista, alCerrar = { Mesa.eqAbierta = null }) }
+    }
+
+    if (dialogoExportar) {
+        DialogoExportar(
+            alCerrar = { dialogoExportar = false },
+            alExportar = {
+                dialogoExportar = false
+                guardarComo.launch(Mesa.nombreExportacion())
+            },
+        )
     }
 
     aQuitar?.let { pista ->
@@ -131,24 +151,65 @@ fun PantallaMesa() {
 }
 
 @Composable
-private fun Encabezado(alAgregar: () -> Unit) {
+private fun Encabezado(alAgregar: () -> Unit, alExportar: () -> Unit) {
     val p = LocalPaleta.current
     Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp)) {
         Text("Mesa de Audio", color = p.fg, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
         Text(
-            "Multipista · volumen, paneo, mute/solo · master con limitador",
+            "Multipista · EQ por pista · análisis · master con limitador · exportar WAV",
             color = p.tenue, fontSize = 12.sp,
         )
         Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Boton("+ Agregar pistas", alTocar = alAgregar, habilitado = !Mesa.ocupada)
             Boton("Pistas de prueba", alTocar = { Mesa.cargarPrueba() }, habilitado = !Mesa.ocupada)
         }
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Boton("Exportar", alTocar = alExportar, habilitado = !Mesa.ocupada && Mesa.pistas.isNotEmpty())
+            Boton("Análisis", alTocar = { Analisis.abierto = true }, habilitado = Mesa.pistas.isNotEmpty())
+        }
     }
+}
+
+@Composable
+private fun DialogoExportar(alCerrar: () -> Unit, alExportar: () -> Unit) {
+    val p = LocalPaleta.current
+    AlertDialog(
+        onDismissRequest = alCerrar,
+        title = { Text("Exportar la mezcla") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Formato WAV", color = p.tenue, fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (b in listOf(16, 24, 32)) {
+                        Boton(if (b == 32) "32 bits float" else "$b bits", { Mesa.ponerExportacion(b, Mesa.exportRate) },
+                            presionado = Mesa.exportBits == b, tamano = 12.sp, relleno = 9.dp)
+                    }
+                }
+                Text("Frecuencia", color = p.tenue, fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (r in listOf(48000, 44100)) {
+                        Boton("$r Hz", { Mesa.ponerExportacion(Mesa.exportBits, r) },
+                            presionado = Mesa.exportRate == r, tamano = 12.sp, relleno = 9.dp)
+                    }
+                }
+                val mb = Mesa.tamanoExportacion() / 1048576.0
+                Text(
+                    "Se exporta la canción completa (${tiempo(Mesa.duracion)}) tal como suena: volumen, paneo, " +
+                        "mute/solo, EQ, notch y master con limitador. Tamaño ≈ " +
+                        String.format(Locale.US, "%.1f", mb) + " MB.",
+                    color = p.fg, fontSize = 13.sp,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = alExportar) { Text("Elegir dónde guardar…") } },
+        dismissButton = { TextButton(onClick = alCerrar) { Text("Cancelar") } },
+        containerColor = p.panel,
+    )
 }
 
 /** Botones a la izquierda y tiempo a la derecha; si no cabe, el tiempo baja completo al renglón siguiente. */
 @Composable
-private fun Transporte() {
+internal fun Transporte(horizontal: Dp = 16.dp) {
     Layout(
         content = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -161,7 +222,7 @@ private fun Transporte() {
             }
             TextoTiempo()
         },
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = horizontal, vertical = 10.dp),
     ) { medibles, restricciones ->
         val libre = restricciones.copy(minWidth = 0, minHeight = 0)
         val botones = medibles[0].measure(libre)
@@ -199,6 +260,10 @@ private fun Estado() {
             Box(Modifier.padding(top = 4.dp).fillMaxWidth().height(4.dp).background(p.linea)) {
                 Box(Modifier.fillMaxWidth(Mesa.progreso.coerceIn(0f, 1f)).fillMaxHeight().background(p.acento))
             }
+        }
+        if (Mesa.exportando) {
+            Boton("Cancelar exportación", { Mesa.cancelarExportacion() }, modifier = Modifier.padding(top = 6.dp),
+                tamano = 12.sp, relleno = 10.dp)
         }
     }
 }

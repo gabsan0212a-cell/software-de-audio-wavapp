@@ -76,6 +76,58 @@ class MotorTest {
     }
 
     @Test
+    fun exportaYSeVuelveAImportar() {
+        for (i in 0 until 2) {
+            val r = NativeAudio.addDemoTrack(i, File(dir, "x$i.wav").path)
+            assertNotNull(NativeAudio.lastError(), r)
+            espacios += r!![0].toInt()
+        }
+        val salida = File(dir, "mezcla.wav")
+        val modo = ParcelFileDescriptor.MODE_WRITE_ONLY or ParcelFileDescriptor.MODE_CREATE or
+            ParcelFileDescriptor.MODE_TRUNCATE
+        val fd = ParcelFileDescriptor.open(salida, modo).detachFd()
+        val r = NativeAudio.exportMix(fd, 24, false, 44100)
+        assertNotNull(NativeAudio.lastError(), r)
+        assertEquals(12L * 44100, r!![0])   // 12 s a 44.1 kHz
+        assertEquals(salida.length(), r[1])
+        // El archivo exportado se puede volver a abrir como cualquier WAV.
+        val de = ParcelFileDescriptor.open(salida, ParcelFileDescriptor.MODE_READ_ONLY).detachFd()
+        val back = NativeAudio.importWav(de, File(dir, "de-vuelta.wav").path)
+        assertNotNull(NativeAudio.lastError(), back)
+        espacios += back!![0].toInt()
+        assertEquals(44100L, back[3])
+        assertEquals(24L, back[5])
+        assertEquals(12L * 48000, back[2])
+    }
+
+    @Test
+    fun analisisEnVivo() {
+        for (i in 0 until 4) {
+            val r = NativeAudio.addDemoTrack(i, File(dir, "a$i.wav").path)
+            assertNotNull(NativeAudio.lastError(), r)
+            espacios += r!![0].toInt()
+        }
+        NativeAudio.setAnalysisSource(-1)
+        NativeAudio.seek(0.0)
+        NativeAudio.play()
+        Thread.sleep(1000)
+        val spec = FloatArray(8192)
+        val fanE = FloatArray(1024)
+        val fanP = FloatArray(1024)
+        val t = FloatArray(4096)
+        val st = FloatArray(8)
+        assertTrue("llega audio al analizador", NativeAudio.analyze(spec, fanE, fanP, t, st))
+        assertTrue("el espectro tiene señal (${spec.max()})", spec.max() > -60f)
+        assertTrue(st[0] > 0.01f)
+        val sg = NativeAudio.spectrogram(espacios[0], 100, 64)
+        assertEquals(6400, sg!!.size)
+        NativeAudio.setNotch(60)
+        Thread.sleep(200)
+        NativeAudio.setNotch(0)
+        NativeAudio.pause()
+    }
+
+    @Test
     fun eqPorPista() {
         val r = NativeAudio.addDemoTrack(0, File(dir, "eq.wav").path)
         assertNotNull(NativeAudio.lastError(), r)

@@ -198,3 +198,19 @@ std::vector<float> AudioEngine::overview(int slot, int columns) const {
     }
     return out;
 }
+
+ExportResult AudioEngine::exportMix(int fd, const ExportFormat &fmt) {
+    mExportCancel.store(false);
+    return ::exportMix(mMixer, fd, fmt, &mExportProgress, &mExportCancel);
+}
+
+std::vector<uint8_t> AudioEngine::spectrogram(int slot, int cols, int rows, std::string &error) {
+    const std::string path = mMixer.trackPath(slot);
+    if (path.empty()) {
+        error = "No hay pista";
+        return {};
+    }
+    auto a = MappedAudio::open(path, error);
+    if (!a) return {};
+    return ::spectrogram(*a, cols, rows, nullptr);
+}

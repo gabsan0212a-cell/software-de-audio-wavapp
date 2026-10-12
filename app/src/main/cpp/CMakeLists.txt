@@ -4,7 +4,8 @@ project(wavapp LANGUAGES CXX)
 find_package(oboe REQUIRED CONFIG)
 
 add_library(wavapp SHARED
-    ToneEngine.cpp
+    AudioEngine.cpp
+    WavReader.cpp
     jni_bridge.cpp)
 
 target_link_libraries(wavapp oboe::oboe log)

@@ -10,7 +10,10 @@ Sin computadora: GitHub Actions compila el APK en la nube.
 
 ## Etapas
 - [x] 0. App mínima: tono de prueba 440 Hz + compilación en la nube
-- [ ] 1. Motor de audio nativo (reproducir WAV, mezclar pistas)
+- [ ] 1. Motor de audio nativo
+  - [x] 1a. Abrir y reproducir un WAV (8/16/24/32 bits, float)
+  - [ ] 1b. Volumen y paneo
+  - [ ] 1c. Varias pistas mezcladas
 - [ ] 2. EQ de 12 bandas
 - [ ] 3. Exportación WAV 24 y 32 bits
 - [ ] 4. Análisis (medidores, espectro)

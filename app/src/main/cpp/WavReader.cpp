@@ -34,7 +34,7 @@ std::string readWav(FILE *f, Clip &out) {
         return fail(f, "No es un archivo WAV");
 
     bool haveFmt = false;
-    int format = 0, bits = 0, blockAlign = 0;
+    int format = 0, bits = 0, validBits = 0, blockAlign = 0;
     uint32_t dataSize = 0;
     for (;;) {
         uint8_t ch[8];
@@ -42,15 +42,18 @@ std::string readWav(FILE *f, Clip &out) {
         uint32_t size = le32(ch + 4);
 
         if (!std::memcmp(ch, "fmt ", 4)) {
-            if (size < 16 || size > 64) return fail(f, "Encabezado fmt inválido");
-            uint8_t fm[64];
+            if (size < 16 || size > 256) return fail(f, "Encabezado fmt inválido");
+            uint8_t fm[256];
             if (std::fread(fm, 1, size, f) != size) return fail(f, "Encabezado fmt incompleto");
             format = le16(fm);
             out.channels = le16(fm + 2);
             out.sampleRate = static_cast<int32_t>(le32(fm + 4));
             blockAlign = le16(fm + 12);
             bits = le16(fm + 14);
-            if (format == 0xFFFE && size >= 26) format = le16(fm + 24);  // WAVE_FORMAT_EXTENSIBLE
+            if (format == 0xFFFE && size >= 26) {  // WAVE_FORMAT_EXTENSIBLE
+                validBits = le16(fm + 18);
+                format = le16(fm + 24);
+            }
             if (size & 1) std::fseek(f, 1, SEEK_CUR);
             haveFmt = true;
         } else if (!std::memcmp(ch, "data", 4)) {
@@ -62,13 +65,23 @@ std::string readWav(FILE *f, Clip &out) {
         }
     }
 
+    // Algunos programas guardan, p. ej., 24 bits dentro de 32 (alineados a la izquierda)
+    // o dejan blockAlign en 0. El tamaño real de cada muestra lo da blockAlign.
+    if (out.channels >= 1 && blockAlign == 0) blockAlign = out.channels * ((bits + 7) / 8);
+    const int container = out.channels >= 1 ? blockAlign / out.channels : 0;
     out.isFloat = (format == 3);
-    out.bits = bits;
-    bool ok = (format == 1 && (bits == 8 || bits == 16 || bits == 24 || bits == 32)) ||
-              (format == 3 && (bits == 32 || bits == 64));
-    if (!ok) return fail(f, "Formato WAV no soportado (solo PCM o float)");
-    if (out.channels < 1 || out.sampleRate < 8000 || blockAlign != out.channels * bits / 8)
-        return fail(f, "Encabezado WAV inválido");
+    out.bits = (validBits > 0 && validBits < bits) ? validBits : bits;
+    bool ok = out.channels >= 1 && out.sampleRate >= 8000 && blockAlign % out.channels == 0 &&
+              bits >= 8 && bits <= container * 8 &&
+              ((format == 1 && container >= 1 && container <= 4) ||
+               (format == 3 && (container == 4 || container == 8)));
+    if (!ok) {
+        char msg[160];
+        std::snprintf(msg, sizeof msg,
+                      "Formato WAV no soportado (formato=%d, canales=%d, %d Hz, %d bits, bloque=%d)",
+                      format, out.channels, out.sampleRate, bits, blockAlign);
+        return fail(f, msg);
+    }
 
     // Algunas grabadoras dejan el tamaño de "data" en 0 o mal: entonces leemos hasta el final.
     long start = std::ftell(f);
@@ -78,7 +91,7 @@ std::string readWav(FILE *f, Clip &out) {
     int64_t bytes = (dataSize == 0 || dataSize > remaining) ? remaining : dataSize;
     int64_t framesLeft = bytes / blockAlign;
 
-    const int bytesPerSample = bits / 8;
+    const int bytesPerSample = container;
     std::vector<uint8_t> buf(static_cast<size_t>(blockAlign) * 4096);
     out.data.clear();
     out.data.reserve(static_cast<size_t>(framesLeft * out.channels));
@@ -87,7 +100,7 @@ std::string readWav(FILE *f, Clip &out) {
            (n = std::fread(buf.data(), blockAlign, framesLeft < 4096 ? framesLeft : 4096, f)) > 0) {
         framesLeft -= n;
         for (size_t i = 0; i < n * out.channels; ++i)
-            out.data.push_back(decode(buf.data() + i * bytesPerSample, bits, out.isFloat));
+            out.data.push_back(decode(buf.data() + i * bytesPerSample, container * 8, out.isFloat));
     }
     std::fclose(f);
     out.frames = static_cast<int64_t>(out.data.size()) / out.channels;

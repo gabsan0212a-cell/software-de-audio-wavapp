@@ -144,11 +144,8 @@ fun PanelEdicion(alCerrar: () -> Unit) {
             .padding(horizontal = 16.dp)
             .testTag("panelEdicion"),
     ) {
-        Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Edición", color = pal.fg, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                Text("Mover, recortar, fundidos y cortes", color = pal.tenue, fontSize = 12.sp)
-            }
+        Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Edición", color = pal.fg, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             Boton("Cerrar", alCerrar)
         }
         Transporte(horizontal = 0.dp)
@@ -181,13 +178,6 @@ fun PanelEdicion(alCerrar: () -> Unit) {
             CursorEdicion(Modifier.matchParentSize())
         }
         InfoPedazo()
-        Text(
-            Edicion.mensaje.ifEmpty {
-                "Arrastra un pedazo para moverlo. Ya elegido: sus orillas (abajo) recortan y los " +
-                    "cuadritos de arriba hacen el fade. Arrastra el fondo para recorrer y la regla para mover el cursor."
-            },
-            color = pal.tenue, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp, bottom = 10.dp),
-        )
     }
 }
 
@@ -272,7 +262,7 @@ private fun Carril(p: Pista) {
     Canvas(
         Modifier
             .fillMaxWidth()
-            .height(64.dp)
+            .height(56.dp)
             .clip(forma)
             .background(pal.panel)
             .border(1.dp, pal.linea, forma)
@@ -439,18 +429,21 @@ private fun InfoPedazo() {
     val forma = RoundedCornerShape(6.dp)
     Column(
         Modifier
-            .padding(top = 8.dp)
+            .padding(top = 8.dp, bottom = 10.dp)
             .fillMaxWidth()
             .clip(forma)
             .background(pal.panel)
             .border(1.dp, pal.linea, forma)
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        if (Edicion.mensaje.isNotEmpty()) Text(Edicion.mensaje, color = pal.acento, fontSize = 12.sp, maxLines = 2)
         val sel = Edicion.seleccionado()
         if (sel == null) {
             Text(
-                "Toca un pedazo para elegirlo. \"✂ Cortar\" sin pedazo elegido corta todas las pistas en el cursor.",
+                "Toca un pedazo para elegirlo y arrástralo para moverlo. Ya elegido, sus orillas (abajo) " +
+                    "recortan y los cuadritos de arriba hacen el fade. Arrastra el fondo para recorrer y la regla " +
+                    "para mover el cursor. \"✂ Cortar\" sin pedazo elegido corta todas las pistas en el cursor.",
                 color = pal.tenue, fontSize = 12.sp,
             )
             return@Column
@@ -462,8 +455,8 @@ private fun InfoPedazo() {
             color = pal.fg, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
         Text(
-            "empieza ${textoCuadros(pz.inicio)} · dura ${textoCuadros(pz.largo)} · del archivo desde ${textoCuadros(pz.origen)}",
-            color = pal.tenue, fontFamily = Mono, fontSize = 11.sp,
+            "en ${textoCuadros(pz.inicio)} · dura ${textoCuadros(pz.largo)} · archivo ${textoCuadros(pz.origen)}",
+            color = pal.tenue, fontFamily = Mono, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
         FilaFade("Fade in", pz.fadeIn, min(pz.largo - pz.fadeOut, 480000L)) { Edicion.ponerFadeSeleccionado(true, it) }
         FilaFade("Fade out", pz.fadeOut, min(pz.largo - pz.fadeIn, 480000L)) { Edicion.ponerFadeSeleccionado(false, it) }

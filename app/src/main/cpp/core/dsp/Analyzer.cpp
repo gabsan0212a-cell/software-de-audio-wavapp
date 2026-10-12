@@ -1,10 +1,10 @@
-#include "Analyzer.h"
+#include "dsp/Analyzer.h"
 
 #include <algorithm>
 #include <cmath>
 
-#include "MappedAudio.h"
-#include "Mixer.h"
+#include "io/MappedAudio.h"
+#include "engine/Mixer.h"
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;

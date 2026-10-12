@@ -1,4 +1,4 @@
-#include "MappedAudio.h"
+#include "io/MappedAudio.h"
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -7,7 +7,7 @@
 
 #include <cstdio>
 
-#include "WavReader.h"
+#include "io/WavReader.h"
 
 std::unique_ptr<MappedAudio> MappedAudio::open(const std::string &path, std::string &error) {
     WavReader reader;

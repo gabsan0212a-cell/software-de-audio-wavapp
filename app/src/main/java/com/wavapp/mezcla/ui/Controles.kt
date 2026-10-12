@@ -327,14 +327,14 @@ fun Onda(
                         style = android.graphics.Paint.Style.STROKE
                     }
                     val editada = pista.editada
-                    for (pz in pedazos) {
+                    pedazos.forEachIndexed { i, pz ->
                         val x0 = (pz.inicio / Mesa.RATE / dur * w).toFloat()
                         val x1 = (pz.fin / Mesa.RATE / dur * w).toFloat()
                         if (editada) {
                             pintura.color = color.copy(alpha = 0.12f)
                             lienzo.drawRect(x0, 0f, x1, h.toFloat(), pintura)
                         }
-                        dibujarOndaPedazo(nativo, pista, pz, x0, x1, 0f, h.toFloat(), 0f, w.toFloat(), trazo)
+                        dibujarOndaPedazo(nativo, pista, i, pz, x0, x1, 0f, h.toFloat(), 0f, w.toFloat(), trazo)
                     }
                 }
                 onDrawBehind { drawImage(img) }

@@ -1,34 +1,17 @@
 package com.wavapp.mezcla
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlin.math.abs
 
 /**
- * Análisis en vivo (como el panel "Diagnóstico" del prototipo): espectro, goniómetro, fase,
- * paneo y zumbido. El cálculo pesado es nativo; aquí van el suavizado y los textos.
+ * Lo que muestra el panel de análisis. Todo se calcula en el núcleo (espectro, fase, paneo,
+ * veredicto, zumbido, goniómetro); aquí solo se guarda lo último que llegó y los textos.
  */
 object Analisis {
-    const val BINS = 8192           // espectro de 16384 puntos
-    const val BINS_FUENTES = 1024   // espectros L/R de 2048 puntos
-    const val TIEMPO = 2048
-    const val SG_COLS = 1200
-    const val SG_FILAS = 256
-    const val SG_TOPE = 20000f
-
-    val espectro = FloatArray(BINS) { -200f }
-    val fanE = FloatArray(BINS_FUENTES) { -200f }
-    val fanP = FloatArray(BINS_FUENTES)
-    val tiempo = FloatArray(2 * TIEMPO)  // L y luego R
-    private val stats = FloatArray(8)
-
     /** Cambia con cada análisis nuevo: los dibujos lo leen para rehacerse. */
     var version by mutableIntStateOf(0)
         private set
@@ -41,15 +24,19 @@ object Analisis {
     /** -1 = mezcla completa; si no, id de la pista. */
     var fuenteId by mutableIntStateOf(-1)
     var modoClasico by mutableStateOf(false)
-    var notch by mutableIntStateOf(0)
-        private set
+    val notch: Int get() = Mesa.notch
 
-    // Valores derivados, como diag() y setMeters() del prototipo.
-    var correlacion by mutableStateOf(1f)
+    var correlacion by mutableFloatStateOf(1f)
         private set
-    var paneo by mutableStateOf(0f)
+    var paneo by mutableFloatStateOf(0f)
         private set
     var fuerte by mutableStateOf(false)
+        private set
+    var veredicto by mutableIntStateOf(0)  // 0 nada, 1 fuera de fase, 2 muy ancho, 3 estéreo, 4 mono
+        private set
+    var desbalance by mutableIntStateOf(0)  // -1 L, 0, 1 R
+        private set
+    var malo by mutableStateOf(false)
         private set
     var zumbidoHz by mutableIntStateOf(0)
         private set
@@ -57,75 +44,48 @@ object Analisis {
         private set
     var zumbidoDb by mutableIntStateOf(0)
         private set
+    var gananciaGonio by mutableIntStateOf(0)
+        private set
 
-    /** Espectrogramas ya calculados, por id de pista (no cambian: el archivo no cambia). */
+    private val stats = FloatArray(Nucleo.DATOS_ANALISIS)
+
+    /** Espectrogramas que ya llegaron del núcleo, por id de pista. */
     val espectrogramas = mutableStateMapOf<Int, ByteArray>()
-    private val calculando = mutableSetOf<Int>()
-    private val scope = MainScope()
-    private var cuadro = 0
+    private val pedidos = mutableSetOf<Int>()
 
-    fun ponerNotch(hz: Int, guardar: Boolean = true) {
-        notch = if (hz == 50 || hz == 60) hz else 0
-        NativeAudio.setNotch(notch)
-        if (guardar) Mesa.pedirGuardarDesdeFuera()
-    }
+    fun ponerNotch(hz: Int) = Mesa.ponerNotch(hz)
 
     /** Se llama en cada cuadro de pantalla. */
-    fun tick(sonando: Boolean) {
+    fun tick(ahoraMs: Long) {
         val eq = Mesa.eqAbierta
-        val necesita = abierto || eq != null
         // Qué escucha el analizador: la pista del EQ abierto, o la fuente elegida.
-        val fuente = eq?.slot ?: Mesa.pistas.firstOrNull { it.id == fuenteId }?.slot ?: -1
-        NativeAudio.setAnalysisSource(fuente)
-        if (!necesita) return
-        if (!sonando) {
-            if (activo) reposo()
-            return
-        }
-        if (++cuadro % 2 != 0) return  // ~30 veces por segundo, como el prototipo
-        if (!NativeAudio.analyze(espectro, fanE, fanP, tiempo, stats)) return
-        val rl = stats[2]
-        val rr = stats[3]
-        fuerte = rl + rr > 1e-4f
-        correlacion = correlacion * 0.85f + stats[4] * 0.15f
-        paneo = if (fuerte) (rr - rl) / (rr + rl) else 0f
-        if (cuadro % 8 == 0) {  // el zumbido se revisa ~4 veces por segundo
-            zumbidoHz = stats[5].toInt()
-            zumbidoArmonicos = stats[6].toInt()
-            zumbidoDb = stats[7].toInt()
-        }
-        activo = true
-        version++
-    }
-
-    private fun reposo() {
-        activo = false
-        correlacion = 1f
-        paneo = 0f
-        fuerte = false
-        zumbidoHz = 0
-        espectro.fill(-200f)
-        fanE.fill(-200f)
-        tiempo.fill(0f)
-        NativeAudio.analysisReset()
+        Nucleo.setAnalysisSource(eq?.id ?: (Mesa.pistas.firstOrNull { it.id == fuenteId }?.id ?: -1))
+        if (!abierto && eq == null) return
+        if (!Nucleo.analysis(ahoraMs, modoClasico, stats)) return
+        activo = stats[0] != 0f
+        fuerte = stats[1] != 0f
+        correlacion = stats[2]
+        paneo = stats[3]
+        veredicto = stats[4].toInt()
+        desbalance = stats[5].toInt()
+        malo = stats[6] != 0f
+        zumbidoHz = stats[7].toInt()
+        zumbidoArmonicos = stats[8].toInt()
+        zumbidoDb = stats[9].toInt()
+        gananciaGonio = Math.round(stats[10])
         version++
     }
 
     /** Veredicto de fase y paneo, con los mismos textos que el prototipo. */
     fun veredicto(): Pair<String, Boolean> {
-        if (!activo || !fuerte) return (if (Mesa.reproduciendo) "Silencio." else "Reproduce para medir.") to false
-        val c = correlacion
-        var malo = false
-        var t = when {
-            c < 0 -> { malo = true; "Fuera de fase: se cancela en mono. Revisa polaridad o fase entre canales." }
-            c < 0.3f -> "Muy ancho: revisa que no pierda cuerpo al sumar a mono."
-            c < 0.9f -> "Estéreo en fase: se mantiene bien en mono."
+        if (veredicto == 0) return (if (Mesa.reproduciendo) "Silencio." else "Reproduce para medir.") to false
+        var t = when (veredicto) {
+            1 -> "Fuera de fase: se cancela en mono. Revisa polaridad o fase entre canales."
+            2 -> "Muy ancho: revisa que no pierda cuerpo al sumar a mono."
+            3 -> "Estéreo en fase: se mantiene bien en mono."
             else -> "Mono o casi mono: fase correcta."
         }
-        if (abs(paneo) > 0.25f) {
-            t += " Desbalance hacia " + (if (paneo < 0) "L" else "R") + "."
-            malo = malo || abs(paneo) > 0.5f
-        }
+        if (desbalance != 0) t += " Desbalance hacia " + (if (desbalance < 0) "L" else "R") + "."
         return t to malo
     }
 
@@ -140,18 +100,30 @@ object Analisis {
         else "Sin zumbido evidente en 50/60 Hz ni armónicos.") to false
     }
 
-    /** Pide el espectrograma de la pista (se calcula una vez, en segundo plano). */
+    /** Pide el espectrograma de la pista (el núcleo lo calcula una vez, en segundo plano). */
     fun pedirEspectrograma(p: Pista) {
-        if (espectrogramas.containsKey(p.id) || !calculando.add(p.id)) return
-        scope.launch {
-            val datos = withContext(Dispatchers.Default) { NativeAudio.spectrogram(p.slot, SG_COLS, SG_FILAS) }
-            calculando.remove(p.id)
-            if (datos != null && Mesa.pistas.any { it.id == p.id }) espectrogramas[p.id] = datos
+        if (espectrogramas.containsKey(p.id)) return
+        pedidos += p.id
+        Nucleo.spectrogram(p.id)?.let {
+            espectrogramas[p.id] = it
+            pedidos -= p.id
         }
     }
 
-    fun olvidar(p: Pista) {
-        espectrogramas.remove(p.id)
-        if (fuenteId == p.id) fuenteId = -1
+    /** Terminó algo en segundo plano: los espectrogramas pedidos que ya estén listos. */
+    internal fun alCambiarFondo() {
+        for (id in pedidos.toList()) {
+            Nucleo.spectrogram(id)?.let {
+                espectrogramas[id] = it
+                pedidos -= id
+            }
+        }
+    }
+
+    internal fun alCambiarPistas() {
+        val ids = Mesa.pistas.map { it.id }.toSet()
+        espectrogramas.keys.filter { it !in ids }.forEach { espectrogramas.remove(it) }
+        pedidos.retainAll(ids)
+        if (fuenteId != -1 && fuenteId !in ids) fuenteId = -1
     }
 }

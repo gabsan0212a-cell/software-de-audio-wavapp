@@ -1,6 +1,10 @@
 # WavApp — software de mezcla nativo para Android
 
-Kotlin + C++ con [Oboe](https://github.com/google/oboe) para audio de baja latencia.
+Dos capas, con una regla fija:
+- **Kotlin + Jetpack Compose: solo la pantalla** (dibujar, botones, gestos y textos).
+- **C++: el corazón, todo lo técnico** (audio, mezcla, efectos, análisis, edición, importar,
+  exportar, la sesión). Salida de audio con [Oboe](https://github.com/google/oboe), baja latencia.
+
 Sin computadora: GitHub Actions compila, prueba y publica el APK en la nube.
 La versión web ("Mesa de Audio") es el prototipo de referencia: la app nativa copia su
 comportamiento (volumen, paneo, limitador, medidores, colores).
@@ -34,22 +38,29 @@ El APK solo se publica si pasan todas las pruebas.
 Sin plugins VST en Android.
 
 ## Cómo está hecho
-- `app/src/main/cpp/`: motor en C++.
-  - `WavReader` / `WavWriter`: leer cualquier WAV por partes; escribir el formato interno.
-  - `Resampler`: convierte a 48 kHz al importar (filtro sinc, ~120 dB de precisión).
-  - `MappedAudio`: las pistas se guardan como WAV float a 48 kHz y se mapean en memoria
-    (no llenan la RAM; el sistema lee del disco lo que va sonando).
-  - `Mixer` + `Limiter`: la mezcla en tiempo real, igual que la cadena del prototipo. Cada
-    pista suena como una lista de pedazos (`Region`) de su archivo, con fundidos.
-  - `Equalizer`: EQ por pista (filtros biquad como Web Audio); solo procesa las bandas que existen.
-  - `Exporter`: renderiza la mezcla fuera de tiempo real con una copia del mezclador.
-  - `Analyzer`: FFT, espectro como AnalyserNode, fase, zumbido y espectrograma.
-  - `AudioEngine`: salida con Oboe a 48 kHz; `jni_bridge.cpp`: puente con Kotlin.
-- `app/src/main/java/.../`: `Mesa.kt` (estado, importación, sesión), `Edicion.kt` (pedazos,
-  deshacer/rehacer), `Decodificador.kt`
-  (formatos comprimidos → WAV con MediaCodec) y `ui/` (pantalla en Compose).
+- `app/src/main/cpp/core/`: **el núcleo**, C++17 sin nada de Android (se prueba en Linux).
+  - `Studio`: la fachada de todo. Es dueño del proyecto (pistas, EQ, pedazos, master), hace
+    los trabajos largos en su propio hilo (importar, exportar, abrir la sesión), guarda la
+    sesión poco después de cada cambio, lleva el historial de deshacer/rehacer y da a la
+    pantalla lo que dibuja (versiones de cada cosa, medidores, análisis, onda).
+  - `io/`: `WavReader` / `WavWriter` (cualquier WAV por partes; el formato interno),
+    `MappedAudio` (las pistas, mapeadas en memoria: no llenan la RAM), `Json` (la sesión).
+  - `dsp/`: `Resampler` (a 48 kHz al importar, ~120 dB de precisión), `Equalizer` (biquads
+    como Web Audio), `Limiter`, `Analyzer` (FFT, espectro, fase, zumbido, espectrograma) y
+    `AnalysisView` (lo que muestra el panel: veredicto, goniómetro, espectro por columnas).
+  - `engine/`: `Mixer` (la mezcla en tiempo real; cada pista es una lista de pedazos con
+    fundidos), `Importer` (WAV o decodificado → formato interno), `Exporter`, `Meters`
+    (caídas y picos de los medidores) y `Decoder.h` (lo que debe dar la plataforma).
+  - `project/`: `Model` (el proyecto), `Session` (sesion.json) y `Edit` (mover, recortar,
+    fundidos, cortar, imán).
+- `app/src/main/cpp/android/`: lo de la plataforma: `AudioOutput` (Oboe), `MediaDecoder`
+  (MP3, AAC, FLAC, OGG, Opus... con MediaCodec desde C++) y `jni_bridge.cpp` (el puente).
+- `app/src/main/java/.../`: **solo pantalla**. `Nucleo.kt` (el puente), `Mesa.kt` (espejo del
+  estado del núcleo para Compose), `Analisis.kt` y `Edicion.kt` (lo que recuerda cada panel)
+  y `ui/` (Compose).
 
 ## Pruebas
-- `tests/native/run.sh`: pruebas del motor en Linux con ASan, UBSan y TSan.
-- `tests/check_jni.py`: que Kotlin y C++ coincidan en el puente.
+- `tests/native/run.sh`: pruebas del núcleo en Linux con ASan, UBSan y TSan (incluye el
+  Studio completo: sesión, importar, editar, deshacer, exportar, varios hilos a la vez).
+- `tests/check_jni.py`: que Kotlin y C++ coincidan en el puente (nombres y tipos).
 - `app/src/androidTest/`: pruebas en un emulador Android (audio real, importación, pantalla).

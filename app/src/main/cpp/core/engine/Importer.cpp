@@ -1,13 +1,11 @@
-#include "Importer.h"
+#include "engine/Importer.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
 
-#include "Resampler.h"
-#include "WavReader.h"
-#include "WavWriter.h"
+#include "io/WavReader.h"
 
 namespace {
 
@@ -34,82 +32,111 @@ std::string toMono(const std::string &stereoPath, const std::string &monoPath, i
 
 }  // namespace
 
+ImportSink::ImportSink(std::string dstPath, int projectRate)
+    : mDst(std::move(dstPath)), mTmp(mDst + ".tmp"), mRate(projectRate) {}
+
+ImportSink::~ImportSink() { abort(); }
+
+void ImportSink::abort() {
+    if (!mOpen) return;
+    mWriter.close();
+    std::remove(mTmp.c_str());
+    mOpen = false;
+}
+
+std::string ImportSink::fail(const std::string &e) {
+    abort();
+    return e;
+}
+
+std::string ImportSink::begin(int sampleRate, int channels) {
+    if (mOpen) return "";
+    if (sampleRate <= 0 || channels <= 0) return "Formato de audio inválido";
+    mSrcRate = sampleRate;
+    mSrcCh = channels;
+    mOutCh = std::min(2, channels);  // con más de 2 canales se usan los dos primeros
+    mDual = mOutCh == 2;
+    if (!mWriter.open(mTmp, mOutCh, mRate)) return writeFailed();
+    if (sampleRate != mRate) mResampler = std::make_unique<Resampler>(mOutCh, sampleRate, mRate);
+    mOpen = true;
+    return "";
+}
+
+std::string ImportSink::write(const float *in, size_t n) {
+    if (!mOpen) return "No se pudo guardar la pista";
+    mSel.resize(n * mOutCh);
+    for (size_t i = 0; i < n; ++i)
+        for (int c = 0; c < mOutCh; ++c) mSel[i * mOutCh + c] = in[i * mSrcCh + c];
+    if (mDual)
+        for (size_t i = 0; i < n && mDual; ++i) mDual = std::fabs(mSel[2 * i] - mSel[2 * i + 1]) <= 1e-6f;
+    bool ok;
+    if (mResampler) {
+        mOut.clear();
+        mResampler->process(mSel.data(), n, mOut);
+        ok = mWriter.write(mOut.data(), mOut.size() / mOutCh);
+    } else {
+        ok = mWriter.write(mSel.data(), n);
+    }
+    return ok ? "" : fail(writeFailed());
+}
+
+std::string ImportSink::finish(ImportInfo &info) {
+    if (!mOpen) return "El archivo no tiene audio";
+    if (mResampler) {
+        mOut.clear();
+        mResampler->finish(mOut);
+        if (!mWriter.write(mOut.data(), mOut.size() / mOutCh)) return fail(writeFailed());
+    }
+    int64_t frames = mWriter.frames();
+    const bool closed = mWriter.close();
+    mOpen = false;
+    if (!closed || frames == 0) {
+        std::remove(mTmp.c_str());
+        return frames == 0 ? "El archivo no tiene audio" : writeFailed();
+    }
+    info.srcRate = mSrcRate;
+    info.srcChannels = mSrcCh;
+    info.dualMono = mDual;
+    info.channels = mOutCh;
+    if (mDual) {
+        const std::string err = toMono(mTmp, mDst, mRate, frames);
+        std::remove(mTmp.c_str());
+        if (!err.empty()) {
+            std::remove(mDst.c_str());
+            return err;
+        }
+        info.channels = 1;
+    } else if (std::rename(mTmp.c_str(), mDst.c_str()) != 0) {
+        std::remove(mTmp.c_str());
+        return writeFailed();
+    }
+    info.frames = frames;
+    return "";
+}
+
 std::string importWav(FILE *src, const std::string &dstPath, int sampleRate, ImportInfo &info,
                       std::atomic<float> *progress) {
     if (progress) progress->store(0.0f);
     WavReader r;
     std::string err = r.open(src);
     if (!err.empty()) return err;
-
-    info.srcRate = r.sampleRate();
-    info.srcChannels = r.channels();
-    info.srcBits = r.bits();
-    info.srcFloat = r.isFloat();
-    const int srcCh = r.channels();
-    const int outCh = std::min(2, srcCh);  // con más de 2 canales se usan los dos primeros
-
-    const std::string tmp = dstPath + ".tmp";
-    WavWriter w;
-    if (!w.open(tmp, outCh, sampleRate)) return writeFailed();
-    std::unique_ptr<Resampler> rs;
-    if (r.sampleRate() != sampleRate) rs = std::make_unique<Resampler>(outCh, r.sampleRate(), sampleRate);
-
-    std::vector<float> in(kChunk * srcCh), sel(kChunk * outCh), out;
-    bool dual = outCh == 2;
-    int64_t read = 0;
+    ImportSink sink(dstPath, sampleRate);
+    err = sink.begin(r.sampleRate(), r.channels());
+    if (!err.empty()) return err;
+    std::vector<float> in(kChunk * r.channels());
     const int64_t total = r.frames();
+    int64_t read = 0;
     size_t n;
     while ((n = r.read(in.data(), kChunk)) > 0) {
-        for (size_t i = 0; i < n; ++i)
-            for (int c = 0; c < outCh; ++c) sel[i * outCh + c] = in[i * srcCh + c];
-        if (dual)
-            for (size_t i = 0; i < n && dual; ++i) dual = std::fabs(sel[2 * i] - sel[2 * i + 1]) <= 1e-6f;
-        bool ok;
-        if (rs) {
-            out.clear();
-            rs->process(sel.data(), n, out);
-            ok = w.write(out.data(), out.size() / outCh);
-        } else {
-            ok = w.write(sel.data(), n);
-        }
-        if (!ok) {
-            w.close();
-            std::remove(tmp.c_str());
-            return writeFailed();
-        }
+        err = sink.write(in.data(), n);
+        if (!err.empty()) return err;
         read += static_cast<int64_t>(n);
         if (progress && total > 0) progress->store(0.95f * static_cast<float>(read) / static_cast<float>(total));
     }
-    if (rs) {
-        out.clear();
-        rs->finish(out);
-        if (!w.write(out.data(), out.size() / outCh)) {
-            w.close();
-            std::remove(tmp.c_str());
-            return writeFailed();
-        }
-    }
-    int64_t frames = w.frames();
-    if (!w.close() || frames == 0) {
-        std::remove(tmp.c_str());
-        return frames == 0 ? "El WAV está vacío" : writeFailed();
-    }
-
-    info.dualMono = dual;
-    info.channels = outCh;
-    if (dual) {
-        err = toMono(tmp, dstPath, sampleRate, frames);
-        std::remove(tmp.c_str());
-        if (!err.empty()) {
-            std::remove(dstPath.c_str());
-            return err;
-        }
-        info.channels = 1;
-    } else if (std::rename(tmp.c_str(), dstPath.c_str()) != 0) {
-        std::remove(tmp.c_str());
-        return writeFailed();
-    }
-    info.frames = frames;
+    err = sink.finish(info);
+    if (!err.empty()) return err == "El archivo no tiene audio" ? "El WAV está vacío" : err;
+    info.srcBits = r.bits();
+    info.srcFloat = r.isFloat();
     if (progress) progress->store(1.0f);
     return "";
 }

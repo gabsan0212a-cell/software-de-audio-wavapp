@@ -2,7 +2,6 @@ package com.wavapp.mezcla
 
 import android.content.Context
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.compose.runtime.getValue
@@ -13,37 +12,31 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.UUID
-import kotlin.math.log10
-import kotlin.math.max
-import kotlin.math.pow
 
-/** Nivel de un medidor en dB, con caída. Se lee al dibujar, así no recompone la pantalla. */
+/** Nivel de un medidor en dB (ya con su caída, calculada en el núcleo). */
 class Medidor {
     var l by mutableFloatStateOf(-120f)
     var r by mutableFloatStateOf(-120f)
 }
 
-/** Tipos de filtro del EQ (mismos que el prototipo y Web Audio). */
+/** Nombres de los tipos de filtro del EQ y qué controles tiene cada uno. */
 object Filtros {
     val nombres = listOf("Campana", "Shelf grave", "Shelf agudo", "Pasa-altos", "Pasa-bajos", "Notch")
     fun conGanancia(tipo: Int) = tipo <= 2
     fun conQ(tipo: Int) = tipo == 0 || tipo >= 3
 }
 
-/** Una banda del EQ. [indice] es su lugar en el motor (0..11). */
-class Banda(val indice: Int, tipo: Int, f: Float, g: Float, q: Float, on: Boolean = true) {
+/** Una banda del EQ, como la tiene el núcleo (se nombra por su posición en la pista). */
+class Banda(tipo: Int, f: Float, g: Float, q: Float, on: Boolean) {
     var tipo by mutableIntStateOf(tipo)
     var f by mutableFloatStateOf(f)
     var g by mutableFloatStateOf(g)
@@ -51,32 +44,46 @@ class Banda(val indice: Int, tipo: Int, f: Float, g: Float, q: Float, on: Boolea
     var on by mutableStateOf(on)
 }
 
+/** Un pedazo de una pista: qué parte del archivo suena y dónde. Todo en cuadros a 48 kHz. */
+data class Pedazo(
+    val inicio: Long,  // en la línea de tiempo
+    val origen: Long,  // en el archivo
+    val largo: Long,
+    val fadeIn: Long = 0,
+    val fadeOut: Long = 0,
+) {
+    val fin: Long get() = inicio + largo
+}
+
+/** Lo que la pantalla muestra de una pista. El dueño de los datos es el núcleo. */
 class Pista(
     val slot: Int,
     val id: Int,
     val nombre: String,
-    val archivo: String,  // dentro de la carpeta de audio de la app
     val canales: Int,
     val cuadros: Long,
     val info: String,
 ) {
-    var volDb by mutableFloatStateOf(0f)  // -60 (= -∞) .. +6
-    var pan by mutableIntStateOf(0)       // -100 .. 100
+    var volDb by mutableFloatStateOf(0f)
+    var pan by mutableIntStateOf(0)
     var mute by mutableStateOf(false)
     var solo by mutableStateOf(false)
     var fase by mutableStateOf(false)
     val medidor = Medidor()
-    // EQ: empieza sin bandas (no procesa nada); se agregan y quitan.
     val bandas = mutableStateListOf<Banda>()
     var eqBypass by mutableStateOf(false)
     var autoGanancia by mutableStateOf(true)
     var eqVersion by mutableIntStateOf(0)  // cambia con cada ajuste: la curva se vuelve a dibujar
-    val eqActivo: Boolean get() = !eqBypass && bandas.any { it.on }
-    // Edición: al agregarla es un solo pedazo con el archivo completo desde 0.
     var pedazos by mutableStateOf(listOf(Pedazo(0, 0, cuadros)))
+    val eqActivo: Boolean get() = !eqBypass && bandas.any { it.on }
     val editada: Boolean get() = pedazos != listOf(Pedazo(0, 0, cuadros))
     val segundos: Double get() = cuadros / Mesa.RATE
     val color: Int get() = (id - 1) % 12
+
+    // Versiones ya leídas del núcleo (-1 = nunca).
+    internal var vParams = -1
+    internal var vEq = -1
+    internal var vPedazos = -1
 }
 
 class MedidorMaster {
@@ -89,11 +96,13 @@ class MedidorMaster {
     var clipL by mutableStateOf(false)
     var clipR by mutableStateOf(false)
     var reduccion by mutableFloatStateOf(0f)
-    var tickTiempoL = 0L
-    var tickTiempoR = 0L
 }
 
-/** Estado de la mesa (vive mientras viva el proceso, igual que el motor nativo). */
+/**
+ * Estado de la pantalla: un espejo de lo que tiene el núcleo (C++), que es el dueño de todo.
+ * Las acciones van directo al núcleo; después se vuelve a leer lo que cambió (el núcleo lleva
+ * una versión de cada cosa, así solo se lee lo necesario).
+ */
 object Mesa {
     const val RATE = 48000.0
     const val MAX_PISTAS = 12
@@ -102,12 +111,9 @@ object Mesa {
     const val MASTER_MIN = -70f
     const val MAX_BANDAS = 12
 
-    private lateinit var carpeta: File
-    private lateinit var archivoSesion: File
     private var iniciada = false
+    private var appContext: Context? = null
     private val scope = MainScope()
-    private var guardado: Job? = null
-    private var siguienteId = 1
 
     val pistas = mutableStateListOf<Pista>()
 
@@ -116,6 +122,12 @@ object Mesa {
     var masterMute by mutableStateOf(false)
         private set
     var limitador by mutableStateOf(true)
+        private set
+    var notch by mutableIntStateOf(0)
+        private set
+    var exportBits by mutableIntStateOf(24)
+        private set
+    var exportRate by mutableIntStateOf(48000)
         private set
 
     var reproduciendo by mutableStateOf(false)
@@ -133,37 +145,166 @@ object Mesa {
         private set
     var progreso by mutableFloatStateOf(-1f)  // -1 = sin barra
         private set
+    var exportando by mutableStateOf(false)
+        private set
+    var puedeDeshacer by mutableStateOf(false)
+        private set
+    var puedeRehacer by mutableStateOf(false)
+        private set
 
     /** Pista cuyo EQ está abierto en pantalla (null = ninguno). */
     var eqAbierta by mutableStateOf<Pista?>(null)
 
-    // Exportación: 16, 24 o 32 (= 32 bits float) y frecuencia.
-    var exportBits by mutableIntStateOf(24)
-        private set
-    var exportRate by mutableIntStateOf(48000)
-        private set
-    var exportando by mutableStateOf(false)
-        private set
-
     val master = MedidorMaster()
-    private val bufMedidores = FloatArray(3 + 2 * MAX_PISTAS)
-    private var ultimoTick = 0L
+    private var moviendo = false
 
     /** Diagnóstico de la salida de audio (frecuencia, búfer, cortes), una vez por segundo. */
     var salida by mutableStateOf("")
         private set
     private var ultimaSalida = 0L
 
+    /** La app está a la vista (si no, no hace falta preguntarle nada al núcleo). */
+    var enPantalla = true
+
+    private val versiones = IntArray(Nucleo.VERSIONES)
+    private val vistas = IntArray(Nucleo.VER_FONDO + 1) { -1 }
+    private val bufParams = FloatArray(5)
+    private val bufMaster = FloatArray(6)
+    private val bufMedidores = FloatArray(Nucleo.MEDIDORES)
+
+    // Exportación en curso: si sale mal, se borra el archivo que se creó.
+    private var exportPendiente: Uri? = null
+    private var exportacionesVistas = 0
+
     // ------------------------------------------------------------------ inicio
 
     fun iniciar(context: Context) {
+        appContext = context.applicationContext
+        // El núcleo abre la sesión (o las pistas de prueba la primera vez); si ya estaba abierta, nada.
+        Nucleo.init(context.filesDir.path, context.cacheDir.path)
         if (iniciada) return
         iniciada = true
-        carpeta = File(context.filesDir, "audio").apply { mkdirs() }
-        archivoSesion = File(context.filesDir, "sesion.json")
-        aplicarMaster()
-        // Igual que el prototipo: la primera vez arranca con las pistas de prueba.
-        if (archivoSesion.exists()) restaurar() else cargarPrueba()
+        sincronizar()
+        // Lo que termina en segundo plano (importar, exportar, abrir la sesión) se ve aunque la
+        // pantalla esté quieta.
+        scope.launch {
+            while (true) {
+                if (enPantalla) sincronizar()
+                delay(if (ocupada) 100 else 250)
+            }
+        }
+    }
+
+    /** Vuelve a leer del núcleo lo que cambió. Barato si no cambió nada. */
+    fun sincronizar() {
+        if (!iniciada) return
+        Nucleo.versions(versiones)
+        if (versiones[Nucleo.VER_PISTAS] != vistas[Nucleo.VER_PISTAS]) leerPistas()
+        if (versiones[Nucleo.VER_MASTER] != vistas[Nucleo.VER_MASTER]) leerMaster()
+        if (versiones[Nucleo.VER_HISTORIAL] != vistas[Nucleo.VER_HISTORIAL]) leerHistorial()
+        if (versiones[Nucleo.VER_ESTADO] != vistas[Nucleo.VER_ESTADO]) leerEstado()
+        if (versiones[Nucleo.VER_FONDO] != vistas[Nucleo.VER_FONDO]) Analisis.alCambiarFondo()
+        for (i in vistas.indices) vistas[i] = versiones[i]
+        for (p in pistas) {
+            val vp = versiones[Nucleo.verParams(p.slot)]
+            if (vp != p.vParams) { p.vParams = vp; leerParams(p) }
+            val ve = versiones[Nucleo.verEq(p.slot)]
+            if (ve != p.vEq) { p.vEq = ve; leerEq(p) }
+            val vr = versiones[Nucleo.verPedazos(p.slot)]
+            if (vr != p.vPedazos) { p.vPedazos = vr; leerPedazos(p) }
+        }
+        reproduciendo = Nucleo.isPlaying()
+        posicion = Nucleo.positionSeconds()
+        duracion = Nucleo.durationSeconds()
+        if (ocupada) progreso = Nucleo.progress()
+    }
+
+    private fun leerPistas() {
+        val arr = JSONArray(Nucleo.tracksJson())
+        val nuevas = ArrayList<Pista>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val id = o.getInt("id")
+            val slot = o.getInt("slot")
+            nuevas += pistas.firstOrNull { it.id == id && it.slot == slot }
+                ?: Pista(slot, id, o.optString("nombre"), o.optInt("canales"), o.optLong("cuadros"), o.optString("info"))
+        }
+        if (nuevas != pistas.toList()) {
+            pistas.clear()
+            pistas.addAll(nuevas)
+        }
+        if (eqAbierta != null && eqAbierta !in nuevas) eqAbierta = null
+        Analisis.alCambiarPistas()
+        Edicion.alCambiarPistas()
+    }
+
+    private fun leerParams(p: Pista) {
+        if (!Nucleo.trackParams(p.id, bufParams)) return
+        p.volDb = bufParams[0]
+        p.pan = bufParams[1].toInt()
+        p.mute = bufParams[2] != 0f
+        p.solo = bufParams[3] != 0f
+        p.fase = bufParams[4] != 0f
+    }
+
+    private fun leerEq(p: Pista) {
+        val e = Nucleo.eqState(p.id)
+        if (e.size < 3) return
+        p.eqBypass = e[0] != 0f
+        p.autoGanancia = e[1] != 0f
+        val n = e[2].toInt()
+        if (p.bandas.size != n) {
+            p.bandas.clear()
+            for (k in 0 until n) p.bandas.add(Banda(0, 1000f, 0f, 1.4f, true))
+        }
+        for (k in 0 until n) {
+            val b = p.bandas[k]
+            val o = 3 + 5 * k
+            b.tipo = e[o].toInt()
+            b.f = e[o + 1]
+            b.g = e[o + 2]
+            b.q = e[o + 3]
+            b.on = e[o + 4] != 0f
+        }
+        p.eqVersion++
+    }
+
+    private fun leerPedazos(p: Pista) {
+        val r = Nucleo.regions(p.id)
+        val lista = (0 until r.size / 5).map { Pedazo(r[5 * it], r[5 * it + 1], r[5 * it + 2], r[5 * it + 3], r[5 * it + 4]) }
+        if (lista != p.pedazos) p.pedazos = lista
+    }
+
+    private fun leerMaster() {
+        Nucleo.masterState(bufMaster)
+        masterDb = bufMaster[0]
+        masterMute = bufMaster[1] != 0f
+        limitador = bufMaster[2] != 0f
+        notch = bufMaster[3].toInt()
+        exportBits = bufMaster[4].toInt()
+        exportRate = bufMaster[5].toInt()
+    }
+
+    private fun leerHistorial() {
+        val h = Nucleo.history()
+        puedeDeshacer = (h and 1) != 0
+        puedeRehacer = (h and 2) != 0
+    }
+
+    private fun leerEstado() {
+        val o = JSONObject(Nucleo.statusJson())
+        estado = o.optString("mensaje")
+        ocupada = o.optBoolean("ocupada")
+        ocupadaTexto = o.optString("texto")
+        exportando = o.optBoolean("exportando")
+        progreso = if (ocupada) Nucleo.progress() else -1f
+        val hechas = o.optInt("exportaciones")
+        if (hechas != exportacionesVistas) {
+            exportacionesVistas = hechas
+            val uri = exportPendiente
+            exportPendiente = null
+            if (uri != null && !o.optBoolean("ultimaOk")) borrarDocumento(uri)
+        }
     }
 
     // ------------------------------------------------------------------ pistas
@@ -171,350 +312,141 @@ object Mesa {
     fun agregarArchivos(context: Context, uris: List<Uri>) {
         if (ocupada || uris.isEmpty()) return
         scope.launch {
-            ocupada = true
-            val errores = mutableListOf<String>()
-            var agregadas = 0
-            for (uri in uris) {
-                val nombreArchivo = nombreDe(context, uri)
-                if (pistas.size >= MAX_PISTAS) {
-                    errores += "límite de $MAX_PISTAS pistas"
-                    break
+            val abiertos = withContext(Dispatchers.IO) {
+                uris.map { uri ->
+                    val fd = try {
+                        context.contentResolver.openFileDescriptor(uri, "r")?.use { it.detachFd() } ?: -1
+                    } catch (_: Exception) {
+                        -1
+                    }
+                    fd to nombreDe(context, uri)
                 }
-                ocupadaTexto = "Importando $nombreArchivo…"
-                progreso = 0f
-                val archivo = "pista-${UUID.randomUUID()}.wav"
-                val imp = importarUno(context, uri, archivo, nombreArchivo)
-                val r = imp.datos
-                if (r == null) {
-                    errores += "$nombreArchivo: ${imp.error}"
-                    continue
-                }
-                val info = describir(r[3].toInt(), r[4].toInt(), r[5].toInt(), r[6] == 1L, r[7] == 1L)
-                val p = Pista(
-                    slot = r[0].toInt(), id = siguienteId++, nombre = sinExtension(nombreArchivo),
-                    archivo = archivo, canales = r[1].toInt(), cuadros = r[2],
-                    // De un comprimido, los "bits" son los del decodificador: mejor mostrar el formato.
-                    info = if (imp.codec.isEmpty()) info else imp.codec + " · " + info.substringBefore(" · ") +
-                        " · " + info.substringAfterLast(" · "),
-                )
-                pistas.add(p)
-                aplicar(p)
-                agregadas++
             }
-            progreso = -1f
-            ocupada = false
-            val msg = when {
-                errores.isEmpty() -> "$agregadas pista(s) agregada(s)"
-                else -> (if (agregadas > 0) "$agregadas agregada(s); " else "") +
-                    "problemas: " + errores.joinToString("; ") +
-                    ". Suelen funcionar WAV, MP3, AAC/M4A, FLAC, OGG y Opus"
-            }
-            actualizarEstado(msg)
-            pedirGuardar()
-        }
-    }
-
-    private class Importado(val datos: LongArray?, val error: String, val codec: String = "")
-
-    @Volatile private var decodificando = false
-    @Volatile private var progresoDecodificacion = 0f
-
-    /** WAV directo; si no es WAV, Android lo decodifica a un WAV temporal y se importa ese. */
-    private suspend fun importarUno(context: Context, uri: Uri, archivo: String, nombre: String): Importado {
-        val destino = File(carpeta, archivo).path
-        val directo = withContext(Dispatchers.IO) {
-            try {
-                val fd = context.contentResolver.openFileDescriptor(uri, "r")?.use { it.detachFd() }
-                if (fd == null) {
-                    Importado(null, "no se pudo abrir")
-                } else {
-                    val r = NativeAudio.importWav(fd, destino)
-                    Importado(r, if (r == null) NativeAudio.lastError() else "")
-                }
-            } catch (e: Exception) {
-                Importado(null, e.message ?: "no se pudo abrir")
-            }
-        }
-        if (directo.datos != null || directo.error != "No es un archivo WAV") return directo
-
-        val temporal = File(context.cacheDir, "decodificado-${UUID.randomUUID()}.wav")
-        try {
-            ocupadaTexto = "Decodificando $nombre…"
-            progresoDecodificacion = 0f
-            decodificando = true
-            val d = withContext(Dispatchers.IO) {
-                Decodificador.aWav(context, uri, temporal) { progresoDecodificacion = it }
-            }
-            decodificando = false
-            if (d.error.isNotEmpty()) return Importado(null, d.error)
-            ocupadaTexto = "Importando $nombre…"
-            return withContext(Dispatchers.IO) {
-                val fd = ParcelFileDescriptor.open(temporal, ParcelFileDescriptor.MODE_READ_ONLY).detachFd()
-                val r = NativeAudio.importWav(fd, destino)
-                Importado(r, if (r == null) NativeAudio.lastError() else "", d.codec)
-            }
-        } finally {
-            decodificando = false
-            temporal.delete()
+            Nucleo.importFiles(abiertos.map { it.first }.toIntArray(), abiertos.map { it.second }.toTypedArray())
+            sincronizar()
         }
     }
 
     fun cargarPrueba() {
         if (ocupada) return
-        scope.launch {
-            ocupada = true
-            ocupadaTexto = "Creando pistas de prueba…"
-            // Nombre, paneo y volumen como en el prototipo.
-            val demos = listOf(Triple("Bajo", 0, 0f), Triple("Voz", 0, 0f),
-                Triple("Guitarra", 60, -2f), Triple("Teclado", -60, -3f))
-            var n = 0
-            for ((i, d) in demos.withIndex()) {
-                if (pistas.size >= MAX_PISTAS) break
-                val archivo = "prueba-${UUID.randomUUID()}.wav"
-                val r = withContext(Dispatchers.IO) { NativeAudio.addDemoTrack(i, File(carpeta, archivo).path) }
-                    ?: continue
-                val p = Pista(r[0].toInt(), siguienteId++, d.first, archivo, r[1].toInt(), r[2], "prueba · mono · 12 s")
-                p.pan = d.second
-                p.volDb = d.third
-                pistas.add(p)
-                aplicar(p)
-                n++
-            }
-            ocupada = false
-            actualizarEstado(if (n > 0) "Pistas de prueba cargadas" else "Límite de $MAX_PISTAS pistas")
-            pedirGuardar()
-        }
+        Nucleo.loadDemo()
+        sincronizar()
     }
 
     fun quitar(p: Pista) {
         if (eqAbierta == p) eqAbierta = null
-        Analisis.olvidar(p)
-        Edicion.olvidar(p)
-        if (!pistas.remove(p)) return
-        if (pistas.isEmpty()) NativeAudio.stopTransport()
-        scope.launch {
-            withContext(Dispatchers.IO) {
-                NativeAudio.removeTrack(p.slot)
-                File(carpeta, p.archivo).delete()
-            }
-            actualizarEstado()
-            pedirGuardar()
-        }
+        Nucleo.removeTrack(p.id)
+        sincronizar()
     }
 
-    fun ponerVolumen(p: Pista, db: Float) {
-        p.volDb = (Math.round(db.coerceIn(VOL_MIN, VOL_MAX) * 2) / 2f)
-        NativeAudio.setTrackGain(p.slot, ganancia(p.volDb, VOL_MIN + 0.1f))
-        pedirGuardar()
-    }
-
-    fun ponerPan(p: Pista, pan: Float) {
-        p.pan = Math.round(pan.coerceIn(-100f, 100f))
-        NativeAudio.setTrackPan(p.slot, p.pan / 100f)
-        pedirGuardar()
-    }
-
-    fun alternarMute(p: Pista) { p.mute = !p.mute; NativeAudio.setTrackMute(p.slot, p.mute); pedirGuardar() }
-    fun alternarSolo(p: Pista) { p.solo = !p.solo; NativeAudio.setTrackSolo(p.slot, p.solo); pedirGuardar() }
-    fun alternarFase(p: Pista) { p.fase = !p.fase; NativeAudio.setTrackInvert(p.slot, p.fase); pedirGuardar() }
+    fun ponerVolumen(p: Pista, db: Float) { Nucleo.setVolume(p.id, db); sincronizar() }
+    fun ponerPan(p: Pista, pan: Float) { Nucleo.setPan(p.id, pan); sincronizar() }
+    fun alternarMute(p: Pista) { Nucleo.setMute(p.id, !p.mute); sincronizar() }
+    fun alternarSolo(p: Pista) { Nucleo.setSolo(p.id, !p.solo); sincronizar() }
+    fun alternarFase(p: Pista) { Nucleo.setPhase(p.id, !p.fase); sincronizar() }
 
     /** ¿Suena esta pista con el mute/solo actual? (para atenuar su carril, como el prototipo) */
     fun suena(p: Pista): Boolean = !p.mute && (pistas.none { it.solo } || p.solo)
 
-    private fun aplicar(p: Pista) {
-        NativeAudio.setTrackGain(p.slot, ganancia(p.volDb, VOL_MIN + 0.1f))
-        NativeAudio.setTrackPan(p.slot, p.pan / 100f)
-        NativeAudio.setTrackMute(p.slot, p.mute)
-        NativeAudio.setTrackSolo(p.slot, p.solo)
-        NativeAudio.setTrackInvert(p.slot, p.fase)
-        NativeAudio.setEqBypass(p.slot, p.eqBypass)
-        NativeAudio.setEqAutoGain(p.slot, p.autoGanancia)
-        p.bandas.forEach { enviarBanda(p, it) }
-    }
-
-    // ------------------------------------------------------------------ edición
-
-    /** Manda los pedazos al motor y se queda con lo que el motor aceptó. */
-    fun ponerPedazos(p: Pista, lista: List<Pedazo>) {
-        val arr = LongArray(lista.size * 5)
-        lista.forEachIndexed { i, pz ->
-            arr[5 * i] = pz.inicio; arr[5 * i + 1] = pz.origen; arr[5 * i + 2] = pz.largo
-            arr[5 * i + 3] = pz.fadeIn; arr[5 * i + 4] = pz.fadeOut
-        }
-        NativeAudio.setRegions(p.slot, arr)
-        val r = NativeAudio.regions(p.slot)
-        p.pedazos = (0 until r.size / 5).map { Pedazo(r[5 * it], r[5 * it + 1], r[5 * it + 2], r[5 * it + 3], r[5 * it + 4]) }
-        duracion = NativeAudio.durationSeconds()
-        posicion = NativeAudio.positionSeconds()
-        pedirGuardar()
-    }
-
     // ------------------------------------------------------------------ EQ
 
-    /** Agrega una banda (campana, 0 dB) en el hueco de frecuencias más grande. */
+    /** Agrega una banda (el núcleo la pone en el hueco de frecuencias más grande). */
     fun agregarBanda(p: Pista): Banda? {
-        if (p.bandas.size >= MAX_BANDAS) return null
-        val indice = (0 until MAX_BANDAS).first { i -> p.bandas.none { it.indice == i } }
-        val b = Banda(indice, 0, frecuenciaLibre(p), 0f, 1.4f)
-        p.bandas.add(b)
-        enviarBanda(p, b)
-        cambioEq(p)
-        return b
+        val pos = Nucleo.addEqBand(p.id)
+        sincronizar()
+        return p.bandas.getOrNull(pos)
     }
 
     fun quitarBanda(p: Pista, b: Banda) {
-        if (!p.bandas.remove(b)) return
-        NativeAudio.setEqBand(p.slot, b.indice, false, false, b.tipo, b.f, b.g, b.q)
-        cambioEq(p)
+        val pos = p.bandas.indexOf(b)
+        if (pos < 0) return
+        Nucleo.removeEqBand(p.id, pos)
+        sincronizar()
     }
 
     fun cambiarBanda(
         p: Pista, b: Banda, tipo: Int = b.tipo, f: Float = b.f, g: Float = b.g, q: Float = b.q, on: Boolean = b.on,
     ) {
-        b.tipo = tipo.coerceIn(0, Filtros.nombres.size - 1)
-        b.f = Math.round(f.coerceIn(20f, 20000f) * 10) / 10f
-        b.g = Math.round(g.coerceIn(-15f, 15f) * 2) / 2f
-        b.q = Math.round(q.coerceIn(0.1f, 18f) * 100) / 100f
-        b.on = on
-        enviarBanda(p, b)
-        cambioEq(p)
+        val pos = p.bandas.indexOf(b)
+        if (pos < 0) return
+        Nucleo.setEqBand(p.id, pos, tipo, f, g, q, on)
+        sincronizar()
     }
 
-    fun alternarEqBypass(p: Pista) { p.eqBypass = !p.eqBypass; NativeAudio.setEqBypass(p.slot, p.eqBypass); cambioEq(p) }
-    fun alternarAutoGanancia(p: Pista) {
-        p.autoGanancia = !p.autoGanancia
-        NativeAudio.setEqAutoGain(p.slot, p.autoGanancia)
-        cambioEq(p)
-    }
+    fun alternarEqBypass(p: Pista) { Nucleo.setEqBypass(p.id, !p.eqBypass); sincronizar() }
+    fun alternarAutoGanancia(p: Pista) { Nucleo.setEqAutoGain(p.id, !p.autoGanancia); sincronizar() }
 
     /** Quita todas las bandas: el EQ queda plano y sin procesar. */
-    fun restablecerEq(p: Pista) {
-        for (b in p.bandas) NativeAudio.setEqBand(p.slot, b.indice, false, false, b.tipo, b.f, b.g, b.q)
-        p.bandas.clear()
-        cambioEq(p)
-    }
-
-    private fun enviarBanda(p: Pista, b: Banda) =
-        NativeAudio.setEqBand(p.slot, b.indice, true, b.on, b.tipo, b.f, b.g, b.q)
-
-    private fun cambioEq(p: Pista) {
-        p.eqVersion++
-        pedirGuardar()
-    }
-
-    /** Centro (en escala logarítmica) del hueco más grande entre 20 Hz, las bandas y 20 kHz. */
-    private fun frecuenciaLibre(p: Pista): Float {
-        if (p.bandas.isEmpty()) return 1000f
-        val puntos = (listOf(20f, 20000f) + p.bandas.map { it.f }).map { log10(it) }.sorted()
-        var mejor = 0
-        for (i in 1 until puntos.size - 1) if (puntos[i + 1] - puntos[i] > puntos[mejor + 1] - puntos[mejor]) mejor = i
-        val f = 10f.pow((puntos[mejor] + puntos[mejor + 1]) / 2)
-        // Redondeo amable: 2 cifras significativas (p. ej. 3162 → 3200).
-        val escala = 10f.pow(kotlin.math.floor(log10(f)) - 1)
-        return Math.round(f / escala) * escala
-    }
+    fun restablecerEq(p: Pista) { Nucleo.resetEq(p.id); sincronizar() }
 
     // ------------------------------------------------------------------ master
 
-    fun ponerMaster(db: Float) {
-        masterDb = Math.round(db.coerceIn(MASTER_MIN, VOL_MAX) * 2) / 2f
-        aplicarMaster()
-        pedirGuardar()
-    }
-
-    fun alternarMasterMute() { masterMute = !masterMute; aplicarMaster(); pedirGuardar() }
-
-    fun alternarLimitador() {
-        limitador = !limitador
-        NativeAudio.setLimiter(limitador)
-        pedirGuardar()
-    }
+    fun ponerMaster(db: Float) { Nucleo.setMasterDb(db); sincronizar() }
+    fun alternarMasterMute() { Nucleo.setMasterMute(!masterMute); sincronizar() }
+    fun alternarLimitador() { Nucleo.setLimiter(!limitador); sincronizar() }
+    fun ponerNotch(hz: Int) { Nucleo.setNotch(hz); sincronizar() }
 
     fun borrarClip() {
-        master.clipL = false; master.clipR = false
-        master.picoL = -120f; master.picoR = -120f
-    }
-
-    private fun aplicarMaster() {
-        NativeAudio.setMasterGain(if (masterMute) 0f else ganancia(masterDb, MASTER_MIN + 0.5f))
-        NativeAudio.setLimiter(limitador)
+        Nucleo.clearClip()
+        master.clipL = false
+        master.clipR = false
+        master.picoL = -120f
+        master.picoR = -120f
     }
 
     // ------------------------------------------------------------------ transporte
 
     fun reproducirPausar() {
         if (pistas.isEmpty()) return
-        if (NativeAudio.isPlaying()) NativeAudio.pause() else NativeAudio.play()
-        reproduciendo = NativeAudio.isPlaying()
+        Nucleo.playPause()
+        reproduciendo = Nucleo.isPlaying()
     }
 
     fun detener() {
-        NativeAudio.stopTransport()
+        Nucleo.stopTransport()
         reproduciendo = false
     }
 
     fun saltar(segundos: Double) {
-        NativeAudio.seek(segundos.coerceIn(0.0, duracion))
-        posicion = NativeAudio.positionSeconds()
+        Nucleo.seek(segundos)
+        posicion = Nucleo.positionSeconds()
     }
 
-    /** ¿Hay algo moviéndose en pantalla (audio, importación o medidores bajando)? */
-    fun activa(): Boolean =
-        reproduciendo || ocupada || master.l > -119f || master.r > -119f ||
-            pistas.any { it.medidor.l > -119f || it.medidor.r > -119f }
+    /** ¿Hay algo moviéndose en pantalla (audio, un trabajo o medidores bajando)? */
+    fun activa(): Boolean = reproduciendo || ocupada || moviendo
 
-    /** Se llama en cada cuadro de pantalla: lee posición y medidores del motor. */
+    /** Se llama en cada cuadro de pantalla: posición, medidores y análisis. */
     fun tick(ahoraMs: Long) {
-        val dt = if (ultimoTick == 0L) 0.016f else ((ahoraMs - ultimoTick).coerceIn(0, 200) / 1000f)
-        ultimoTick = ahoraMs
+        sincronizar()
         if (ahoraMs - ultimaSalida >= 1000) {
             ultimaSalida = ahoraMs
             salida = textoSalida()
         }
-        reproduciendo = NativeAudio.isPlaying()
-        posicion = NativeAudio.positionSeconds()
-        duracion = NativeAudio.durationSeconds()
-        if (ocupada && progreso >= 0f) {
-            progreso = when {
-                exportando -> NativeAudio.exportProgress()
-                decodificando -> progresoDecodificacion
-                else -> NativeAudio.importProgress()
-            }
-        }
-        Analisis.tick(reproduciendo)
-
-        NativeAudio.readMeters(bufMedidores)
-        // Caídas del prototipo (por cuadro de ~33 ms): pistas 1.5 dB, master 1.2 dB; la marca
-        // de pico se queda 1.2 s y luego baja 0.5 dB.
-        val caidaPista = 45f * dt
-        val caidaMaster = 36f * dt
+        Analisis.tick(ahoraMs)
+        Nucleo.meters(ahoraMs, bufMedidores)
         for (p in pistas) {
-            p.medidor.l = max(db(bufMedidores[3 + 2 * p.slot]), p.medidor.l - caidaPista)
-            p.medidor.r = max(db(bufMedidores[4 + 2 * p.slot]), p.medidor.r - caidaPista)
+            p.medidor.l = bufMedidores[2 * p.slot]
+            p.medidor.r = bufMedidores[2 * p.slot + 1]
         }
+        val b = Nucleo.medMasterL()
         val m = master
-        val dl = db(bufMedidores[0])
-        val dr = db(bufMedidores[1])
-        m.l = max(dl, m.l - caidaMaster)
-        m.r = max(dr, m.r - caidaMaster)
-        if (dl >= m.tickL) { m.tickL = dl; m.tickTiempoL = ahoraMs } else if (ahoraMs - m.tickTiempoL > 1200) m.tickL = max(dl, m.tickL - 15f * dt)
-        if (dr >= m.tickR) { m.tickR = dr; m.tickTiempoR = ahoraMs } else if (ahoraMs - m.tickTiempoR > 1200) m.tickR = max(dr, m.tickR - 15f * dt)
-        if (dl > m.picoL) m.picoL = dl
-        if (dr > m.picoR) m.picoR = dr
-        if (bufMedidores[0] >= 0.999f) m.clipL = true
-        if (bufMedidores[1] >= 0.999f) m.clipR = true
-        m.reduccion = bufMedidores[2]
+        m.l = bufMedidores[b]
+        m.r = bufMedidores[b + 1]
+        m.tickL = bufMedidores[b + 2]
+        m.tickR = bufMedidores[b + 3]
+        m.picoL = bufMedidores[b + 4]
+        m.picoR = bufMedidores[b + 5]
+        m.clipL = bufMedidores[b + 6] != 0f
+        m.clipR = bufMedidores[b + 7] != 0f
+        m.reduccion = bufMedidores[b + 8]
+        moviendo = bufMedidores[b + 9] != 0f
     }
 
     // ------------------------------------------------------------------ exportar
 
-    fun ponerExportacion(bits: Int, rate: Int) {
-        exportBits = if (bits == 16 || bits == 32) bits else 24
-        exportRate = if (rate == 44100) 44100 else 48000
-        pedirGuardar()
-    }
+    fun ponerExportacion(bits: Int, rate: Int) { Nucleo.setExportFormat(bits, rate); sincronizar() }
 
-    fun tamanoExportacion(): Long = NativeAudio.exportBytes(exportBits, exportBits == 32, exportRate)
+    fun tamanoExportacion(): Long = Nucleo.exportBytes()
 
     fun nombreExportacion(): String =
         "Mezcla " + SimpleDateFormat("yyyy-MM-dd HHmm", Locale.US).format(Date()) + ".wav"
@@ -522,219 +454,61 @@ object Mesa {
     fun textoFormato(bits: Int = exportBits, rate: Int = exportRate): String =
         (if (bits == 32) "32 bits float" else "$bits bits") + " · $rate Hz"
 
-    /** Renderiza la mezcla completa y la guarda en [uri] (elegido por el usuario). */
+    /** El núcleo renderiza la mezcla completa y la guarda en [uri] (elegido por la persona). */
     fun exportar(context: Context, uri: Uri) {
         if (ocupada || pistas.isEmpty()) return
         scope.launch {
-            ocupada = true
-            exportando = true
-            ocupadaTexto = "Exportando la mezcla…"
-            progreso = 0f
-            val bits = exportBits
-            val rate = exportRate
-            val (r, error) = withContext(Dispatchers.IO) {
-                try {
-                    val fd = context.contentResolver.openFileDescriptor(uri, "w")?.use { it.detachFd() }
-                    if (fd == null) {
-                        null to "no se pudo crear el archivo"
-                    } else {
-                        val res = NativeAudio.exportMix(fd, bits, bits == 32, rate)
-                        res to (if (res == null) NativeAudio.lastError() else "")
-                    }
-                } catch (e: Exception) {
-                    null to (e.message ?: "no se pudo crear el archivo")
+            val (fd, nombre) = withContext(Dispatchers.IO) {
+                val fd = try {
+                    context.contentResolver.openFileDescriptor(uri, "w")?.use { it.detachFd() } ?: -1
+                } catch (_: Exception) {
+                    -1
                 }
+                fd to nombreDe(context, uri)
             }
-            val nombre = if (r != null) nombreDe(context, uri) else ""
-            if (r == null) {
-                withContext(Dispatchers.IO) {
-                    try { DocumentsContract.deleteDocument(context.contentResolver, uri) } catch (_: Exception) {}
-                }
+            if (fd < 0) {
+                borrarDocumento(uri)
+                avisar("No se exportó: no se pudo crear el archivo")
+                return@launch
             }
-            progreso = -1f
-            exportando = false
-            ocupada = false
-            if (r != null) {
-                val seg = (r[0] / rate).toInt()
-                val mb = String.format(Locale.US, "%.1f", r[1] / 1048576.0)
-                actualizarEstado("Mezcla exportada: $nombre (${textoFormato(bits, rate)} · ${seg / 60}:" +
-                    String.format(Locale.US, "%02d", seg % 60) + " · $mb MB)")
-            } else {
-                actualizarEstado("No se exportó: $error")
+            exportPendiente = uri
+            if (!Nucleo.exportMix(fd, nombre)) {
+                exportPendiente = null
+                borrarDocumento(uri)
             }
+            sincronizar()
         }
     }
 
-    fun cancelarExportacion() = NativeAudio.cancelExport()
+    fun cancelarExportacion() = Nucleo.cancelExport()
+
+    private fun borrarDocumento(uri: Uri) {
+        val ctx = appContext ?: return
+        scope.launch(Dispatchers.IO) {
+            try { DocumentsContract.deleteDocument(ctx.contentResolver, uri) } catch (_: Exception) {}
+        }
+    }
 
     // ------------------------------------------------------------------ sesión
 
-    internal fun pedirGuardarDesdeFuera() = pedirGuardar()
-
-    fun guardarYa() {
-        if (!iniciada) return
-        guardado?.cancel()
-        try {
-            archivoSesion.writeText(sesionJson().toString())
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun pedirGuardar() {
-        guardado?.cancel()
-        guardado = scope.launch {
-            delay(400)
-            val texto = sesionJson().toString()
-            withContext(Dispatchers.IO) {
-                try {
-                    val tmp = File(archivoSesion.path + ".tmp")
-                    tmp.writeText(texto)
-                    tmp.renameTo(archivoSesion)
-                } catch (_: Exception) {
-                }
-            }
-        }
-    }
-
-    private fun sesionJson(): JSONObject {
-        val arr = JSONArray()
-        for (p in pistas) {
-            arr.put(JSONObject().apply {
-                put("id", p.id); put("nombre", p.nombre); put("archivo", p.archivo); put("info", p.info)
-                put("volDb", p.volDb.toDouble()); put("pan", p.pan)
-                put("mute", p.mute); put("solo", p.solo); put("fase", p.fase)
-                if (p.editada) put("pedazos", JSONArray().apply {
-                    for (pz in p.pedazos) put(JSONArray().apply {
-                        put(pz.inicio); put(pz.origen); put(pz.largo); put(pz.fadeIn); put(pz.fadeOut)
-                    })
-                })
-                put("eq", JSONObject().apply {
-                    put("bypass", p.eqBypass); put("auto", p.autoGanancia)
-                    put("bandas", JSONArray().apply {
-                        for (b in p.bandas) put(JSONObject().apply {
-                            put("tipo", b.tipo); put("f", b.f.toDouble()); put("g", b.g.toDouble())
-                            put("q", b.q.toDouble()); put("on", b.on)
-                        })
-                    })
-                })
-            })
-        }
-        return JSONObject().apply {
-            put("version", 1)
-            put("siguienteId", siguienteId)
-            put("master", JSONObject().apply {
-                put("volDb", masterDb.toDouble()); put("mute", masterMute); put("limitador", limitador)
-                put("notch", Analisis.notch)
-            })
-            put("exportar", JSONObject().apply { put("bits", exportBits); put("rate", exportRate) })
-            put("pistas", arr)
-        }
-    }
-
-    private fun restaurar() {
-        scope.launch {
-            ocupada = true
-            ocupadaTexto = "Abriendo la mezcla anterior…"
-            val json = withContext(Dispatchers.IO) {
-                try { JSONObject(archivoSesion.readText()) } catch (_: Exception) { null }
-            }
-            if (json == null) {
-                ocupada = false
-                cargarPrueba()
-                return@launch
-            }
-            json.optJSONObject("master")?.let {
-                masterDb = it.optDouble("volDb", 0.0).toFloat()
-                masterMute = it.optBoolean("mute", false)
-                limitador = it.optBoolean("limitador", true)
-                Analisis.ponerNotch(it.optInt("notch", 0), guardar = false)
-            }
-            json.optJSONObject("exportar")?.let {
-                exportBits = it.optInt("bits", 24)
-                exportRate = it.optInt("rate", 48000)
-            }
-            aplicarMaster()
-            siguienteId = json.optInt("siguienteId", 1)
-            val arr = json.optJSONArray("pistas") ?: JSONArray()
-            var faltan = 0
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val archivo = o.optString("archivo")
-                val r = withContext(Dispatchers.IO) { NativeAudio.addTrackFile(File(carpeta, archivo).path) }
-                if (r == null) {
-                    faltan++
-                    continue
-                }
-                val p = Pista(r[0].toInt(), o.optInt("id", siguienteId), o.optString("nombre", "pista"),
-                    archivo, r[1].toInt(), r[2], o.optString("info"))
-                p.volDb = o.optDouble("volDb", 0.0).toFloat()
-                p.pan = o.optInt("pan", 0)
-                p.mute = o.optBoolean("mute", false)
-                p.solo = o.optBoolean("solo", false)
-                p.fase = o.optBoolean("fase", false)
-                o.optJSONObject("eq")?.let { eq ->
-                    p.eqBypass = eq.optBoolean("bypass", false)
-                    p.autoGanancia = eq.optBoolean("auto", true)
-                    val bs = eq.optJSONArray("bandas") ?: JSONArray()
-                    for (k in 0 until minOf(bs.length(), MAX_BANDAS)) {
-                        val jb = bs.getJSONObject(k)
-                        p.bandas.add(Banda(k, jb.optInt("tipo", 0), jb.optDouble("f", 1000.0).toFloat(),
-                            jb.optDouble("g", 0.0).toFloat(), jb.optDouble("q", 1.4).toFloat(), jb.optBoolean("on", true)))
-                    }
-                }
-                siguienteId = max(siguienteId, p.id + 1)
-                pistas.add(p)
-                aplicar(p)
-                o.optJSONArray("pedazos")?.let { js ->
-                    val lista = (0 until js.length()).mapNotNull { k ->
-                        val a = js.optJSONArray(k) ?: return@mapNotNull null
-                        Pedazo(a.optLong(0), a.optLong(1), a.optLong(2), a.optLong(3), a.optLong(4))
-                    }
-                    ponerPedazos(p, lista)
-                }
-            }
-            limpiarHuerfanos()
-            ocupada = false
-            actualizarEstado(if (faltan > 0) "$faltan pista(s) no se encontraron" else "Mezcla recuperada")
-        }
-    }
-
-    private suspend fun limpiarHuerfanos() {
-        val usados = pistas.map { it.archivo }.toSet()
-        withContext(Dispatchers.IO) {
-            carpeta.listFiles()?.forEach { if (it.name !in usados) it.delete() }
-        }
-    }
+    /** Al salir de la app: que el núcleo guarde ya (normalmente guarda solo, poco después de cada cambio). */
+    fun guardarYa() = Nucleo.saveNow()
 
     // ------------------------------------------------------------------ utilidades
 
+    /** Mensaje de la pantalla misma (lo siguiente que informe el núcleo lo reemplaza). */
     fun avisar(msg: String) {
         estado = msg
     }
 
-    private fun actualizarEstado(msg: String = "") {
-        val base = if (pistas.isEmpty()) {
-            "Sin pistas. Agrega archivos WAV o carga las pistas de prueba."
-        } else {
-            val mb = pistas.sumOf { File(carpeta, it.archivo).length() } / 1048576.0
-            "${pistas.size} pista(s) · 48000 Hz · ≈ ${Math.round(mb)} MB en disco"
-        }
-        estado = if (msg.isEmpty()) base else "$msg · $base"
-    }
-
     private fun textoSalida(): String {
-        val i = NativeAudio.outputInfo()
+        val i = Nucleo.outputInfo()
         if (i[0] == 0) return "Salida de audio cerrada"
         val ms = String.format(Locale.US, "%.1f", i[2] * 1000.0 / i[0])
         val modo = if (i[4] == 1) "exclusivo" else "compartido"
         val cortes = if (i[3] < 0) "?" else i[3].toString()
         return "Salida: ${i[0]} Hz · búfer ${i[2]} ($ms ms) · $modo · cortes $cortes"
     }
-
-    private fun ganancia(db: Float, apagadoBajoDe: Float): Float =
-        if (db <= apagadoBajoDe) 0f else 10f.pow(db / 20f)
-
-    private fun db(x: Float): Float = if (x > 1e-6f) 20f * log10(x) else -120f
 
     private fun nombreDe(context: Context, uri: Uri): String {
         try {
@@ -744,20 +518,5 @@ object Mesa {
         } catch (_: Exception) {
         }
         return uri.lastPathSegment ?: "archivo"
-    }
-
-    private fun sinExtension(n: String): String = n.replace(Regex("\\.[^.]+$"), "").ifEmpty { n }
-
-    private fun describir(rate: Int, canales: Int, bits: Int, esFloat: Boolean, dual: Boolean): String {
-        val khz = if (rate % 1000 == 0) "${rate / 1000}" else String.format(Locale.US, "%.1f", rate / 1000.0)
-        val tipo = if (esFloat) "$bits bits float" else "$bits bits"
-        val ch = when {
-            dual -> "estéreo idéntico → mono"
-            canales == 1 -> "mono"
-            canales == 2 -> "estéreo"
-            else -> "$canales canales → estéreo"
-        }
-        val conv = if (rate != RATE.toInt()) " → 48 kHz" else ""
-        return "$khz kHz$conv · $tipo · $ch"
     }
 }

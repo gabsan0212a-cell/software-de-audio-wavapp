@@ -45,7 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wavapp.mezcla.Edicion
 import com.wavapp.mezcla.Mesa
-import com.wavapp.mezcla.NativeAudio
+import com.wavapp.mezcla.Nucleo
 import com.wavapp.mezcla.Pedazo
 import com.wavapp.mezcla.Pista
 import java.util.Locale
@@ -54,7 +54,6 @@ import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToLong
-import kotlin.math.sin
 
 /** Tiempo corto para la edición: 1:05.250 o 5.250 s. */
 internal fun textoCuadros(cuadros: Long): String {
@@ -63,27 +62,15 @@ internal fun textoCuadros(cuadros: Long): String {
     return if (m > 0) String.format(Locale.US, "%d:%06.3f", m, s - m * 60) else String.format(Locale.US, "%.3f s", s)
 }
 
-/** Ganancia del fundido (sin², igual que el motor) en el cuadro [k] del pedazo. */
-private fun gananciaFade(pz: Pedazo, k: Double): Float {
-    var g = 1.0
-    if (pz.fadeIn > 0 && k < pz.fadeIn) g *= sin2(k / pz.fadeIn)
-    val resto = pz.largo - k
-    if (pz.fadeOut > 0 && resto < pz.fadeOut) g *= sin2(resto / pz.fadeOut)
-    return g.toFloat()
-}
-
-private fun sin2(x: Double): Double {
-    val s = sin(x.coerceIn(0.0, 1.0) * Math.PI / 2)
-    return s * s
-}
-
 /**
- * Dibuja la onda de [pz], que ocupa de [x0] a [x1] en el lienzo; solo se calcula la parte
- * visible entre [visDesde] y [visHasta]. Una columna por píxel; el fundido baja la onda.
+ * Dibuja la onda del pedazo [indice] de la pista (el núcleo la da ya con sus fundidos), que
+ * ocupa de [x0] a [x1] en el lienzo; solo se pide la parte visible entre [visDesde] y [visHasta].
+ * Una columna por píxel.
  */
 internal fun dibujarOndaPedazo(
     c: android.graphics.Canvas,
     pista: Pista,
+    indice: Int,
     pz: Pedazo,
     x0: Float,
     x1: Float,
@@ -98,9 +85,9 @@ internal fun dibujarOndaPedazo(
     if (b <= a || pz.largo <= 0 || x1 <= x0) return
     val cols = max(1, (b - a).toInt())
     val cuadrosPorPx = pz.largo / (x1 - x0).toDouble()
-    val desde = pz.origen + ((a - x0) * cuadrosPorPx).toLong()
-    val hasta = max(desde + 1, pz.origen + ((b - x0) * cuadrosPorPx).toLong())
-    val d = NativeAudio.overviewRange(pista.slot, cols, desde, hasta) ?: return
+    val desde = pz.inicio + ((a - x0) * cuadrosPorPx).toLong()
+    val hasta = max(desde + 1, pz.inicio + ((b - x0) * cuadrosPorPx).toLong())
+    val d = Nucleo.regionWave(pista.id, indice, desde, hasta, cols) ?: return
     val ch = pista.canales
     val canales = min(2, ch)
     val lineas = FloatArray(cols * canales * 4)
@@ -111,9 +98,8 @@ internal fun dibujarOndaPedazo(
         val amp = if (ch == 2) alto * 0.23f else alto * 0.46f
         for (x in 0 until cols) {
             val px = a + (x + 0.5f) * paso
-            val g = gananciaFade(pz, (px - x0) * cuadrosPorPx)
-            val mn = d[(x * ch + cIdx) * 2] * g
-            val mx = d[(x * ch + cIdx) * 2 + 1] * g
+            val mn = d[(x * ch + cIdx) * 2]
+            val mx = d[(x * ch + cIdx) * 2 + 1]
             val y1 = cy - mx * amp
             lineas[k++] = px
             lineas[k++] = y1
@@ -125,7 +111,9 @@ internal fun dibujarOndaPedazo(
     c.drawLines(lineas, 0, k, pintura)
 }
 
-private enum class Modo { Nada, Desplazar, Mover, RecInicio, RecFin, FadeIn, FadeOut }
+// Qué hace un arrastre. Los de edición usan los mismos números que el núcleo (Nucleo.MOVER...).
+private const val NADA = 0
+private const val DESPLAZAR = -1
 
 /** Edición de las pistas a pantalla completa: mover, recortar, fundidos, cortar, deshacer. */
 @Composable
@@ -281,18 +269,14 @@ private fun Carril(p: Pista) {
                 }
             }
             .pointerInput(p.id) {
-                var modo = Modo.Nada
-                var indice = -1
-                var base: Pedazo? = null
-                var lista: List<Pedazo> = emptyList()
+                var modo = NADA
                 var acumulado = 0f
                 var inicioVista0 = 0.0
                 var escala = 1.0
                 var umbral = 0L
-                var puntos: List<Long> = emptyList()
                 fun terminar() {
-                    if (modo != Modo.Nada && modo != Modo.Desplazar) Edicion.terminarGesto()
-                    modo = Modo.Nada
+                    if (modo > 0) Edicion.terminar()
+                    modo = NADA
                     Edicion.tocando = false
                 }
                 detectHorizontalDragGestures(
@@ -305,14 +289,10 @@ private fun Carril(p: Pista) {
                         inicioVista0 = Edicion.vistaInicio
                         val (m, i) = modoEn(p, o, w, size.height.toFloat(), 18.dp.toPx())
                         modo = m
-                        indice = i
-                        if (m != Modo.Desplazar) {
+                        if (m > 0) {
                             Edicion.seleccion = Edicion.Seleccion(p.id, i)
                             Edicion.mensaje = ""
-                            lista = p.pedazos
-                            base = lista[i]
-                            puntos = Edicion.puntosIman(Edicion.Seleccion(p.id, i))
-                            Edicion.empezarGesto()
+                            if (!Edicion.empezar(p, i, m)) modo = NADA
                         }
                     },
                     onDragEnd = { terminar() },
@@ -320,31 +300,12 @@ private fun Carril(p: Pista) {
                 ) { cambio, dx ->
                     cambio.consume()
                     acumulado += dx
-                    val w = size.width.toFloat()
-                    val b = base
-                    if (modo == Modo.Desplazar || b == null) {
-                        Edicion.ponerInicio(inicioVista0 - acumulado / w * Edicion.anchoVista())
-                        return@detectHorizontalDragGestures
+                    when {
+                        modo == DESPLAZAR ->
+                            Edicion.ponerInicio(inicioVista0 - acumulado / size.width * Edicion.anchoVista())
+                        // El núcleo calcula el nuevo pedazo (con el imán y sus límites).
+                        modo > 0 -> Edicion.arrastrar((acumulado * escala).roundToLong(), umbral)
                     }
-                    val d = (acumulado * escala).roundToLong()
-                    val nuevo = when (modo) {
-                        Modo.Mover -> {
-                            val n = b.inicio + d
-                            Edicion.mover(b, n + Edicion.corrimientoIman(listOf(n, n + b.largo), puntos, umbral))
-                        }
-                        Modo.RecInicio -> {
-                            val n = b.inicio + d
-                            Edicion.recortarInicio(b, n + Edicion.corrimientoIman(listOf(n), puntos, umbral))
-                        }
-                        Modo.RecFin -> {
-                            val n = b.fin + d
-                            Edicion.recortarFin(b, n + Edicion.corrimientoIman(listOf(n), puntos, umbral), p.cuadros)
-                        }
-                        Modo.FadeIn -> Edicion.ponerFades(b, min(b.fadeIn + d, b.largo - b.fadeOut), b.fadeOut)
-                        Modo.FadeOut -> Edicion.ponerFades(b, b.fadeIn, b.fadeOut - d)
-                        else -> b
-                    }
-                    if (indice in lista.indices) Edicion.cambiar(p, lista.toMutableList().also { it[indice] = nuevo })
                 }
             },
     ) {
@@ -364,7 +325,7 @@ private fun Carril(p: Pista) {
                 val x1 = xDe(pz.fin, w)
                 if (x1 < 0 || x0 > w) continue
                 drawRect(color.copy(alpha = if (i == sel) 0.26f else 0.13f), Offset(x0, 0f), Size(x1 - x0, h))
-                dibujarOndaPedazo(lienzo.nativeCanvas, p, pz, x0, x1, 0f, h, 0f, w, pintura)
+                dibujarOndaPedazo(lienzo.nativeCanvas, p, i, pz, x0, x1, 0f, h, 0f, w, pintura)
                 drawRect(
                     if (i == sel) pal.acento else color.copy(alpha = 0.7f), Offset(x0, 0f), Size(x1 - x0, h),
                     style = Stroke(if (i == sel) 2.dp.toPx() else density),
@@ -401,7 +362,7 @@ private fun pedazoEn(p: Pista, x: Float, w: Float, holgura: Float): Int {
 }
 
 /** Qué hace un arrastre que empieza en [o]: agarraderas del elegido, mover un pedazo o recorrer. */
-private fun modoEn(p: Pista, o: Offset, w: Float, h: Float, zona: Float): Pair<Modo, Int> {
+private fun modoEn(p: Pista, o: Offset, w: Float, h: Float, zona: Float): Pair<Int, Int> {
     val sel = Edicion.seleccion?.takeIf { it.pistaId == p.id }?.indice ?: -1
     p.pedazos.getOrNull(sel)?.let { pz ->
         val x0 = xDe(pz.inicio, w)
@@ -410,16 +371,16 @@ private fun modoEn(p: Pista, o: Offset, w: Float, h: Float, zona: Float): Pair<M
             if (o.y < h * 0.4f) {
                 val di = abs(o.x - xDe(pz.inicio + pz.fadeIn, w))
                 val dout = abs(o.x - xDe(pz.fin - pz.fadeOut, w))
-                if (min(di, dout) < zona) return (if (di <= dout) Modo.FadeIn else Modo.FadeOut) to sel
+                if (min(di, dout) < zona) return (if (di <= dout) Nucleo.FADE_IN else Nucleo.FADE_OUT) to sel
             } else {
                 val d0 = abs(o.x - x0)
                 val d1 = abs(o.x - x1)
-                if (min(d0, d1) < zona) return (if (d0 <= d1) Modo.RecInicio else Modo.RecFin) to sel
+                if (min(d0, d1) < zona) return (if (d0 <= d1) Nucleo.RECORTAR_INICIO else Nucleo.RECORTAR_FIN) to sel
             }
         }
     }
     val i = pedazoEn(p, o.x, w, 0f)
-    return if (i >= 0) Modo.Mover to i else Modo.Desplazar to -1
+    return if (i >= 0) Nucleo.MOVER to i else DESPLAZAR to -1
 }
 
 /** Datos y ajustes finos del pedazo elegido. */

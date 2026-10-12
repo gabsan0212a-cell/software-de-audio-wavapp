@@ -46,7 +46,7 @@ import com.wavapp.mezcla.Analisis
 import com.wavapp.mezcla.Banda
 import com.wavapp.mezcla.Filtros
 import com.wavapp.mezcla.Mesa
-import com.wavapp.mezcla.NativeAudio
+import com.wavapp.mezcla.Nucleo
 import com.wavapp.mezcla.Pista
 import java.util.Locale
 import kotlin.math.ln
@@ -141,7 +141,7 @@ fun PanelEq(p: Pista, alCerrar: () -> Unit) {
 @Composable
 private fun TextoCompensacion(p: Pista) {
     @Suppress("UNUSED_VARIABLE") val v = p.eqVersion  // se recalcula con cada cambio
-    val comp = -NativeAudio.eqTrimDb(p.slot)
+    val comp = -Nucleo.eqTrimDb(p.id)
     val texto = when {
         p.bandas.isEmpty() -> "sin bandas"
         !p.autoGanancia -> "sin compensar"
@@ -310,7 +310,7 @@ private fun CurvaEq(p: Pista, sel: Int, alElegir: (Int) -> Unit, modifier: Modif
             val n = max(64, (w / 2).toInt())
             val fr = FloatArray(n) { 20f * 1000f.pow(it / (n - 1f)) }
             val total = FloatArray(n)
-            NativeAudio.eqResponse(p.slot, -1, fr, total)
+            Nucleo.eqResponse(p.id, -1, fr, total)
             val linea = Path()
             for (i in 0 until n) {
                 val py = y(total[i].coerceIn(-15f, 15f))
@@ -329,7 +329,7 @@ private fun CurvaEq(p: Pista, sel: Int, alElegir: (Int) -> Unit, modifier: Modif
             val b = p.bandas.getOrNull(sel)
             if (b != null && b.on && !p.eqBypass) {
                 val una = FloatArray(n)
-                NativeAudio.eqResponse(p.slot, b.indice, fr, una)
+                Nucleo.eqResponse(p.id, sel, fr, una)
                 val pu = Path()
                 for (i in 0 until n) {
                     val py = y(una[i].coerceIn(-15f, 15f))

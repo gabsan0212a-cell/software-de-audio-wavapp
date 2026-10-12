@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wavapp.mezcla.Analisis
 import com.wavapp.mezcla.Mesa
+import com.wavapp.mezcla.Nucleo
 import com.wavapp.mezcla.Pista
 import java.util.Locale
 import kotlin.math.abs
@@ -63,13 +64,10 @@ import kotlin.math.cos
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sign
 import kotlin.math.sin
-import kotlin.math.sqrt
 
-private const val RATE = 48000f
+private const val SG_TOPE = 20000f  // el espectrograma del núcleo llega hasta 20 kHz
 
 /** Panel de análisis a pantalla completa (Diagnóstico + espectro + espectrograma del prototipo). */
 @Composable
@@ -201,7 +199,7 @@ private fun Goniometro(modifier: Modifier) {
             drawText(medidor, "R", Offset(size.width - 12 * d, 2 * d), estilo)
             drawText(medidor, "S", Offset(size.width - 12 * d, size.height / 2 - 16 * d), estilo)
             if (Analisis.activo) {
-                drawText(medidor, "auto +" + max(0f, 20 * kotlin.math.log10(1f / estado.picoVector)).roundToInt() + " dB",
+                drawText(medidor, "auto +" + Analisis.gananciaGonio + " dB",
                     Offset(5 * d, size.height - 16 * d), estilo.copy(fontSize = 9.sp))
             }
         } else {
@@ -224,13 +222,10 @@ private class EstadoGonio {
     var img: ImageBitmap? = null
     var modo = false
     var version = -1
-    var picoFuentes = -60f
-    var picoVector = 0.05f
+    val datos = FloatArray(4096)  // lo que manda el núcleo: puntos o rayos
     fun limpiar(bg: Color) {
         val i = img ?: return
         androidx.compose.ui.graphics.Canvas(i).drawRect(0f, 0f, i.width.toFloat(), i.height.toFloat(), Paint().apply { color = bg })
-        picoFuentes = -60f
-        picoVector = 0.05f
     }
 }
 
@@ -241,57 +236,30 @@ private fun geomFuentes(w: Float, h: Float, d: Float): Geom {
     return Geom(w / 2, cy, min(cy - 8 * d, (w / 2 - 6 * d) / sin(MAXA)))
 }
 
-/** Modo "Por fuentes": cada pico del espectro es un rayo en su ángulo de paneo. */
+/** Modo "Por fuentes": cada parte del sonido es un rayo en su ángulo de paneo (los calcula el núcleo). */
 private fun fuentes(c: androidx.compose.ui.graphics.Canvas, e: EstadoGonio, w: Float, h: Float, d: Float, verde: Color) {
     val (cx, cy, r) = geomFuentes(w, h, d)
-    val hz = RATE / 2048
-    val a0 = max(1, kotlin.math.ceil(40 / hz).toInt())
-    val a1 = min(Analisis.BINS_FUENTES - 1, (16000 / hz).toInt())
-    val en = Analisis.fanE
-    val pn = Analisis.fanP
-    var pk = -200f
-    for (i in a0..a1) if (en[i] > pk) pk = en[i]
-    e.picoFuentes = if (pk > e.picoFuentes) pk else e.picoFuentes * 0.97f + pk * 0.03f
-    if (pk < -85) return
-    val span = 36f
-    val top = e.picoFuentes
+    val n = Nucleo.goniometer(e.datos)
     val pintura = Paint().apply { color = verde; strokeWidth = d }
-    for (i in a0..a1) {
-        if (i > a0 && i < a1 && !(en[i] >= en[i - 1] && en[i] > en[i + 1])) continue  // solo picos
-        val t = (en[i] - (top - span)) / span
-        if (t < 0.04f) continue
-        val p = pn[i]
-        val ang = sign(p) * abs(p).pow(0.65f) * MAXA
-        val rr = r * (0.08f + 0.92f * min(1f, t))
+    for (i in 0 until n) {
+        val ang = e.datos[3 * i]
+        val rr = r * e.datos[3 * i + 1]
         val x = cx + sin(ang) * rr
         val y = cy - cos(ang) * rr
-        pintura.alpha = 0.25f + 0.5f * min(1f, t)
+        pintura.alpha = e.datos[3 * i + 2]
         c.drawLine(Offset(cx, cy), Offset(x, y), pintura)
         pintura.alpha = 1f
         c.drawRect(x - 1.2f * d, y - 1.2f * d, x + 1.2f * d, y + 1.2f * d, pintura)
     }
 }
 
-/** Modo clásico: nube de puntos M/S con ganancia automática. */
+/** Modo clásico: nube de puntos M/S, ya con la ganancia automática del núcleo (1 = 45 % del ancho). */
 private fun clasico(c: androidx.compose.ui.graphics.Canvas, e: EstadoGonio, w: Float, h: Float, d: Float, verde: Color) {
-    val n = Analisis.TIEMPO
-    val t = Analisis.tiempo
-    val k = sqrt(0.5f)
-    var a = 0f
-    for (i in 0 until n) {
-        val l = t[i]
-        val r = t[n + i]
-        a = max(a, max(abs(r - l) * k, abs(l + r) * k))
-    }
-    e.picoVector = max(a, max(e.picoVector * 0.985f, 0.003f))
-    val sx = w * 0.45f / e.picoVector
-    val sy = h * 0.45f / e.picoVector
+    val n = Nucleo.goniometer(e.datos)
     val pintura = Paint().apply { color = verde }
     for (i in 0 until n) {
-        val l = t[i]
-        val r = t[n + i]
-        val x = w / 2 + (r - l) * k * sx
-        val y = h / 2 - (l + r) * k * sy
+        val x = w / 2 + e.datos[2 * i] * w * 0.45f
+        val y = h / 2 - e.datos[2 * i + 1] * h * 0.45f
         c.drawRect(x - d, y - d, x + d, y + d, pintura)
     }
 }
@@ -349,28 +317,21 @@ private fun FilaMedidor(etiqueta: String, valor: String, barra: @Composable (Mod
 
 // ---------------------------------------------------------------- espectro
 
-/** Dibuja el espectro en vivo (de -110 a -10 dB, eje logarítmico de 20 Hz a 20 kHz). */
+/** Dibuja el espectro en vivo (de -110 a -10 dB, eje logarítmico de 20 Hz a 20 kHz). El núcleo lo da por columnas. */
 fun DrawScope.lineaEspectro(color: Color, relleno: Boolean, alto: Float = size.height) {
     val w = size.width
-    val hz = RATE / 16384
-    val sp = Analisis.espectro
+    val n = max(2, (w / 2).toInt())
+    val sp = FloatArray(n)
+    Nucleo.spectrumColumns(sp)
     val ruta = Path()
-    var x = 0f
-    val paso = 2f
-    var primero = true
-    while (x <= w) {
-        val f0 = 20f * 1000f.pow(x / w)
-        val f1 = 20f * 1000f.pow((x + paso) / w)
-        val a = max(0, (f0 / hz).toInt())
-        val b = min(sp.size - 1, max(a, (f1 / hz).toInt()))
-        var m = -200f
-        for (i in a..b) if (sp[i] > m) m = sp[i]
-        val y = alto - (max(-110f, m) + 110f) / 100f * alto
-        if (primero) {
+    for (c in 0 until n) {
+        val x = c * w / (n - 1)
+        val y = alto - (max(-110f, sp[c]) + 110f) / 100f * alto
+        if (c == 0) {
             if (relleno) { ruta.moveTo(0f, alto); ruta.lineTo(x, y) } else ruta.moveTo(x, y)
-            primero = false
-        } else ruta.lineTo(x, y)
-        x += paso
+        } else {
+            ruta.lineTo(x, y)
+        }
     }
     if (relleno) {
         ruta.lineTo(w, alto)
@@ -457,8 +418,8 @@ private fun Espectrograma(p: Pista, modifier: Modifier) {
     val imagen = remember(datos, pal) {
         datos?.let {
             val lut = tablaColores(pal)
-            val cols = Analisis.SG_COLS
-            val filas = Analisis.SG_FILAS
+            val cols = Nucleo.SG_COLUMNAS
+            val filas = Nucleo.SG_FILAS
             val px = IntArray(cols * filas)
             for (c in 0 until cols) for (r in 0 until filas) {
                 px[(filas - 1 - r) * cols + c] = lut[it[c * filas + r].toInt() and 0xFF]
@@ -489,7 +450,7 @@ private fun Espectrograma(p: Pista, modifier: Modifier) {
                     dstOffset = IntOffset.Zero, dstSize = IntSize((w * (p.segundos / dur)).toInt().coerceAtLeast(1), h.toInt()),
                 )
             }
-            val y = { f: Float -> h - ln(f / 20f) / ln(Analisis.SG_TOPE / 20f) * h }
+            val y = { f: Float -> h - ln(f / 20f) / ln(SG_TOPE / 20f) * h }
             val estilo = TextStyle(color = pal.fg, fontSize = 9.sp, fontFamily = Mono, fontWeight = FontWeight.Medium)
             for (f in listOf(50f, 100f, 200f, 500f, 1000f, 2000f, 5000f, 10000f)) {
                 drawLine(pal.tenue.copy(alpha = 0.3f), Offset(0f, y(f)), Offset(w, y(f)), d)

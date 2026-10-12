@@ -3,20 +3,17 @@ project(wavapp LANGUAGES CXX)
 
 find_package(oboe REQUIRED CONFIG)
 
-add_library(wavapp SHARED
-    Analyzer.cpp
-    AudioEngine.cpp
-    Equalizer.cpp
-    Exporter.cpp
-    Importer.cpp
-    Limiter.cpp
-    MappedAudio.cpp
-    Mixer.cpp
-    Resampler.cpp
-    WavReader.cpp
-    WavWriter.cpp
-    jni_bridge.cpp)
+# core/: el corazón (todo lo técnico), sin nada de Android: se prueba también en Linux.
+# android/: lo de la plataforma (salida de audio, decodificador del sistema, puente con Kotlin).
+file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS core/*.cpp)
 
+add_library(wavapp SHARED
+    ${CORE_SOURCES}
+    android/AudioOutput.cpp
+    android/MediaDecoder.cpp
+    android/jni_bridge.cpp)
+
+target_include_directories(wavapp PRIVATE core android)
 target_compile_definitions(wavapp PRIVATE _FILE_OFFSET_BITS=64)
 target_compile_options(wavapp PRIVATE -Wall -Wextra)
-target_link_libraries(wavapp oboe::oboe log)
+target_link_libraries(wavapp oboe::oboe mediandk log)

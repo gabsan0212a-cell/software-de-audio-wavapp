@@ -17,13 +17,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (!NativeAudio.start()) Mesa.avisar("No se pudo abrir la salida de audio")
+        Mesa.enPantalla = true
+        Nucleo.start()  // si la salida de audio no abre, el núcleo lo avisa en el estado
+        Mesa.sincronizar()
     }
 
     override fun onStop() {
+        Mesa.enPantalla = false
         Mesa.guardarYa()
-        NativeAudio.pause()
-        NativeAudio.stop()
+        Nucleo.pause()
+        Nucleo.stop()
         super.onStop()
     }
 }

@@ -1,4 +1,4 @@
-#include "Equalizer.h"
+#include "dsp/Equalizer.h"
 
 #include <algorithm>
 #include <cmath>

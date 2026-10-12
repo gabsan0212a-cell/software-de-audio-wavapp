@@ -92,7 +92,7 @@ class PantallaTest {
         // Análisis de la mezcla mientras suena (la canción de prueba dura 12 s: desde el inicio).
         regla.runOnUiThread {
             Mesa.saltar(0.0)
-            if (!NativeAudio.isPlaying()) Mesa.reproducirPausar()
+            if (!Nucleo.isPlaying()) Mesa.reproducirPausar()
         }
         regla.onNodeWithText("Análisis").performClick()
         regla.waitUntil(2_000) { Analisis.abierto }
@@ -116,7 +116,7 @@ class PantallaTest {
 
         // Edición en la primera pista: elegir, cortar, mover, borrar, deshacer y rehacer.
         regla.runOnUiThread {
-            if (NativeAudio.isPlaying()) Mesa.reproducirPausar()
+            if (Nucleo.isPlaying()) Mesa.reproducirPausar()
             Mesa.saltar(6.0)
         }
         regla.onNodeWithText("Editar").performClick()

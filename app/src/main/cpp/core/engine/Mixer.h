@@ -7,9 +7,9 @@
 #include <string>
 #include <vector>
 
-#include "Equalizer.h"
-#include "Limiter.h"
-#include "MappedAudio.h"
+#include "dsp/Equalizer.h"
+#include "dsp/Limiter.h"
+#include "io/MappedAudio.h"
 
 constexpr int kMaxTracks = 12;
 // Medidores: [0] pico master L, [1] pico master R, [2] reducción del limitador (dB, ≥ 0),
@@ -23,6 +23,11 @@ struct Region {
     int64_t src = 0;      // desde qué cuadro del archivo
     int64_t length = 0;
     int64_t fadeIn = 0, fadeOut = 0;
+    int64_t end() const { return start + length; }
+    bool operator==(const Region &o) const {
+        return start == o.start && src == o.src && length == o.length && fadeIn == o.fadeIn && fadeOut == o.fadeOut;
+    }
+    bool operator!=(const Region &o) const { return !(*this == o); }
 };
 constexpr int kMaxRegions = 256;
 // Fundido mínimo en un borde cortado (donde el audio no sigue en otro pedazo), para que no truene.
@@ -57,6 +62,7 @@ public:
     void setTrackInvert(int slot, bool on);
     // EQ de la pista (sus métodos de interfaz son seguros desde este hilo).
     Equalizer *trackEq(int slot) { return slot >= 0 && slot < kMaxTracks ? &mSlots[slot].eq : nullptr; }
+    const Equalizer *trackEq(int slot) const { return slot >= 0 && slot < kMaxTracks ? &mSlots[slot].eq : nullptr; }
     void setMasterGain(float gain);  // lineal (0 = mute)
     void setLimiter(bool on);
     // Filtro anti-zumbido en el bus (fundamental y 3 armónicos, Q 30): 0 = apagado, 50 o 60 Hz.

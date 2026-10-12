@@ -17,16 +17,22 @@
 #include <thread>
 #include <vector>
 
-#include "Analyzer.h"
-#include "Equalizer.h"
-#include "Exporter.h"
-#include "Importer.h"
-#include "Limiter.h"
-#include "MappedAudio.h"
-#include "Mixer.h"
-#include "Resampler.h"
-#include "WavReader.h"
-#include "WavWriter.h"
+#include "Studio.h"
+#include "dsp/AnalysisView.h"
+#include "dsp/Analyzer.h"
+#include "dsp/Equalizer.h"
+#include "dsp/Limiter.h"
+#include "dsp/Resampler.h"
+#include "engine/Exporter.h"
+#include "engine/Importer.h"
+#include "engine/Meters.h"
+#include "engine/Mixer.h"
+#include "io/Json.h"
+#include "io/MappedAudio.h"
+#include "io/WavReader.h"
+#include "io/WavWriter.h"
+#include "project/Edit.h"
+#include "project/Session.h"
 
 // ---------------------------------------------------------------- mini framework
 static int gChecks = 0, gFailures = 0;
@@ -1291,13 +1297,645 @@ TEST(concurrencia) {
     CHECK(m.length() == 0);
 }
 
+// ---------------------------------------------------------------- JSON
+TEST(jsonLeerYEscribir) {
+    std::string e;
+    const Json j = Json::parse(
+        "{\"a\": 1, \"b\": [true, false, null, -2.5, \"x\\\"y\\\\z\\n\"], "
+        "\"c\": {\"d\": \"ñandú \\u00e9 \\ud83c\\udfb5\"}}",
+        e);
+    CHECK(e.empty());
+    CHECK(j["a"].asInt() == 1);
+    CHECK(j["b"].size() == 5 && j["b"][0].asBool() && !j["b"][1].asBool(true) && j["b"][2].isNull());
+    CHECK_NEAR(j["b"][3].asDouble(), -2.5, 0);
+    CHECK(j["b"][4].asString() == "x\"y\\z\n");
+    CHECK(j["c"]["d"].asString() == "ñandú é \xF0\x9F\x8E\xB5");
+    // Lo que falta o es de otro tipo da el valor por omisión.
+    CHECK(j["no"].asInt(7) == 7 && j["a"].asString("z") == "z" && j["b"][99].isNull() && j["a"]["x"].isNull());
+    // Ida y vuelta.
+    const Json k = Json::parse(j.dump(), e);
+    CHECK(e.empty() && k.dump() == j.dump());
+    Json n = Json::object();
+    n.set("f", static_cast<int64_t>(576000)).set("q", 1.4).set("big", static_cast<int64_t>(1) << 40);
+    n.set("t", "a\x01" "b");
+    CHECK(n.dump() == "{\"f\":576000,\"q\":1.4,\"big\":1099511627776,\"t\":\"a\\u0001b\"}");
+    for (const char *mal : {"", "{", "[1,]", "{\"a\" 1}", "tru", "\"sin cerrar", "[1] x", "{\"a\":01e}", "[\"\\ud800\"]"}) {
+        Json::parse(mal, e);
+        CHECK(!e.empty());
+    }
+}
+
+// ---------------------------------------------------------------- medidores
+TEST(medidoresBalistica) {
+    MeterBallistics mb;
+    float raw[kMeterCount] = {};
+    float out[MeterBallistics::kCount];
+    raw[0] = 1.0f;
+    raw[1] = 0.5f;
+    raw[2] = 2.5f;
+    raw[3] = 0.1f;  // pista 0, L
+    mb.update(raw, 1000);
+    mb.read(out);
+    CHECK_NEAR(out[MeterBallistics::kMasterL], 0, 1e-4);
+    CHECK_NEAR(out[MeterBallistics::kMasterR], 20 * std::log10(0.5), 1e-4);
+    CHECK_NEAR(out[0], -20, 1e-4);
+    CHECK(out[1] == -120.0f);
+    CHECK(out[MeterBallistics::kClipL] == 1.0f && out[MeterBallistics::kClipR] == 0.0f);
+    CHECK_NEAR(out[MeterBallistics::kReduction], 2.5, 0);
+    CHECK(out[MeterBallistics::kMoving] == 1.0f);
+    std::fill(raw, raw + kMeterCount, 0.0f);
+    mb.update(raw, 1100);  // 0.1 s: el master cae 3.6 dB y la pista 4.5 dB
+    mb.read(out);
+    CHECK_NEAR(out[MeterBallistics::kMasterL], -3.6, 1e-3);
+    CHECK_NEAR(out[0], -24.5, 1e-3);
+    CHECK_NEAR(out[MeterBallistics::kTickL], 0, 1e-4);  // la marca se queda 1.2 s
+    mb.update(raw, 2300);  // pasado 1.2 s: baja 15 dB/s (el paso se limita a 0.2 s)
+    mb.read(out);
+    CHECK_NEAR(out[MeterBallistics::kTickL], -3, 1e-3);
+    CHECK_NEAR(out[MeterBallistics::kMaxL], 0, 1e-4);  // el pico máximo se queda
+    mb.clearClip();
+    mb.read(out);
+    CHECK(out[MeterBallistics::kClipL] == 0.0f && out[MeterBallistics::kMaxL] == -120.0f);
+    for (int64_t t = 2400; t < 9000; t += 100) mb.update(raw, t);
+    mb.read(out);
+    CHECK(out[MeterBallistics::kMoving] == 0.0f);
+}
+
+// ---------------------------------------------------------------- vista del análisis
+TEST(analisisVeredictoYGoniometro) {
+    Mixer m(48000);
+    m.setLimiter(false);
+    m.setTrack(0, genTrack("av.wav", 2, 48000 * 4, [](int64_t f, int c) {
+        const float s = static_cast<float>(0.3 * std::sin(2 * M_PI * 440 * f / 48000.0));
+        return c ? -s : s;  // fuera de fase
+    }));
+    Analyzer a(48000);
+    AnalysisView v;
+    float st[AnalysisView::kStatCount];
+    std::vector<float> g(AnalysisView::kMaxGonio);
+    m.play();
+    int64_t t = 0;
+    for (int i = 0; i < 20; ++i) {
+        run(m, 2048);
+        t += 40;
+        v.update(a, m, true, t, false);
+    }
+    v.stats(st);
+    CHECK(st[0] == 1.0f && st[1] == 1.0f);
+    CHECK(st[2] < -0.9f);
+    CHECK(st[4] == AnalysisView::kOutOfPhase && st[6] == 1.0f && st[5] == 0.0f);
+    // Por fuentes: con L = -R el tono queda al centro (rayo vertical) y largo.
+    int n = v.goniometer(g.data(), static_cast<int>(g.size()));
+    bool vertical = false;
+    for (int i = 0; i < n; ++i) vertical = vertical || (std::fabs(g[3 * i]) < 0.1f && g[3 * i + 1] > 0.5f);
+    CHECK(n >= 1 && vertical);
+    // Clásico: todo sobre el eje de lado (y ≈ 0) y la escala automática llega al borde.
+    for (int i = 0; i < 5; ++i) {
+        run(m, 2048);
+        t += 40;
+        v.update(a, m, true, t, true);
+    }
+    n = v.goniometer(g.data(), static_cast<int>(g.size()));
+    float mx = 0, my = 0;
+    for (int i = 0; i < n; ++i) {
+        mx = std::max(mx, std::fabs(g[2 * i]));
+        my = std::max(my, std::fabs(g[2 * i + 1]));
+    }
+    CHECK(n == Analyzer::kTime);
+    CHECK(mx > 0.9f && mx <= 1.0001f && my < 0.01f);
+    // Espectro en columnas: el máximo cae en la columna de 440 Hz.
+    std::vector<float> cols(100);
+    AnalysisView::spectrumColumns(a, cols.data(), 100);
+    const int c = static_cast<int>(std::max_element(cols.begin(), cols.end()) - cols.begin());
+    const double f0 = 20 * std::pow(1000.0, c / 100.0), f1 = 20 * std::pow(1000.0, (c + 1) / 100.0);
+    CHECK(f0 <= 445 && f1 >= 435);
+    // Sin sonar: todo a reposo.
+    CHECK(v.update(a, m, false, t + 100, true));
+    v.stats(st);
+    CHECK(st[0] == 0.0f && st[4] == AnalysisView::kNone && st[2] == 1.0f && v.goniometer(g.data(), 10) == 0);
+
+    // Una pista mono toda a la izquierda: desbalance hacia L.
+    Mixer m2(48000);
+    m2.setLimiter(false);
+    m2.setTrack(0, seno("av2.wav", 1, 48000 * 2, 300, 0.3));
+    m2.setTrackPan(0, -1.0f);
+    m2.play();
+    Analyzer a2(48000);
+    AnalysisView v2;
+    for (int i = 0; i < 10; ++i) {
+        run(m2, 2048);
+        v2.update(a2, m2, true, 40 * (i + 1), false);
+    }
+    v2.stats(st);
+    CHECK(st[4] == AnalysisView::kMono && st[5] == -1.0f && st[6] == 1.0f);
+    CHECK_NEAR(st[3], -1.0, 1e-3);
+}
+
+// ---------------------------------------------------------------- edición (funciones puras)
+TEST(edicionReglas) {
+    const Region r{48000, 0, 96000, 0, 0};
+    CHECK(edit::move(r, -5).start == 0);
+    Region t = edit::trimStart(r, 40000);  // no antes del principio del archivo
+    CHECK(t.start == 48000 && t.src == 0 && t.length == 96000);
+    t = edit::trimStart(r, 60000);
+    CHECK(t.start == 60000 && t.src == 12000 && t.length == 84000 && t.end() == r.end());
+    t = edit::trimStart(r, 200000);
+    CHECK(t.length == edit::kMinLength && t.end() == r.end());
+    t = edit::trimEnd(r, 999999, 100000);  // no después del final del archivo
+    CHECK(t.length == 100000);
+    t = edit::trimEnd(r, 0, 100000);
+    CHECK(t.length == edit::kMinLength);
+    Region f = edit::setFadeOut(edit::setFadeIn(r, 50000), 80000);  // uno no empuja al otro
+    CHECK(f.fadeIn == 50000 && f.fadeOut == 46000);
+    t = edit::trimEnd(f, r.start + 30000, 100000);
+    CHECK(t.length == 30000 && t.fadeIn == 30000 && t.fadeOut == 0);
+    Region a, b;
+    CHECK(!edit::cut(r, r.start + 100, a, b));
+    CHECK(edit::cut(f, 100000, a, b));
+    CHECK(a.start == 48000 && a.length == 52000 && a.fadeIn == 50000 && a.fadeOut == 0);
+    CHECK(b.start == 100000 && b.src == 52000 && b.length == 44000 && b.fadeIn == 0 && b.fadeOut == 44000);
+    CHECK(edit::snapOffset({1000, 5000}, {0, 5100, 9000}, 200) == 100);
+    CHECK(edit::snapOffset({1000}, {0}, 500) == 0);
+    CHECK(edit::snapOffset({1000}, {1200}, 0) == 0);  // imán apagado
+}
+
+// ---------------------------------------------------------------- estudio (el núcleo completo)
+static std::string nuevaCarpeta(const std::string &n) {
+    const std::string d = tmpPath(n);
+    ::mkdir(d.c_str(), 0700);
+    return d;
+}
+
+static Json pistas(const Studio &s) {
+    std::string e;
+    return Json::parse(s.tracksJson(), e);
+}
+
+static Json estado(const Studio &s) {
+    std::string e;
+    return Json::parse(s.statusJson(), e);
+}
+
+static int idDe(const Studio &s, int i) { return static_cast<int>(pistas(s)[i]["id"].asInt(-1)); }
+
+TEST(estudioPrimeraVez) {
+    const std::string dir = nuevaCarpeta("estudio1");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    const Json p = pistas(s);
+    CHECK(p.size() == 4);
+    const char *nombres[] = {"Bajo", "Voz", "Guitarra", "Teclado"};
+    for (int i = 0; i < 4 && i < static_cast<int>(p.size()); ++i) {
+        CHECK(p[i]["nombre"].asString() == nombres[i]);
+        CHECK(p[i]["cuadros"].asInt() == 12 * 48000 && p[i]["canales"].asInt() == 1);
+        CHECK(p[i]["info"].asString() == "prueba · mono · 12 s");
+    }
+    float v[5];
+    CHECK(s.trackParams(idDe(s, 2), v) && v[0] == -2.0f && v[1] == 60.0f);
+    CHECK_NEAR(s.duration(), 12.0, 1e-9);
+    const Json st = estado(s);
+    CHECK(!st["ocupada"].asBool(true));
+    CHECK(st["mensaje"].asString().rfind("Pistas de prueba cargadas · 4 pista(s) · 48000 Hz", 0) == 0);
+    CHECK(s.saveNow());
+    struct stat sb {};
+    CHECK(::stat((dir + "/sesion.json").c_str(), &sb) == 0);
+    // Abrir la misma carpeta otra vez no hace nada.
+    s.open(dir, dir);
+    CHECK(s.trackCount() == 4);
+}
+
+TEST(estudioSesionIdaYVuelta) {
+    const std::string dir = nuevaCarpeta("estudio2");
+    Studio s1;
+    s1.open(dir, dir);
+    CHECK(s1.waitIdle(30000));
+    const int id = idDe(s1, 0);
+    s1.setVolume(id, 3.26f);
+    s1.setPan(id, -33.4f);
+    s1.setMute(id, true);
+    s1.setPhase(id, true);
+    CHECK(s1.addEqBand(id) == 0);
+    CHECK(s1.addEqBand(id) == 1);
+    s1.setEqBand(id, 1, kLowShelf, 123.456f, 4.3f, 0.556f, false);
+    s1.setEqAutoGain(id, false);
+    s1.seek(6.0);
+    CHECK(s1.cut(id, 0) == 1);
+    s1.setRegionFade(id, 1, false, 4800);
+    s1.setMasterDb(-3.24f);
+    s1.setLimiter(false);
+    s1.setNotch(50);
+    s1.setExportFormat(16, 44100);
+    float p1[5], m1[6];
+    CHECK(s1.trackParams(id, p1));
+    CHECK(p1[0] == 3.5f && p1[1] == -33.0f && p1[2] == 1.0f && p1[3] == 0.0f && p1[4] == 1.0f);
+    const std::vector<float> eq1 = s1.eqState(id);
+    CHECK(eq1.size() == 3 + 2 * 5 && eq1[1] == 0.0f && eq1[2] == 2.0f);
+    CHECK(eq1[8] == kLowShelf && std::fabs(eq1[9] - 123.5f) < 1e-3f && eq1[10] == 4.5f &&
+          std::fabs(eq1[11] - 0.56f) < 1e-4f && eq1[12] == 0.0f);
+    s1.masterState(m1);
+    CHECK(m1[0] == -3.0f && m1[1] == 0.0f && m1[2] == 0.0f && m1[3] == 50.0f && m1[4] == 16.0f && m1[5] == 44100.0f);
+    CHECK(s1.saveNow());
+
+    Studio s2;
+    s2.open(dir, dir);
+    CHECK(s2.waitIdle(30000));
+    CHECK(s2.tracksJson() == s1.tracksJson());
+    float p2[5], m2[6];
+    CHECK(s2.trackParams(id, p2));
+    CHECK(std::equal(p1, p1 + 5, p2));
+    CHECK(s2.eqState(id) == eq1);
+    CHECK(s2.regions(id) == s1.regions(id));
+    CHECK(s2.regions(id).size() == 2 && s2.regions(id)[1].fadeOut == 4800);
+    s2.masterState(m2);
+    CHECK(std::equal(m1, m1 + 6, m2));
+    CHECK(s2.mixer().notch() == 50);
+    CHECK(estado(s2)["mensaje"].asString().rfind("Mezcla recuperada", 0) == 0);
+    CHECK(!s2.canUndo());  // el historial no se guarda
+}
+
+TEST(estudioLeeSesionVieja) {
+    // Como la guardaba la versión anterior (Kotlin): floats largos y "pedazos" solo si se editó.
+    const std::string dir = nuevaCarpeta("estudio3");
+    ::mkdir((dir + "/audio").c_str(), 0700);
+    CHECK(writeDemoTrack(0, dir + "/audio/uno.wav", 48000).empty());
+    CHECK(writeDemoTrack(1, dir + "/audio/dos.wav", 48000).empty());
+    CHECK(writeDemoTrack(2, dir + "/audio/huerfano.wav", 48000).empty());
+    const char *json = R"({"version":1,"siguienteId":9,"master":{"volDb":-1.5,"mute":true,"limitador":true,"notch":60},
+      "exportar":{"bits":32,"rate":48000},"pistas":[
+      {"id":3,"nombre":"Uno","archivo":"uno.wav","info":"44.1 kHz → 48 kHz · 16 bits · estéreo","volDb":-6,"pan":20,
+       "mute":false,"solo":true,"fase":false,"eq":{"bypass":true,"auto":true,"bandas":[{"tipo":0,"f":1000,"g":3.5,
+       "q":1.399999976158142,"on":true}]},"pedazos":[[48000,0,96000,480,0],[200000,96000,48000,0,0]]},
+      {"id":7,"nombre":"Dos","archivo":"dos.wav","info":"prueba · mono · 12 s","volDb":0,"pan":0,"mute":false,
+       "solo":false,"fase":false,"eq":{"bypass":false,"auto":true,"bandas":[]}},
+      {"id":8,"nombre":"Falta","archivo":"no-existe.wav","info":"","volDb":0,"pan":0}]})";
+    FILE *f = std::fopen((dir + "/sesion.json").c_str(), "wb");
+    std::fputs(json, f);
+    std::fclose(f);
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    const Json p = pistas(s);
+    CHECK(p.size() == 2 && p[0]["id"].asInt() == 3 && p[1]["id"].asInt() == 7 && p[0]["nombre"].asString() == "Uno");
+    CHECK(p[0]["info"].asString() == "44.1 kHz → 48 kHz · 16 bits · estéreo");
+    const std::vector<Region> r = s.regions(3);
+    CHECK(r.size() == 2 && r[0].start == 48000 && r[0].fadeIn == 480 && r[1].src == 96000);
+    CHECK(s.regions(7).size() == 1 && s.regions(7)[0].length == 12 * 48000);  // sin "pedazos": completa
+    const std::vector<float> eq = s.eqState(3);
+    CHECK(eq.size() == 8 && eq[0] == 1.0f && std::fabs(eq[6] - 1.4f) < 1e-6f && eq[5] == 3.5f);
+    float m[6];
+    s.masterState(m);
+    CHECK(m[0] == -1.5f && m[1] == 1.0f && m[3] == 60.0f && m[4] == 32.0f);
+    CHECK_NEAR(s.duration(), 12.0, 1e-9);  // la pista "Dos" completa es la más larga
+    struct stat sb {};
+    CHECK(::stat((dir + "/audio/huerfano.wav").c_str(), &sb) != 0);  // se borró lo que nadie usa
+    CHECK(::stat((dir + "/audio/uno.wav").c_str(), &sb) == 0);
+    CHECK(estado(s)["mensaje"].asString().rfind("1 pista(s) no se encontraron", 0) == 0);
+    // La pista siguiente usa un id nuevo.
+    CHECK(s.loadDemo() && s.waitIdle(30000));
+    CHECK(idDe(s, 2) == 9);
+}
+
+TEST(estudioSesionDanadaCargaPruebas) {
+    const std::string dir = nuevaCarpeta("estudio4");
+    FILE *f = std::fopen((dir + "/sesion.json").c_str(), "wb");
+    std::fputs("{esto no es json", f);
+    std::fclose(f);
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    CHECK(s.trackCount() == 4);
+}
+
+// Decodificador de prueba: entiende archivos que empiezan con "FALSO" (1 s a 32 kHz, estéreo L = R).
+static std::string decodificadorFalso(int fd, int64_t, PcmSink &sink, std::string &codec, std::atomic<float> *prog) {
+    char head[5] = {};
+    if (::pread(fd, head, 5, 0) != 5 || std::memcmp(head, "FALSO", 5) != 0) return "no tiene audio que se pueda leer";
+    std::string e = sink.begin(32000, 2);
+    if (!e.empty()) return e;
+    std::vector<float> buf(2 * 3200);
+    for (int b = 0; b < 10; ++b) {
+        for (int i = 0; i < 3200; ++i) buf[2 * i] = buf[2 * i + 1] = static_cast<float>(0.25 * std::sin(0.01 * (b * 3200 + i)));
+        e = sink.write(buf.data(), 3200);
+        if (!e.empty()) return e;
+        if (prog) prog->store((b + 1) / 10.0f);
+    }
+    codec = "FALSO";
+    return "";
+}
+
+static int abrir(const std::string &p) { return ::open(p.c_str(), O_RDONLY); }
+
+TEST(estudioImporta) {
+    const std::string dir = nuevaCarpeta("estudio5");
+    Studio s(decodificadorFalso);
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.clearProject();
+    CHECK(s.trackCount() == 0);
+    // WAV del celular (44.1 kHz, 16 bits, estéreo).
+    WavSpec spec;
+    spec.rate = 44100;
+    const std::string wav = tmpPath("grabacion.wav");
+    makeWav(wav, spec, 44100, [](int64_t f, int c) { return sine(c ? 500 : 1000, 44100, f); });
+    // Algo comprimido (lo entiende el decodificador de prueba) y algo que no es audio.
+    const std::string falso = tmpPath("cancion.falso"), texto = tmpPath("notas.txt");
+    FILE *f = std::fopen(falso.c_str(), "wb");
+    std::fputs("FALSO...", f);
+    std::fclose(f);
+    f = std::fopen(texto.c_str(), "wb");
+    std::fputs("hola", f);
+    std::fclose(f);
+    CHECK(s.importFiles({abrir(wav), abrir(falso), abrir(texto)}, {"grabación.wav", "canción.mp3", "notas.txt"}));
+    CHECK(!s.importFiles({abrir(wav)}, {"otra.wav"}));  // ya hay un trabajo en curso
+    CHECK(s.waitIdle(30000));
+    const Json p = pistas(s);
+    CHECK(p.size() == 2);
+    CHECK(p[0]["nombre"].asString() == "grabación" && p[0]["canales"].asInt() == 2 && p[0]["cuadros"].asInt() == 48000);
+    CHECK(p[0]["info"].asString() == "44.1 kHz → 48 kHz · 16 bits · estéreo");
+    CHECK(p[1]["nombre"].asString() == "canción" && p[1]["canales"].asInt() == 1 && p[1]["cuadros"].asInt() == 48000);
+    CHECK(p[1]["info"].asString() == "FALSO · 32 kHz → 48 kHz · estéreo idéntico → mono");
+    const std::string msg = estado(s)["mensaje"].asString();
+    CHECK(msg.rfind("2 agregada(s); problemas: notas.txt: no tiene audio que se pueda leer.", 0) == 0);
+    CHECK(s.progress() < 0);
+
+    // Un flujo que no se puede recorrer (como algunas carpetas en la nube): se copia primero.
+    int tubo[2];
+    CHECK(::pipe(tubo) == 0);
+    std::thread escritor([&] {
+        FILE *src = std::fopen(wav.c_str(), "rb");
+        char buf[4096];
+        size_t n;
+        while ((n = std::fread(buf, 1, sizeof buf, src)) > 0)
+            if (::write(tubo[1], buf, n) != static_cast<ssize_t>(n)) break;
+        std::fclose(src);
+        ::close(tubo[1]);
+    });
+    CHECK(s.importFiles({tubo[0]}, {"flujo.wav"}));
+    CHECK(s.waitIdle(30000));
+    escritor.join();
+    CHECK(s.trackCount() == 3 && pistas(s)[2]["cuadros"].asInt() == 48000);
+
+    // Sin decodificador (como en estas pruebas de Linux) lo que no es WAV no entra.
+    Studio sin;
+    const std::string dir2 = nuevaCarpeta("estudio5b");
+    sin.open(dir2, dir2);
+    CHECK(sin.waitIdle(30000));
+    CHECK(sin.importFiles({abrir(falso)}, {"x.mp3"}) && sin.waitIdle(30000));
+    CHECK(estado(sin)["mensaje"].asString().find("x.mp3: No es un archivo WAV") != std::string::npos);
+
+    // Límite de 12 pistas.
+    CHECK(sin.loadDemo() && sin.waitIdle(30000));
+    CHECK(sin.loadDemo() && sin.waitIdle(30000));
+    CHECK(sin.trackCount() == 12);
+    CHECK(sin.loadDemo() && sin.waitIdle(30000));
+    CHECK(sin.trackCount() == 12 && estado(sin)["mensaje"].asString().rfind("Límite de 12 pistas", 0) == 0);
+    CHECK(sin.importFiles({abrir(wav)}, {"una.wav"}) && sin.waitIdle(30000));
+    CHECK(estado(sin)["mensaje"].asString().find("límite de 12 pistas") != std::string::npos);
+}
+
+TEST(estudioEdicionYDeshacer) {
+    const std::string dir = nuevaCarpeta("estudio6");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    const int id = idDe(s, 0), id2 = idDe(s, 1);
+    const std::vector<Region> original = s.regions(id);
+    s.seek(6.0);
+    CHECK(s.cut(id, 0) == 1);
+    std::vector<Region> r = s.regions(id);
+    CHECK(r.size() == 2 && r[0].length == 288000 && r[1].start == 288000 && r[1].src == 288000);
+    CHECK(s.canUndo());
+    // Arrastre: cerca del cursor se pega (imán); el arrastre completo es un solo paso de deshacer.
+    CHECK(s.editBegin(id, 1, Studio::kEditMove));
+    s.editDrag(1500, 2000);
+    CHECK(s.regions(id)[1].start == 288000);
+    s.editDrag(48000, 2000);
+    CHECK(s.regions(id)[1].start == 336000);
+    s.editDrag(48000, 0);
+    s.editEnd();
+    CHECK_NEAR(s.duration(), (336000 + 288000) / 48000.0, 1e-9);
+    CHECK(s.undo() && s.regions(id)[1].start == 288000);
+    CHECK(s.undo() && s.regions(id) == original);
+    CHECK(!s.canUndo() && !s.undo());
+    CHECK(s.redo() && s.regions(id).size() == 2);
+    CHECK(s.redo() && s.regions(id)[1].start == 336000 && !s.canRedo());
+    // Recortes y fundidos con arrastre.
+    CHECK(s.editBegin(id, 0, Studio::kEditTrimEnd));
+    s.editDrag(-48000, 0);
+    s.editEnd();
+    CHECK(s.regions(id)[0].length == 240000);
+    CHECK(s.editBegin(id, 0, Studio::kEditFadeIn));
+    s.editDrag(9600, 0);
+    s.editEnd();
+    CHECK(s.regions(id)[0].fadeIn == 9600);
+    CHECK(s.editBegin(id, 0, Studio::kEditTrimStart));
+    s.editDrag(-100, 0);  // no antes del principio del archivo
+    s.editEnd();
+    CHECK(s.regions(id)[0].start == 0 && s.regions(id)[0].src == 0);
+    // Fundidos seguidos con el deslizador: un solo paso.
+    s.setRegionFade(id, 1, true, 4800);
+    s.setRegionFade(id, 1, true, 9600);
+    CHECK(s.regions(id)[1].fadeIn == 9600);
+    CHECK(s.undo() && s.regions(id)[1].fadeIn == 0);
+    // Empujar tres veces: un solo paso.
+    const int64_t antes = s.regions(id)[1].start;
+    for (int i = 0; i < 3; ++i) s.nudgeRegion(id, 1, 10);
+    CHECK(s.regions(id)[1].start == antes + 3 * 480);
+    CHECK(s.undo() && s.regions(id)[1].start == antes);
+    // Cortar todas las pistas en el cursor: solo donde hay audio bajo el cursor.
+    s.seek(3.0);
+    CHECK(s.cut(-1, -1) == 4);
+    CHECK(s.regions(id).size() == 3 && s.regions(id2).size() == 2);
+    s.seek(13.5);
+    CHECK(s.cut(-1, -1) == 0 && s.cut(id, 0) == -1);
+    // Borrar y regresar al original.
+    CHECK(s.deleteRegion(id2, 0) && s.regions(id2).size() == 1);
+    s.restoreRegions(id2);
+    CHECK(s.regions(id2).size() == 1 && s.regions(id2)[0].length == 12 * 48000 && s.regions(id2)[0].start == 0);
+    CHECK(!s.editBegin(id, 99, Studio::kEditMove) && !s.editBegin(999, 0, Studio::kEditMove));
+    // Sin pedazos la pista no suena: la duración la dan las demás.
+    while (!s.regions(id).empty()) s.deleteRegion(id, 0);
+    CHECK_NEAR(s.duration(), 12.0, 1e-9);
+}
+
+TEST(estudioEq) {
+    const std::string dir = nuevaCarpeta("estudio7");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    const int id = idDe(s, 0);
+    CHECK(s.addEqBand(id) == 0 && s.addEqBand(id) == 1 && s.addEqBand(id) == 2);
+    std::vector<float> e = s.eqState(id);
+    CHECK(e[2] == 3.0f && e[4] == 1000.0f && e[9] == 140.0f && e[14] == 4500.0f);  // en los huecos más grandes
+    s.setEqBand(id, 0, kPeaking, 1000, 6, 1.4f, true);
+    const float fr[3] = {100, 1000, 10000};
+    float db[3];
+    s.eqResponse(id, -1, fr, db, 3);
+    CHECK_NEAR(db[1], 6, 0.05);
+    CHECK_NEAR(s.eqTrimDb(id), -6, 0.1);
+    s.eqResponse(id, 0, fr, db, 3);
+    CHECK_NEAR(db[1], 6, 0.05);
+    s.removeEqBand(id, 1);
+    CHECK(s.addEqBand(id) == 2);
+    e = s.eqState(id);
+    CHECK(e[2] == 3.0f && e[14] == 140.0f);
+    s.setEqBypass(id, true);
+    CHECK(s.eqTrimDb(id) == 0.0f);
+    s.resetEq(id);
+    e = s.eqState(id);
+    CHECK(e.size() == 3 && e[2] == 0.0f);
+    s.eqResponse(id, -1, fr, db, 3);
+    CHECK(db[1] == 0.0f);
+    for (int i = 0; i < 12; ++i) CHECK(s.addEqBand(id) == i);
+    CHECK(s.addEqBand(id) == -1);
+}
+
+TEST(estudioExportaYQuita) {
+    const std::string dir = nuevaCarpeta("estudio8");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    const std::string out = tmpPath("estudio-mezcla.wav");
+    const int64_t esperado = s.exportBytes();
+    CHECK(s.exportMix(crear(out), "Mezcla.wav"));
+    CHECK(s.waitIdle(30000));
+    const Json st = estado(s);
+    CHECK(st["exportaciones"].asInt() == 1 && st["ultimaOk"].asBool() && !st["exportando"].asBool(true));
+    CHECK(st["mensaje"].asString().rfind("Mezcla exportada: Mezcla.wav (24 bits · 48000 Hz · 0:12 · ", 0) == 0);
+    struct stat sb {};
+    CHECK(::stat(out.c_str(), &sb) == 0 && sb.st_size == esperado);
+    // Cancelar.
+    s.setExportFormat(32, 44100);
+    CHECK(s.exportMix(crear(tmpPath("cancelada2.wav")), "x.wav"));
+    s.cancelExport();
+    CHECK(s.waitIdle(30000));
+    CHECK(estado(s)["exportaciones"].asInt() == 2);
+    // Quitar una pista: su archivo se borra.
+    const int id = idDe(s, 1);
+    std::vector<uint8_t> sg;
+    CHECK(!s.spectrogram(id, sg));  // se calcula aparte
+    CHECK(s.waitIdle(30000) && s.spectrogram(id, sg) && sg.size() == size_t(Studio::kSpectrogramCols) * Studio::kSpectrogramRows);
+    int32_t v1[Studio::kVersionCount], v2[Studio::kVersionCount];
+    s.versions(v1);
+    CHECK(s.removeTrack(id) && !s.removeTrack(id));
+    s.versions(v2);
+    CHECK(v2[Studio::kVerTracks] != v1[Studio::kVerTracks]);
+    CHECK(s.trackCount() == 3 && !s.spectrogram(id, sg));
+    CHECK(estado(s)["mensaje"].asString() == "3 pista(s) · 48000 Hz · ≈ 7 MB en disco");
+    for (int i = 0; i < 3; ++i) s.removeTrack(idDe(s, 0));
+    CHECK(!s.exportMix(crear(tmpPath("vacia.wav")), "v.wav"));  // sin pistas no hay qué exportar
+    CHECK(estado(s)["mensaje"].asString() == "Sin pistas. Agrega archivos WAV o carga las pistas de prueba.");
+}
+
+TEST(estudioOndaConFundidos) {
+    const std::string dir = nuevaCarpeta("estudio9");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    const int id = idDe(s, 0);  // bajo: notas desde el inicio
+    const std::vector<float> sin = s.regionWave(id, 0, 0, 12 * 48000, 100);
+    CHECK(sin.size() == 200);
+    s.setRegionFade(id, 0, true, 48000);  // 1 s
+    const std::vector<float> con = s.regionWave(id, 0, 0, 12 * 48000, 100);
+    const double g = std::pow(std::sin(0.5 * 5760.0 / 48000 * M_PI / 2), 2);  // centro de la columna 0
+    CHECK_NEAR(con[1], sin[1] * g, 1e-5);
+    CHECK(con[100] == sin[100] && con[101] == sin[101]);  // pasado el fundido, igual
+    // Solo una parte: columnas de esa parte.
+    const std::vector<float> parte = s.regionWave(id, 0, 6 * 48000, 7 * 48000, 10);
+    CHECK(parte.size() == 20);
+    CHECK(s.regionWave(id, 5, 0, 100, 10).empty() && s.regionWave(id, 0, 13 * 48000, 14 * 48000, 10).empty());
+}
+
+TEST(estudioMedidoresYAnalisis) {
+    const std::string dir = nuevaCarpeta("estudio10");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.play();
+    float out[MeterBallistics::kCount], st[AnalysisView::kStatCount];
+    std::vector<float> buf(512 * 2), cols(64);
+    bool cambio = false;
+    for (int i = 0; i < 40; ++i) {
+        for (int k = 0; k < 4; ++k) s.mixer().process(buf.data(), 512, 2);
+        cambio = s.analysisUpdate(40 * (i + 1), false, st) || cambio;
+    }
+    s.meters(2000, out);
+    CHECK(out[MeterBallistics::kMasterL] > -40.0f && out[0] > -60.0f);
+    CHECK(cambio && st[0] == 1.0f && st[1] == 1.0f);
+    s.spectrumColumns(cols.data(), 64);
+    CHECK(*std::max_element(cols.begin(), cols.end()) > -80.0f);
+    // Analizar una sola pista (la guitarra, a la derecha).
+    s.setAnalysisSource(idDe(s, 2));
+    for (int i = 0; i < 20; ++i) {
+        for (int k = 0; k < 4; ++k) s.mixer().process(buf.data(), 512, 2);
+        s.analysisUpdate(2000 + 40 * (i + 1), false, st);
+    }
+    CHECK(st[3] > 0.3f);
+    s.pause();
+    for (int k = 0; k < 4; ++k) s.mixer().process(buf.data(), 512, 2);
+    CHECK(s.analysisUpdate(5000, false, st) && st[0] == 0.0f);
+}
+
+TEST(concurrenciaEstudio) {
+    // Audio, pantalla, trabajos y mantenimiento a la vez, sin carreras.
+    const std::string dir = nuevaCarpeta("estudio11");
+    WavSpec spec;
+    const std::string wav = tmpPath("conc-estudio.wav");
+    makeWav(wav, spec, 9600, [](int64_t f, int c) { return sine(c ? 300 : 700, 48000, f); });
+    Studio s;
+    s.open(dir, dir);
+    s.startBackground();
+    std::atomic<bool> done{false};
+    std::thread audio([&] {
+        std::vector<float> out(256 * 2);
+        while (!done.load()) s.mixer().process(out.data(), 256, 2);
+    });
+    std::mt19937 rng(7);
+    float buf[64];
+    int32_t ver[Studio::kVersionCount];
+    for (int it = 0; it < 300; ++it) {
+        const int n = s.trackCount();
+        const int id = n > 0 ? idDe(s, static_cast<int>(rng() % n)) : -1;
+        switch (rng() % 16) {
+            case 0: s.setVolume(id, (rng() % 66) - 60.0f); break;
+            case 1: s.setPan(id, (rng() % 200) - 100.0f); break;
+            case 2: s.setMute(id, rng() % 2); s.setSolo(id, rng() % 3 == 0); break;
+            case 3: s.addEqBand(id); s.setEqBand(id, 0, rng() % 6, 20.0f + rng() % 18000, 3, 1, true); break;
+            case 4: s.removeEqBand(id, 0); break;
+            case 5: s.seek((rng() % 120) / 10.0); s.cut(rng() % 3 ? id : -1, 0); break;
+            case 6:
+                if (s.editBegin(id, 0, 1 + static_cast<int>(rng() % 5))) {
+                    s.editDrag(static_cast<int64_t>(rng() % 20000) - 10000, 500);
+                    s.editEnd();
+                }
+                break;
+            case 7: s.undo(); break;
+            case 8: s.redo(); break;
+            case 9: s.playPause(); break;
+            case 10: s.importFiles({abrir(wav)}, {"c.wav"}); break;
+            case 11: if (n > 6) s.removeTrack(id); break;
+            case 12: { std::vector<uint8_t> sg; s.spectrogram(id, sg); } break;
+            case 13: s.setAnalysisSource(rng() % 2 ? id : -1); s.analysisUpdate(it * 40, rng() % 2, buf); break;
+            case 14: { float m[MeterBallistics::kCount]; s.meters(it * 16, m); } break;
+            default: s.regionWave(id, 0, 0, 48000, 50); s.statusJson(); s.versions(ver); s.setNotch(rng() % 2 ? 60 : 0); break;
+        }
+    }
+    CHECK(s.waitIdle(60000));
+    done.store(true);
+    audio.join();
+    s.stopBackground();
+    CHECK(s.saveNow());
+}
+
 // ---------------------------------------------------------------- main
 int main(int argc, char **argv) {
     char tmpl[] = "/tmp/wavapp-pruebas-XXXXXX";
     gDir = mkdtemp(tmpl);
-    const char *only = argc > 1 ? argv[1] : nullptr;
     for (auto &t : tests()) {
-        if (only && std::strcmp(only, t.name) != 0) continue;
+        bool elegida = argc <= 1;
+        for (int i = 1; i < argc; ++i) elegida = elegida || std::strcmp(argv[i], t.name) == 0;
+        if (!elegida) continue;
         std::printf("• %s\n", t.name);
         t.fn();
     }

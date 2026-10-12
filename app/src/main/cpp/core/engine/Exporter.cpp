@@ -1,4 +1,4 @@
-#include "Exporter.h"
+#include "engine/Exporter.h"
 
 #include <unistd.h>
 
@@ -9,8 +9,8 @@
 #include <memory>
 #include <vector>
 
-#include "Mixer.h"
-#include "Resampler.h"
+#include "engine/Mixer.h"
+#include "dsp/Resampler.h"
 
 namespace {
 

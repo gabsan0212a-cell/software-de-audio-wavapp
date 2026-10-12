@@ -1,5 +1,10 @@
 package com.wavapp.mezcla
 
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import android.net.Uri
 import android.os.ParcelFileDescriptor
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -89,11 +94,88 @@ class MotorTest {
     }
 
     @Test
+    fun importaAacDecodificado() {
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val m4a = File(dir, "tono.m4a")
+        codificarAac(m4a, segundos = 2, frecuencia = 44100)
+        val wav = File(dir, "tono-dec.wav")
+        val d = Decodificador.aWav(ctx, Uri.fromFile(m4a), wav) {}
+        assertEquals("", d.error)
+        assertEquals("AAC", d.codec)
+        assertEquals(44100, d.frecuencia)
+        val fd = ParcelFileDescriptor.open(wav, ParcelFileDescriptor.MODE_READ_ONLY).detachFd()
+        val r = NativeAudio.importWav(fd, File(dir, "aac-int.wav").path)
+        assertNotNull(NativeAudio.lastError(), r)
+        espacios += r!![0].toInt()
+        assertEquals(2L, r[1])
+        // ~2 s a 48 kHz (el códec agrega un poco de relleno al inicio y al final)
+        assertTrue("duración ${r[2]} cuadros", r[2] in 95_000L..110_000L)
+    }
+
+    @Test
     fun rechazaArchivoQueNoEsWav() {
         val src = File(dir, "texto.wav").apply { writeText("hola") }
         val fd = ParcelFileDescriptor.open(src, ParcelFileDescriptor.MODE_READ_ONLY).detachFd()
         assertNull(NativeAudio.importWav(fd, File(dir, "x.wav").path))
         assertEquals("No es un archivo WAV", NativeAudio.lastError())
+    }
+
+    /** Codifica un tono estéreo (L = -R) a AAC en M4A con el codificador del sistema. */
+    private fun codificarAac(f: File, segundos: Int, frecuencia: Int) {
+        val formato = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, frecuencia, 2).apply {
+            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
+        }
+        val enc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+        enc.configure(formato, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        enc.start()
+        val mux = MediaMuxer(f.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var pistaMux = -1
+        val total = segundos * frecuencia
+        var hecho = 0
+        var finEntrada = false
+        val info = MediaCodec.BufferInfo()
+        while (true) {
+            if (!finEntrada) {
+                val i = enc.dequeueInputBuffer(10_000)
+                if (i >= 0) {
+                    val buf = enc.getInputBuffer(i)!!.order(ByteOrder.LITTLE_ENDIAN)
+                    buf.clear()
+                    val cuadros = minOf(1024, buf.capacity() / 4, total - hecho)
+                    val t = hecho * 1_000_000L / frecuencia
+                    if (cuadros <= 0) {
+                        enc.queueInputBuffer(i, 0, 0, t, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        finEntrada = true
+                    } else {
+                        for (k in 0 until cuadros) {
+                            val v = (sin(2 * PI * 440 * (hecho + k) / frecuencia) * 12000).toInt()
+                            buf.putShort(v.toShort())
+                            buf.putShort((-v).toShort())
+                        }
+                        enc.queueInputBuffer(i, 0, cuadros * 4, t, 0)
+                        hecho += cuadros
+                    }
+                }
+            }
+            val o = enc.dequeueOutputBuffer(info, 10_000)
+            if (o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                pistaMux = mux.addTrack(enc.outputFormat)
+                mux.start()
+            } else if (o >= 0) {
+                val buf = enc.getOutputBuffer(o)!!
+                if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && info.size > 0 && pistaMux >= 0) {
+                    buf.position(info.offset)
+                    buf.limit(info.offset + info.size)
+                    mux.writeSampleData(pistaMux, buf, info)
+                }
+                enc.releaseOutputBuffer(o, false)
+                if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+            }
+        }
+        enc.stop()
+        enc.release()
+        mux.stop()
+        mux.release()
     }
 
     private fun escribirWav(f: File, cuadros: Int) {

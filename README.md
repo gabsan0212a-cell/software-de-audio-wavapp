@@ -18,6 +18,7 @@ El APK solo se publica si pasan todas las pruebas.
 - [x] 0. App mínima: tono de prueba + compilación en la nube
 - [x] 1. Motor de audio nativo
   - [x] 1a. Abrir y reproducir WAV (8/16/24/32 bits, float; encabezados mal escritos)
+        y también MP3, AAC/M4A, FLAC, OGG y Opus (los decodifica Android)
   - [x] 1b. Volumen, paneo, mute, solo y polaridad por pista
   - [x] 1c. Hasta 12 pistas mezcladas + master (fader, limitador, medidores, clip)
 - [ ] 2. EQ de 12 bandas
@@ -37,7 +38,8 @@ Sin plugins VST en Android.
     (no llenan la RAM; el sistema lee del disco lo que va sonando).
   - `Mixer` + `Limiter`: la mezcla en tiempo real, igual que la cadena del prototipo.
   - `AudioEngine`: salida con Oboe a 48 kHz; `jni_bridge.cpp`: puente con Kotlin.
-- `app/src/main/java/.../`: `Mesa.kt` (estado, importación, sesión) y `ui/` (pantalla en Compose).
+- `app/src/main/java/.../`: `Mesa.kt` (estado, importación, sesión), `Decodificador.kt`
+  (formatos comprimidos → WAV con MediaCodec) y `ui/` (pantalla en Compose).
 
 ## Pruebas
 - `tests/native/run.sh`: pruebas del motor en Linux con ASan, UBSan y TSan.

@@ -2,6 +2,7 @@ package com.wavapp.mezcla
 
 import android.content.Context
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
@@ -142,27 +143,19 @@ object Mesa {
                 ocupadaTexto = "Importando $nombreArchivo…"
                 progreso = 0f
                 val archivo = "pista-${UUID.randomUUID()}.wav"
-                val (r, error) = withContext(Dispatchers.IO) {
-                    try {
-                        val fd = context.contentResolver.openFileDescriptor(uri, "r")?.use { it.detachFd() }
-                        if (fd == null) {
-                            null to "no se pudo abrir"
-                        } else {
-                            val res = NativeAudio.importWav(fd, File(carpeta, archivo).path)
-                            res to (if (res == null) NativeAudio.lastError() else "")
-                        }
-                    } catch (e: Exception) {
-                        null to (e.message ?: "no se pudo abrir")
-                    }
-                }
+                val imp = importarUno(context, uri, archivo, nombreArchivo)
+                val r = imp.datos
                 if (r == null) {
-                    errores += "$nombreArchivo: $error"
+                    errores += "$nombreArchivo: ${imp.error}"
                     continue
                 }
+                val info = describir(r[3].toInt(), r[4].toInt(), r[5].toInt(), r[6] == 1L, r[7] == 1L)
                 val p = Pista(
                     slot = r[0].toInt(), id = siguienteId++, nombre = sinExtension(nombreArchivo),
                     archivo = archivo, canales = r[1].toInt(), cuadros = r[2],
-                    info = describir(r[3].toInt(), r[4].toInt(), r[5].toInt(), r[6] == 1L, r[7] == 1L),
+                    // De un comprimido, los "bits" son los del decodificador: mejor mostrar el formato.
+                    info = if (imp.codec.isEmpty()) info else imp.codec + " · " + info.substringBefore(" · ") +
+                        " · " + info.substringAfterLast(" · "),
                 )
                 pistas.add(p)
                 aplicar(p)
@@ -173,10 +166,56 @@ object Mesa {
             val msg = when {
                 errores.isEmpty() -> "$agregadas pista(s) agregada(s)"
                 else -> (if (agregadas > 0) "$agregadas agregada(s); " else "") +
-                    "problemas: " + errores.joinToString("; ") + ". Por ahora solo se aceptan WAV"
+                    "problemas: " + errores.joinToString("; ") +
+                    ". Suelen funcionar WAV, MP3, AAC/M4A, FLAC, OGG y Opus"
             }
             actualizarEstado(msg)
             pedirGuardar()
+        }
+    }
+
+    private class Importado(val datos: LongArray?, val error: String, val codec: String = "")
+
+    @Volatile private var decodificando = false
+    @Volatile private var progresoDecodificacion = 0f
+
+    /** WAV directo; si no es WAV, Android lo decodifica a un WAV temporal y se importa ese. */
+    private suspend fun importarUno(context: Context, uri: Uri, archivo: String, nombre: String): Importado {
+        val destino = File(carpeta, archivo).path
+        val directo = withContext(Dispatchers.IO) {
+            try {
+                val fd = context.contentResolver.openFileDescriptor(uri, "r")?.use { it.detachFd() }
+                if (fd == null) {
+                    Importado(null, "no se pudo abrir")
+                } else {
+                    val r = NativeAudio.importWav(fd, destino)
+                    Importado(r, if (r == null) NativeAudio.lastError() else "")
+                }
+            } catch (e: Exception) {
+                Importado(null, e.message ?: "no se pudo abrir")
+            }
+        }
+        if (directo.datos != null || directo.error != "No es un archivo WAV") return directo
+
+        val temporal = File(context.cacheDir, "decodificado-${UUID.randomUUID()}.wav")
+        try {
+            ocupadaTexto = "Decodificando $nombre…"
+            progresoDecodificacion = 0f
+            decodificando = true
+            val d = withContext(Dispatchers.IO) {
+                Decodificador.aWav(context, uri, temporal) { progresoDecodificacion = it }
+            }
+            decodificando = false
+            if (d.error.isNotEmpty()) return Importado(null, d.error)
+            ocupadaTexto = "Importando $nombre…"
+            return withContext(Dispatchers.IO) {
+                val fd = ParcelFileDescriptor.open(temporal, ParcelFileDescriptor.MODE_READ_ONLY).detachFd()
+                val r = NativeAudio.importWav(fd, destino)
+                Importado(r, if (r == null) NativeAudio.lastError() else "", d.codec)
+            }
+        } finally {
+            decodificando = false
+            temporal.delete()
         }
     }
 
@@ -307,7 +346,9 @@ object Mesa {
         reproduciendo = NativeAudio.isPlaying()
         posicion = NativeAudio.positionSeconds()
         duracion = NativeAudio.durationSeconds()
-        if (ocupada && progreso >= 0f) progreso = NativeAudio.importProgress()
+        if (ocupada && progreso >= 0f) {
+            progreso = if (decodificando) progresoDecodificacion else NativeAudio.importProgress()
+        }
 
         NativeAudio.readMeters(bufMedidores)
         // Caídas del prototipo (por cuadro de ~33 ms): pistas 1.5 dB, master 1.2 dB; la marca

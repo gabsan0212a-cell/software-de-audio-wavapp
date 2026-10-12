@@ -45,6 +45,9 @@ class PantallaTest {
         regla.onNode(hasScrollAction()).performScrollToNode(hasText("MASTER"))
         avanzarMedidores()
         captura("3-master")
+        regla.onNode(hasScrollAction()).performScrollToNode(hasText("Salida", substring = true))
+        avanzarMedidores()
+        captura("5-salida")
 
         // Mute y solo en la primera pista.
         regla.onNode(hasScrollAction()).performScrollToIndex(0)

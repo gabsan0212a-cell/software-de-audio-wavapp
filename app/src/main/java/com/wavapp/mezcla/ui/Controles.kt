@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
@@ -64,6 +65,7 @@ fun Boton(
     relleno: Dp = 12.dp,
     habilitado: Boolean = true,
     descripcion: String? = null,
+    reservar: String? = null,  // texto cuyo ancho se reserva (para que no salte al cambiar)
 ) {
     val p = LocalPaleta.current
     val forma = RoundedCornerShape(5.dp)
@@ -88,10 +90,17 @@ fun Boton(
             .padding(horizontal = relleno, vertical = 7.dp),
         contentAlignment = Alignment.Center,
     ) {
+        val peso = if (estilo == Estilo.Normal) FontWeight.Normal else FontWeight.SemiBold
+        val familia = if (estilo == Estilo.Mute || estilo == Estilo.Solo) Mono else null
+        if (reservar != null) {
+            Text(
+                reservar, color = Color.Transparent, fontSize = tamano, fontWeight = peso, fontFamily = familia,
+                modifier = Modifier.clearAndSetSemantics {},
+            )
+        }
         Text(
             texto, color = if (habilitado) color else color.copy(alpha = 0.4f), fontSize = tamano,
-            fontWeight = if (estilo == Estilo.Normal) FontWeight.Normal else FontWeight.SemiBold,
-            fontFamily = if (estilo == Estilo.Mute || estilo == Estilo.Solo) Mono else null,
+            fontWeight = peso, fontFamily = familia,
         )
     }
 }

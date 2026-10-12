@@ -147,6 +147,7 @@ private fun Transporte() {
                 Boton(
                     if (Mesa.reproduciendo) "❚❚ Pausar" else "▶ Reproducir",
                     alTocar = { Mesa.reproducirPausar() }, estilo = Estilo.Reproducir,
+                    reservar = "▶ Reproducir",
                 )
                 Boton("■ Detener", alTocar = { Mesa.detener() })
             }

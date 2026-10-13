@@ -1,27 +1,26 @@
 package com.wavapp.mezcla.ui
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,6 +29,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -38,7 +38,6 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
@@ -50,6 +49,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -69,89 +69,97 @@ import kotlin.math.sin
 
 private const val SG_TOPE = 20000f  // el espectrograma del núcleo llega hasta 20 kHz
 
-/** Panel de análisis a pantalla completa (Diagnóstico + espectro + espectrograma del prototipo). */
+/** Fondo de las gráficas de análisis (como la pantalla de un instrumento). */
+private fun fondoGrafica(p: Paleta) = if (p.oscuro) Color(0xFF0B0B0C) else Color(0xFFF6F6F8)
+
+/** Pestaña "Análisis": diagnóstico de fase y paneo, espectro con zumbido y espectrograma. */
 @Composable
-fun PanelAnalisis(alCerrar: () -> Unit) {
-    val pal = LocalPaleta.current
-    BackHandler { alCerrar() }
+fun PestanaAnalisis(abajo: Dp) {
+    val lista = rememberLazyListState()
     val fuente = Mesa.pistas.firstOrNull { it.id == Analisis.fuenteId }
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(pal.bg)
-            .safeDrawingPadding()
-            .verticalScroll(rememberScrollState())
-            .testTag("panelAnalisis")
-            .padding(vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Análisis", color = pal.fg, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            Boton("Cerrar", alCerrar)
-        }
-        Transporte()
-        Row(
-            Modifier.padding(horizontal = 16.dp).horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+    LaunchedEffect(fuente?.id) { fuente?.let { Analisis.pedirEspectrograma(it) } }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier.fillMaxSize().testTag("panelAnalisis"),
+            state = lista,
+            contentPadding = PaddingValues(bottom = abajo + 20.dp),
         ) {
-            Boton("Mezcla", { Analisis.fuenteId = -1 }, presionado = fuente == null, tamano = 12.sp, relleno = 10.dp)
-            for (p in Mesa.pistas) {
-                Boton("${p.id} · ${p.nombre}", { Analisis.fuenteId = p.id }, presionado = fuente == p,
-                    tamano = 12.sp, relleno = 10.dp)
+            item(key = "espacio") { EspacioEncabezado() }
+            item(key = "titulo") { TituloGrande("Análisis") }
+            item(key = "fuentes") { Fuentes(fuente) }
+            if (Mesa.pistas.isEmpty()) {
+                item(key = "vacio") { PieGrupo("Agrega pistas en Mezcla para analizarlas.", Modifier.padding(top = 12.dp)) }
+                return@LazyColumn
+            }
+            item(key = "diagTitulo") { EncabezadoSeccion("Diagnóstico", detalle = fuente?.nombre ?: "Mezcla completa") }
+            item(key = "diag") {
+                Tarjeta(Modifier.padding(horizontal = 16.dp)) {
+                    Segmentado(
+                        listOf("Por fuentes", "Clásico"), if (Analisis.modoClasico) 1 else 0,
+                        { Analisis.modoClasico = it == 1 }, Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Goniometro(Modifier.fillMaxWidth().aspectRatio(1.6f).clip(RoundedCornerShape(10.dp)))
+                    Spacer(Modifier.height(14.dp))
+                    MedidoresFase()
+                }
+            }
+            item(key = "espTitulo") { EncabezadoSeccion("Espectro y zumbido") }
+            item(key = "esp") {
+                Tarjeta(Modifier.padding(horizontal = 16.dp)) {
+                    Espectro(Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(10.dp)))
+                    Spacer(Modifier.height(10.dp))
+                    TextoZumbido()
+                    Spacer(Modifier.height(12.dp))
+                    Segmentado(
+                        listOf("Sin notch", "50 Hz", "60 Hz"), when (Analisis.notch) { 50 -> 1; 60 -> 2; else -> 0 },
+                        { Analisis.ponerNotch(listOf(0, 50, 60)[it]) }, Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+            item(key = "espPie") {
+                PieGrupo("El notch quita 50 o 60 Hz y 3 armónicos de toda la mezcla (también al exportar).")
+            }
+            item(key = "sgTitulo") {
+                EncabezadoSeccion("Espectrograma", detalle = if (fuente != null) "antes del EQ" else null)
+            }
+            item(key = "sg") {
+                Tarjeta(Modifier.padding(horizontal = 16.dp)) {
+                    if (fuente == null) {
+                        Texto("Elige una pista arriba para ver su espectrograma.", Tipo.subtitulo, LocalPaleta.current.texto2)
+                    } else {
+                        Espectrograma(fuente, Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(10.dp)))
+                    }
+                }
+            }
+            if (fuente != null) {
+                item(key = "sgPie") {
+                    PieGrupo(
+                        "El fondo es silencio; verde suena bajo, naranja medio y rojo fuerte. Una línea horizontal " +
+                            "constante en 50/60 Hz o múltiplos suele ser zumbido. Toca para saltar a ese momento.",
+                    )
+                }
             }
         }
-        Seccion("Diagnóstico · " + (fuente?.let { "${it.id} · ${it.nombre}" } ?: "mezcla completa")) {
-            Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-                Boton("Por fuentes", { Analisis.modoClasico = false }, presionado = !Analisis.modoClasico, tamano = 12.sp, relleno = 10.dp)
-                Boton("Clásico", { Analisis.modoClasico = true }, presionado = Analisis.modoClasico, tamano = 12.sp, relleno = 10.dp)
-            }
-            Goniometro(Modifier.fillMaxWidth().aspectRatio(1.6f).clip(RoundedCornerShape(4.dp)))
-            MedidoresFase()
-        }
-        Seccion("Espectro y zumbido") {
-            Espectro(Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(4.dp)))
-            TextoZumbido()
-            Row {
-                Boton("Notch off", { Analisis.ponerNotch(0) }, presionado = Analisis.notch == 0, tamano = 12.sp, relleno = 10.dp)
-                Boton("50 Hz", { Analisis.ponerNotch(50) }, presionado = Analisis.notch == 50, tamano = 12.sp, relleno = 10.dp)
-                Boton("60 Hz", { Analisis.ponerNotch(60) }, presionado = Analisis.notch == 60, tamano = 12.sp, relleno = 10.dp)
-            }
-            Text(
-                "El notch quita 50 o 60 Hz y 3 armónicos de toda la mezcla (también al exportar).",
-                color = pal.tenue, fontSize = 11.sp,
-            )
-        }
-        Seccion("Espectrograma · " + (fuente?.let { "${it.id} · ${it.nombre} · antes del EQ" } ?: "elige una pista")) {
-            if (fuente == null) {
-                Text("Elige una pista arriba para ver su espectrograma.", color = pal.tenue, fontSize = 13.sp)
-            } else {
-                Espectrograma(fuente, Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(4.dp)))
-                Text(
-                    "El fondo es silencio; verde suena bajo, naranja medio y rojo fuerte. Una línea horizontal " +
-                        "constante en 50/60 Hz o múltiplos suele ser zumbido. Toca para saltar a ese momento.",
-                    color = pal.tenue, fontSize = 11.sp,
-                )
-            }
-        }
+        EncabezadoFlotante(lista, "Análisis")
     }
 }
 
+/** Qué se analiza: la mezcla o una pista. */
 @Composable
-private fun Seccion(titulo: String, contenido: @Composable () -> Unit) {
-    val pal = LocalPaleta.current
-    val forma = RoundedCornerShape(6.dp)
-    Column(
-        Modifier
-            .padding(horizontal = 16.dp)
-            .fillMaxWidth()
-            .clip(forma)
-            .background(pal.panel)
-            .border(1.dp, pal.linea, forma)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+private fun Fuentes(fuente: Pista?) {
+    val p = LocalPaleta.current
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(titulo.uppercase(), color = pal.tenue, fontSize = 12.sp, letterSpacing = 1.sp)
-        contenido()
+        Chip("Mezcla", fuente == null, { Analisis.fuenteId = -1 })
+        for (pista in Mesa.pistas) {
+            Chip(
+                "${pista.id} · ${pista.nombre}", fuente == pista, { Analisis.fuenteId = pista.id },
+                colorActivo = p.pistas[pista.color],
+            )
+        }
     }
 }
 
@@ -163,57 +171,64 @@ private val MAXA = (75 * Math.PI / 180).toFloat()
 private fun Goniometro(modifier: Modifier) {
     val pal = LocalPaleta.current
     val medidor = rememberTextMeasurer()
+    val fondo = fondoGrafica(pal)
+    val linea = pal.separador
     // Estela: se dibuja sobre una imagen que se va desvaneciendo (como el canvas del prototipo).
     val estado = remember { EstadoGonio() }
-    Canvas(modifier.background(pal.bg).semantics { contentDescription = "Goniómetro" }) {
+    Canvas(modifier.background(fondo).semantics { contentDescription = "Goniómetro" }) {
         val v = Analisis.version
         val w = size.width.toInt()
         val h = size.height.toInt()
         if (w <= 0 || h <= 0) return@Canvas
-        if (estado.img == null || estado.img!!.width != w || estado.img!!.height != h || estado.modo != Analisis.modoClasico) {
+        val img0 = estado.img
+        if (img0 == null || img0.width != w || img0.height != h || estado.modo != Analisis.modoClasico || estado.fondo != fondo) {
             estado.img = ImageBitmap(w, h)
             estado.modo = Analisis.modoClasico
-            estado.limpiar(pal.bg)
+            estado.fondo = fondo
+            estado.limpiar()
         }
-        val img = estado.img!!
+        val img = estado.img ?: return@Canvas
         if (v != estado.version) {
             estado.version = v
             val lienzo = androidx.compose.ui.graphics.Canvas(img)
-            val pintura = Paint().apply { color = pal.bg.copy(alpha = 0.35f) }
-            lienzo.drawRect(0f, 0f, w.toFloat(), h.toFloat(), pintura)
-            if (!Analisis.activo) estado.limpiar(pal.bg)
+            lienzo.drawRect(0f, 0f, w.toFloat(), h.toFloat(), Paint().apply { color = fondo.copy(alpha = 0.35f) })
+            if (!Analisis.activo) estado.limpiar()
             else if (Analisis.modoClasico) clasico(lienzo, estado, w.toFloat(), h.toFloat(), density, pal.verde)
             else fuentes(lienzo, estado, w.toFloat(), h.toFloat(), density, pal.verde)
         }
         drawImage(img)
         val d = density
-        val estilo = TextStyle(color = pal.tenue, fontSize = 10.sp, fontFamily = Mono)
+        val estilo = TextStyle(color = pal.texto2, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
         if (Analisis.modoClasico) {
-            val lin = pal.linea
-            drawLine(lin, Offset(size.width / 2, 0f), Offset(size.width / 2, size.height), d)
-            drawLine(lin, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), d)
-            drawLine(lin, Offset(0f, size.height), Offset(size.width, 0f), d)
-            drawLine(lin, Offset(0f, 0f), Offset(size.width, size.height), d)
-            drawText(medidor, "M", Offset(size.width / 2 + 4 * d, 2 * d), estilo)
-            drawText(medidor, "L", Offset(5 * d, 2 * d), estilo)
-            drawText(medidor, "R", Offset(size.width - 12 * d, 2 * d), estilo)
-            drawText(medidor, "S", Offset(size.width - 12 * d, size.height / 2 - 16 * d), estilo)
+            drawLine(linea, Offset(size.width / 2, 0f), Offset(size.width / 2, size.height), d)
+            drawLine(linea, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), d)
+            drawLine(linea, Offset(0f, size.height), Offset(size.width, 0f), d)
+            drawLine(linea, Offset(0f, 0f), Offset(size.width, size.height), d)
+            drawText(medidor, "M", Offset(size.width / 2 + 5 * d, 4 * d), estilo)
+            drawText(medidor, "L", Offset(6 * d, 4 * d), estilo)
+            drawText(medidor, "R", Offset(size.width - 14 * d, 4 * d), estilo)
+            drawText(medidor, "S", Offset(size.width - 14 * d, size.height / 2 - 17 * d), estilo)
             if (Analisis.activo) {
-                drawText(medidor, "auto +" + Analisis.gananciaGonio + " dB",
-                    Offset(5 * d, size.height - 16 * d), estilo.copy(fontSize = 9.sp))
+                drawText(
+                    medidor, "auto +" + Analisis.gananciaGonio + " dB", Offset(6 * d, size.height - 18 * d),
+                    estilo.copy(fontSize = 9.sp, fontWeight = FontWeight.Normal),
+                )
             }
         } else {
             val (cx, cy, r) = geomFuentes(size.width, size.height, d)
             for (k in -3..3) {
                 val a = k * 25 * Math.PI.toFloat() / 180
-                drawLine(pal.linea, Offset(cx, cy), Offset(cx + sin(a) * r, cy - cos(a) * r), d)
+                drawLine(linea, Offset(cx, cy), Offset(cx + sin(a) * r, cy - cos(a) * r), d)
             }
             for (f in listOf(0.5f, 1f)) {
-                drawArc(pal.linea, -90f - 75f, 150f, false, Offset(cx - r * f, cy - r * f), Size(2 * r * f, 2 * r * f), style = Stroke(d))
+                drawArc(
+                    linea, -90f - 75f, 150f, false, Offset(cx - r * f, cy - r * f), Size(2 * r * f, 2 * r * f),
+                    style = Stroke(d),
+                )
             }
             drawText(medidor, "L", Offset(cx - sin(MAXA) * r - 4 * d, cy - cos(MAXA) * r - 18 * d), estilo)
             drawText(medidor, "R", Offset(cx + sin(MAXA) * r - 4 * d, cy - cos(MAXA) * r - 18 * d), estilo)
-            drawText(medidor, "C", Offset(cx - 3 * d, cy - r - 16 * d), estilo)
+            drawText(medidor, "C", Offset(cx - 3 * d, cy - r - 17 * d), estilo)
         }
     }
 }
@@ -222,10 +237,11 @@ private class EstadoGonio {
     var img: ImageBitmap? = null
     var modo = false
     var version = -1
+    var fondo = Color.Transparent
     val datos = FloatArray(4096)  // lo que manda el núcleo: puntos o rayos
-    fun limpiar(bg: Color) {
+    fun limpiar() {
         val i = img ?: return
-        androidx.compose.ui.graphics.Canvas(i).drawRect(0f, 0f, i.width.toFloat(), i.height.toFloat(), Paint().apply { color = bg })
+        androidx.compose.ui.graphics.Canvas(i).drawRect(0f, 0f, i.width.toFloat(), i.height.toFloat(), Paint().apply { color = fondo })
     }
 }
 
@@ -233,7 +249,7 @@ private data class Geom(val cx: Float, val cy: Float, val r: Float)
 
 private fun geomFuentes(w: Float, h: Float, d: Float): Geom {
     val cy = h - 16 * d
-    return Geom(w / 2, cy, min(cy - 8 * d, (w / 2 - 6 * d) / sin(MAXA)))
+    return Geom(w / 2, cy, min(cy - 10 * d, (w / 2 - 8 * d) / sin(MAXA)))
 }
 
 /** Modo "Por fuentes": cada parte del sonido es un rayo en su ángulo de paneo (los calcula el núcleo). */
@@ -264,7 +280,7 @@ private fun clasico(c: androidx.compose.ui.graphics.Canvas, e: EstadoGonio, w: F
     }
 }
 
-// ---------------------------------------------------------------- medidores
+// ---------------------------------------------------------------- fase y paneo
 
 @Composable
 private fun MedidoresFase() {
@@ -273,32 +289,37 @@ private fun MedidoresFase() {
     val activo = Analisis.activo && Analisis.fuerte
     val pan = Analisis.paneo
     val cor = Analisis.correlacion
-    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         FilaMedidor(
-            "Pan", if (!activo) "—" else if (abs(pan) < 0.04f) "centro" else (if (pan < 0) "L " else "R ") + (abs(pan) * 100).roundToInt() + "%",
+            "Paneo",
+            if (!activo) "—" else if (abs(pan) < 0.04f) "Centro" else (if (pan < 0) "L " else "R ") + (abs(pan) * 100).roundToInt() + "%",
         ) {
             Canvas(it) {
-                drawLine(pal.linea, Offset(size.width / 2, 0f), Offset(size.width / 2, size.height), density)
-                val x = size.width * (0.5f + 0.5f * pan)
-                drawRect(pal.fg, Offset(x - density, 0f), Size(2 * density, size.height))
+                val r = CornerRadius(size.height / 2)
+                drawRoundRect(pal.relleno, cornerRadius = r)
+                drawLine(pal.texto3, Offset(size.width / 2, 0f), Offset(size.width / 2, size.height), density)
+                val x = size.width * (0.5f + 0.5f * pan).coerceIn(0f, 1f)
+                drawCircle(Color.White, size.height / 2 + 2 * density, Offset(x, size.height / 2))
+                drawCircle(pal.texto, size.height / 2 + 2 * density, Offset(x, size.height / 2), style = Stroke(1.5f * density))
             }
         }
-        FilaMedidor("Fase", (if (cor >= 0) "+" else "") + String.format(Locale.US, "%.2f", cor)) {
+        FilaMedidor("Fase", (if (cor >= 0) "+" else "−") + String.format(Locale.US, "%.2f", abs(cor))) {
             Canvas(it) {
-                val rojo = pal.rojo.copy(alpha = 0.6f)
-                val ambar = pal.ambar.copy(alpha = 0.6f)
-                val verde = pal.verde.copy(alpha = 0.6f)
-                drawRect(Brush.horizontalGradient(0f to rojo, 0.4f to rojo, 0.4f to ambar, 0.65f to ambar, 0.65f to verde, 1f to verde))
-                drawLine(pal.fg.copy(alpha = 0.35f), Offset(size.width / 2, 0f), Offset(size.width / 2, size.height), density)
-                val x = size.width * (cor + 1) / 2
-                drawRect(pal.fg, Offset(x - density, 0f), Size(2 * density, size.height))
+                val r = CornerRadius(size.height / 2)
+                drawRoundRect(
+                    Brush.horizontalGradient(
+                        0f to pal.rojo, 0.38f to pal.rojo, 0.46f to pal.amarillo, 0.62f to pal.amarillo, 0.7f to pal.verde,
+                        1f to pal.verde,
+                    ),
+                    cornerRadius = r, alpha = 0.75f,
+                )
+                val x = size.width * ((cor + 1) / 2).coerceIn(0f, 1f)
+                drawCircle(Color.White, size.height / 2 + 2 * density, Offset(x, size.height / 2))
+                drawCircle(pal.texto, size.height / 2 + 2 * density, Offset(x, size.height / 2), style = Stroke(1.5f * density))
             }
         }
         val (texto, malo) = Analisis.veredicto()
-        Text(
-            texto, color = if (malo) pal.rojo else pal.fg, fontSize = 13.sp,
-            fontWeight = if (malo) FontWeight.SemiBold else FontWeight.Normal,
-        )
+        Texto(texto, if (malo) Tipo.subtitulo.seminegrita else Tipo.subtitulo, if (malo) pal.rojo else pal.texto)
     }
 }
 
@@ -306,12 +327,9 @@ private fun MedidoresFase() {
 private fun FilaMedidor(etiqueta: String, valor: String, barra: @Composable (Modifier) -> Unit) {
     val pal = LocalPaleta.current
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(etiqueta, color = pal.tenue, fontFamily = Mono, fontSize = 12.sp, modifier = Modifier.width(40.dp))
-        barra(
-            Modifier.weight(1f).height(10.dp).clip(RoundedCornerShape(2.dp)).background(pal.bg)
-                .border(1.dp, pal.linea, RoundedCornerShape(2.dp)),
-        )
-        Text(valor, color = pal.fg, fontFamily = Mono, fontSize = 12.sp, modifier = Modifier.width(70.dp).padding(start = 8.dp))
+        Texto(etiqueta, Tipo.nota, pal.texto2, Modifier.width(52.dp), lineas = 1)
+        barra(Modifier.weight(1f).height(8.dp))
+        Texto(valor, Tipo.nota.numeros, pal.texto, Modifier.width(70.dp).padding(start = 10.dp), lineas = 1)
     }
 }
 
@@ -328,7 +346,12 @@ fun DrawScope.lineaEspectro(color: Color, relleno: Boolean, alto: Float = size.h
         val x = c * w / (n - 1)
         val y = alto - (max(-110f, sp[c]) + 110f) / 100f * alto
         if (c == 0) {
-            if (relleno) { ruta.moveTo(0f, alto); ruta.lineTo(x, y) } else ruta.moveTo(x, y)
+            if (relleno) {
+                ruta.moveTo(0f, alto)
+                ruta.lineTo(x, y)
+            } else {
+                ruta.moveTo(x, y)
+            }
         } else {
             ruta.lineTo(x, y)
         }
@@ -338,7 +361,7 @@ fun DrawScope.lineaEspectro(color: Color, relleno: Boolean, alto: Float = size.h
         ruta.close()
         drawPath(ruta, color)
     } else {
-        drawPath(ruta, color, style = Stroke(1.5f * density))
+        drawPath(ruta, color, style = Stroke(1.6f * density))
     }
 }
 
@@ -346,34 +369,38 @@ fun DrawScope.lineaEspectro(color: Color, relleno: Boolean, alto: Float = size.h
 private fun Espectro(modifier: Modifier) {
     val pal = LocalPaleta.current
     val medidor = rememberTextMeasurer()
-    Canvas(modifier.background(pal.bg).semantics { contentDescription = "Espectro con marcas de zumbido" }) {
+    val fondo = fondoGrafica(pal)
+    Canvas(modifier.background(fondo).semantics { contentDescription = "Espectro con marcas de zumbido" }) {
         @Suppress("UNUSED_VARIABLE") val v = Analisis.version
         val w = size.width
         val h = size.height
         val d = density
         fun x(f: Float) = ln(f / 20f) / ln(1000f) * w
         fun y(db: Float) = h - (db + 110f) / 100f * h
-        val estilo = TextStyle(color = pal.tenue, fontSize = 9.sp, fontFamily = Mono)
+        val estilo = TextStyle(color = pal.texto2, fontSize = 9.sp)
         for (f in listOf(100f, 1000f, 10000f)) {
-            drawLine(pal.linea, Offset(x(f), 0f), Offset(x(f), h), d)
+            drawLine(pal.separador, Offset(x(f), 0f), Offset(x(f), h), d)
             drawText(medidor, etiquetaHz(f), Offset(x(f) + 3 * d, h - 14 * d), estilo)
         }
         for (db in listOf(-90f, -60f, -30f)) {
-            drawLine(pal.linea, Offset(0f, y(db)), Offset(w, y(db)), d)
-            drawText(medidor, "${db.toInt()} dB", Offset(3 * d, y(db) - 13 * d), estilo)
+            drawLine(pal.separador, Offset(0f, y(db)), Offset(w, y(db)), d)
+            drawText(medidor, "${db.toInt()} dB".replace('-', '−'), Offset(4 * d, y(db) - 13 * d), estilo)
         }
         val guion = PathEffect.dashPathEffect(floatArrayOf(3 * d, 3 * d))
         for (f in listOf(50f, 60f)) {
-            drawLine(pal.linea, Offset(x(f), 0f), Offset(x(f), h), d, pathEffect = guion)
-            drawText(medidor, "${f.toInt()}", Offset(x(f) + 2 * d, 0f), estilo)
+            drawLine(pal.texto3, Offset(x(f), 0f), Offset(x(f), h), d, pathEffect = guion)
+            drawText(medidor, "${f.toInt()}", Offset(x(f) + 2 * d, 2 * d), estilo)
         }
         if (Analisis.activo && Analisis.zumbidoHz > 0) {
             for (k in 1..4) {
                 val f = Analisis.zumbidoHz * k.toFloat()
-                drawLine(pal.rojo, Offset(x(f), 12 * d), Offset(x(f), h), 2 * d)
+                drawLine(pal.rojo, Offset(x(f), 14 * d), Offset(x(f), h), 2 * d)
             }
         }
-        if (Analisis.activo) lineaEspectro(pal.acento, relleno = false)
+        if (Analisis.activo) {
+            lineaEspectro(pal.acento.copy(alpha = 0.14f), relleno = true)
+            lineaEspectro(pal.acento, relleno = false)
+        }
     }
 }
 
@@ -382,19 +409,16 @@ private fun TextoZumbido() {
     val pal = LocalPaleta.current
     @Suppress("UNUSED_VARIABLE") val v = Analisis.version
     val (texto, alerta) = Analisis.textoZumbido()
-    Text(texto, color = if (alerta) pal.ambar else pal.tenue, fontSize = 13.sp,
-        fontWeight = if (alerta) FontWeight.SemiBold else FontWeight.Normal)
+    Texto(texto, if (alerta) Tipo.subtitulo.seminegrita else Tipo.subtitulo, if (alerta) pal.naranja else pal.texto2)
 }
 
 // ---------------------------------------------------------------- espectrograma
 
 /** Colores del prototipo: fondo → verde oscuro → verde → ámbar → rojo → caliente. */
-private fun tablaColores(p: Paleta): IntArray {
-    val bg = p.bg
-    val oscuroFondo = (bg.red + bg.green + bg.blue) / 3 < 0.5f
-    val caliente = if (oscuroFondo) Color(255, 245, 235) else Color(90, 12, 12)
-    val oscuro = if (oscuroFondo) Color(14, 60, 34) else Color(40, 120, 70)
-    val paradas = listOf(0f to bg, 0.28f to oscuro, 0.55f to p.verde, 0.78f to p.ambar, 0.92f to p.rojo, 1f to caliente)
+private fun tablaColores(p: Paleta, bg: Color): IntArray {
+    val caliente = if (p.oscuro) Color(255, 245, 235) else Color(90, 12, 12)
+    val oscuro = if (p.oscuro) Color(14, 60, 34) else Color(40, 120, 70)
+    val paradas = listOf(0f to bg, 0.28f to oscuro, 0.55f to p.verde, 0.78f to p.naranja, 0.92f to p.rojo, 1f to caliente)
     return IntArray(256) { v ->
         val t = v / 255f
         var i = 0
@@ -413,24 +437,25 @@ private fun tablaColores(p: Paleta): IntArray {
 private fun Espectrograma(p: Pista, modifier: Modifier) {
     val pal = LocalPaleta.current
     val medidor = rememberTextMeasurer()
+    val fondo = fondoGrafica(pal)
     LaunchedEffect(p.id) { Analisis.pedirEspectrograma(p) }
     val datos = Analisis.espectrogramas[p.id]
     val imagen = remember(datos, pal) {
         datos?.let {
-            val lut = tablaColores(pal)
+            val lut = tablaColores(pal, fondo)
             val cols = Nucleo.SG_COLUMNAS
             val filas = Nucleo.SG_FILAS
             val px = IntArray(cols * filas)
             for (c in 0 until cols) for (r in 0 until filas) {
                 px[(filas - 1 - r) * cols + c] = lut[it[c * filas + r].toInt() and 0xFF]
             }
-            android.graphics.Bitmap.createBitmap(px, cols, filas, android.graphics.Bitmap.Config.ARGB_8888).asImageBitmap()
+            imagenDePixeles(px, cols, filas)
         }
     }
     val total by rememberUpdatedState(Mesa.duracion)
-    BoxWithConstraints(modifier.background(pal.bg)) {
+    BoxWithConstraints(modifier.background(fondo)) {
         if (imagen == null) {
-            Text("calculando…", color = pal.tenue, fontSize = 12.sp, modifier = Modifier.align(Alignment.Center))
+            Texto("Calculando…", Tipo.nota, pal.texto2, Modifier.align(Alignment.Center), lineas = 1)
         }
         Canvas(
             Modifier
@@ -451,9 +476,9 @@ private fun Espectrograma(p: Pista, modifier: Modifier) {
                 )
             }
             val y = { f: Float -> h - ln(f / 20f) / ln(SG_TOPE / 20f) * h }
-            val estilo = TextStyle(color = pal.fg, fontSize = 9.sp, fontFamily = Mono, fontWeight = FontWeight.Medium)
+            val estilo = TextStyle(color = pal.texto, fontSize = 9.sp, fontWeight = FontWeight.Medium)
             for (f in listOf(50f, 100f, 200f, 500f, 1000f, 2000f, 5000f, 10000f)) {
-                drawLine(pal.tenue.copy(alpha = 0.3f), Offset(0f, y(f)), Offset(w, y(f)), d)
+                drawLine(pal.texto2.copy(alpha = 0.3f), Offset(0f, y(f)), Offset(w, y(f)), d)
                 drawText(medidor, etiquetaHz(f), Offset(4 * d, y(f) - 14 * d), estilo)
             }
             val pasos = listOf(1, 2, 5, 10, 15, 30, 60, 120, 300, 600)
@@ -461,7 +486,7 @@ private fun Espectrograma(p: Pista, modifier: Modifier) {
             var t = paso
             while (t < dur) {
                 val x = (t / dur * w).toFloat()
-                drawLine(pal.tenue.copy(alpha = 0.3f), Offset(x, 0f), Offset(x, h), d)
+                drawLine(pal.texto2.copy(alpha = 0.3f), Offset(x, 0f), Offset(x, h), d)
                 val etiqueta = if (t >= 60) "${t / 60}:" + String.format(Locale.US, "%02d", t % 60) else "${t}s"
                 drawText(medidor, etiqueta, Offset(x + 3 * d, h - 15 * d), estilo)
                 t += paso

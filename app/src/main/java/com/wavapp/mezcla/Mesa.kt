@@ -507,7 +507,8 @@ object Mesa {
         val ms = String.format(Locale.US, "%.1f", i[2] * 1000.0 / i[0])
         val modo = if (i[4] == 1) "exclusivo" else "compartido"
         val cortes = if (i[3] < 0) "?" else i[3].toString()
-        return "Salida: ${i[0]} Hz · búfer ${i[2]} ($ms ms) · $modo · cortes $cortes"
+        val reposo = if (i.size > 5 && i[5] == 1) " · en reposo" else ""
+        return "Salida: ${i[0]} Hz · búfer ${i[2]} ($ms ms) · $modo · cortes $cortes$reposo"
     }
 
     private fun nombreDe(context: Context, uri: Uri): String {

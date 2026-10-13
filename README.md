@@ -7,7 +7,11 @@ Dos capas, con una regla fija:
 
 Sin computadora: GitHub Actions compila, prueba y publica el APK en la nube.
 La versión web ("Mesa de Audio") es el prototipo de referencia: la app nativa copia su
-comportamiento (volumen, paneo, limitador, medidores, colores).
+comportamiento (volumen, paneo, limitador, medidores, análisis, edición).
+
+La pantalla tiene el estilo de Apple Music con toques de estudio (como GarageBand): pestañas
+abajo (Mezcla, Editar, Análisis), mini reproductor que se abre a pantalla completa, títulos
+grandes, acento rojo, colores por pista y regiones de color. Claro u oscuro según el celular.
 
 ## Cómo instalar en el celular
 1. Cada push compila y prueba solo (pestaña **Actions**).
@@ -32,6 +36,8 @@ El APK solo se publica si pasan todas las pruebas.
       y notch 50/60 Hz, espectrograma; espectro de fondo en el EQ
 - [x] 5. Edición: mover pistas en el tiempo, recortar, fundidos de entrada/salida, cortar en
       pedazos, borrar, imán, zoom y deshacer/rehacer
+- [x] 5b. Interfaz estilo Apple Music y optimización (APK release con R8 solo para ARM, sin
+      Material; la salida de audio se duerme si no suena)
 - [ ] 6. Grabación
 - [ ] 7. Guardar/abrir proyectos (por ahora la mezcla actual se guarda sola)
 
@@ -57,10 +63,19 @@ Sin plugins VST en Android.
   (MP3, AAC, FLAC, OGG, Opus... con MediaCodec desde C++) y `jni_bridge.cpp` (el puente).
 - `app/src/main/java/.../`: **solo pantalla**. `Nucleo.kt` (el puente), `Mesa.kt` (espejo del
   estado del núcleo para Compose), `Analisis.kt` y `Edicion.kt` (lo que recuerda cada panel)
-  y `ui/` (Compose).
+  y `ui/` (Compose, solo `foundation`: sin Material).
+  - `Tema.kt` (colores y tipografía de iOS), `Iconos.kt` (íconos dibujados con rutas),
+    `Componentes.kt` (botones, píldoras, interruptor, segmentado, deslizadores, tarjetas) y
+    `Superpuestos.kt` (hojas, menús de acciones, alertas, barra de arriba).
+  - `Pantalla.kt` (pestañas y mini reproductor), `MezclaTab.kt`, `Reproductor.kt`,
+    `Ecualizador.kt`, `AnalisisPanel.kt`, `EdicionPanel.kt` y `Exportar.kt`.
+  - `Plataforma.kt`: lo único que obliga Android en la pantalla (atrás, pantalla encendida,
+    selector de archivos, barra de estado).
 
 ## Pruebas
 - `tests/native/run.sh`: pruebas del núcleo en Linux con ASan, UBSan y TSan (incluye el
   Studio completo: sesión, importar, editar, deshacer, exportar, varios hilos a la vez).
 - `tests/check_jni.py`: que Kotlin y C++ coincidan en el puente (nombres y tipos).
-- `app/src/androidTest/`: pruebas en un emulador Android (audio real, importación, pantalla).
+- `app/src/androidTest/`: pruebas en un emulador Android (audio real, importación, pantalla en
+  claro y oscuro, con capturas en Releases → `capturas`). Al final se instala el APK
+  optimizado (el que se publica) y se revisa que arranque.

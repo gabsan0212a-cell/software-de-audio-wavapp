@@ -23,7 +23,7 @@ echo "== TSan (concurrencia)"
 # shellcheck disable=SC2086
 $CXX $FLAGS -fsanitize=thread $FILES -o "$OUT/tests-tsan" -lpthread
 if [ "$#" -eq 0 ]; then
-    "$OUT/tests-tsan" concurrencia concurrenciaEstudio
+    "$OUT/tests-tsan" concurrencia concurrenciaEstudio concurrenciaEntrada
 else
     "$OUT/tests-tsan" "$@"
 fi

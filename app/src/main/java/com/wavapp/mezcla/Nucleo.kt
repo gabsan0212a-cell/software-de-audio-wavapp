@@ -23,6 +23,10 @@ object Nucleo {
     val SG_FILAS = c[6]
     val FRECUENCIA = c[7]
     val MAX_PEDAZOS = c[8]
+    val VER_ENTRADA = c[9]
+    val DATOS_ENTRADA = c[10]
+    /** El EQ de la entrada en vivo usa las funciones del EQ con este id. */
+    val ID_ENTRADA = c[11]
 
     // Lugares en el arreglo de versions().
     const val VER_PISTAS = 0
@@ -37,7 +41,8 @@ object Nucleo {
     // Lugares en el arreglo de meters(): [2*espacio] L, [2*espacio+1] R de cada pista, y luego:
     fun medMasterL() = 2 * MAX_PISTAS
     // master R +1, marca L +2, marca R +3, pico máx. L +4, pico máx. R +5, clip L +6, clip R +7,
-    // reducción del limitador +8, algo se mueve +9
+    // reducción del limitador +8, algo se mueve +9, entrada L +10, entrada R +11, la entrada saturó +12
+    fun medEntradaL() = 2 * MAX_PISTAS + 10
 
     // Modos de edición (iguales a Studio::EditMode).
     const val MOVER = 1
@@ -138,6 +143,23 @@ object Nucleo {
     external fun spectrumColumns(out: FloatArray)
     /** 0..255 [col * filas + fila], fila 0 = 20 Hz. null mientras se calcula. */
     external fun spectrogram(id: Int): ByteArray?
+
+    // ---------- Entrada en vivo (micrófono o interfaz USB) y grabación
+    /** Abre la entrada (deviceId 0 = la del sistema; 1 o 2 canales). Devuelve los canales abiertos o 0. */
+    external fun inputStart(deviceId: Int, channels: Int): Int
+    external fun inputStop()
+    external fun setInputGain(db: Float)
+    external fun setMonitor(on: Boolean)
+    external fun setMonitorDb(db: Float)
+    /** [abierta, canales, ganancia dB, escucha, volumen de escucha dB, retraso ms, grabando, segundos grabados] */
+    external fun inputState(out: FloatArray)
+    /** Graba desde el cursor con la mezcla sonando. false si no se pudo (el motivo va al mensaje). */
+    external fun recordStart(): Boolean
+    /** La toma queda como pista nueva; devuelve su id o -1. */
+    external fun recordStop(): Int
+    external fun recordCancel()
+    /** Lo último de la toma en curso: [cols] valores de 0 a 1 que cubren [seconds]. */
+    external fun recordingWave(cols: Int, seconds: Float): FloatArray
 
     // ---------- Forma de onda: [columna][canal][min, max] de la parte [from, to) del pedazo.
     external fun regionWave(id: Int, index: Int, from: Long, to: Long, cols: Int): FloatArray?

@@ -172,6 +172,28 @@ object Iconos {
     val chevronDerecha by lazy { icono("chevronDerecha") { trazo(2.2f, "M9 5.5 L15.5 12 L9 18.5") } }
     val chevronIzquierda by lazy { icono("chevronIzquierda") { trazo(2.2f, "M15 5.5 L8.5 12 L15 18.5") } }
     val cerrar by lazy { icono("cerrar") { trazo(2f, "M6.5 6.5 L17.5 17.5", "M17.5 6.5 L6.5 17.5") } }
+    val microfono by lazy {
+        icono("microfono") {
+            trazo(
+                1.8f,
+                "M12 3.5 A3 3 0 0 0 9 6.5 V11.5 A3 3 0 0 0 15 11.5 V6.5 A3 3 0 0 0 12 3.5 Z",
+                "M6 11 A6 6 0 0 0 18 11",
+                "M12 17 V20.5",
+                "M9 20.5 H15",
+            )
+        }
+    }
+    val audifonos by lazy {
+        icono("audifonos") {
+            trazo(1.8f, "M4.5 15 V12 A7.5 7.5 0 0 1 19.5 12 V15")
+            relleno(
+                "M4 14 H6.5 C7.05 14 7.5 14.45 7.5 15 V19 C7.5 19.55 7.05 20 6.5 20 H5 C4.17 20 3.5 19.33 3.5 18.5 V14.5 " +
+                    "C3.5 14.22 3.72 14 4 14 Z",
+                "M17.5 14 H20 C20.28 14 20.5 14.22 20.5 14.5 V18.5 C20.5 19.33 19.83 20 19 20 H17.5 " +
+                    "C16.95 20 16.5 19.55 16.5 19 V15 C16.5 14.45 16.95 14 17.5 14 Z",
+            )
+        }
+    }
     val nota by lazy {
         icono("nota") {
             trazo(1.8f, "M9 18.5 V6.2 L19 3.8 V16.2")

@@ -24,6 +24,7 @@ public:
     // [frecuencia real, ráfaga, búfer en cuadros, cortes (xruns), exclusivo 1/0, dormida 1/0];
     // ceros si está cerrada.
     void info(int32_t out[6]);
+    int latencyFrames();  // retraso de la salida (cuadros); -1 si no se sabe
 
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *stream, void *audioData, int32_t numFrames) override;
     void onErrorAfterClose(oboe::AudioStream *stream, oboe::Result error) override;

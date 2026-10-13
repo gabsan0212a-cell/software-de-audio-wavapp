@@ -77,7 +77,7 @@ fun HojaEq(pista: Pista?, alCerrar: () -> Unit) {
     Hoja(
         visible = pista != null,
         alCerrar = alCerrar,
-        titulo = "Ecualizador",
+        titulo = if (p?.esEntrada == true) "Ecualizador en vivo" else "Ecualizador",
         alta = true,
         izquierda = { BotonReproducir(LocalPaleta.current.acento, 24.dp, 44.dp) },
         derecha = { BotonTexto("Listo", alCerrar, estilo = Tipo.encabezado) },
@@ -93,9 +93,9 @@ private fun ContenidoEq(p: Pista) {
     val sel = elegida.coerceAtMost(max(0, p.bandas.size - 1))
 
     Row(Modifier.padding(start = 4.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Portada(p.id, pal.pistas[p.color], 40.dp)
+        if (p.esEntrada) AzulejoIcono(Iconos.microfono, pal.acento, 40.dp) else Portada(p.id, pal.pistas[p.color], 40.dp)
         Column(Modifier.padding(start = 12.dp)) {
-            Texto(p.nombre, Tipo.encabezado, pal.texto, lineas = 1)
+            Texto(if (p.esEntrada) "Entrada en vivo" else p.nombre, Tipo.encabezado, pal.texto, lineas = 1)
             TextoCompensacion(p)
         }
     }

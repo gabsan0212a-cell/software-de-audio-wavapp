@@ -175,6 +175,41 @@ fun main(args: Array<String>) {
             esperar(300)
             println("toque pestaña Mezcla -> pestana=${Vista.pestana}")
         }
+        if (quiere("grabar")) {
+            Vista.pestana = Vista.GRABAR
+            hasta(5000, "entrada abierta") { Mesa.entrada.abierta }
+            esperar(1200)
+            foto("14-grabar")
+            Mesa.ponerEscucha(true)
+            val e = Mesa.entrada.pista
+            Mesa.agregarBanda(e)
+            Mesa.cambiarBanda(e, e.bandas[0], tipo = 3, f = 120f, q = 0.71f)
+            Mesa.agregarBanda(e)
+            Mesa.cambiarBanda(e, e.bandas[1], f = 3500f, g = 4f, q = 1.2f)
+            Mesa.saltar(1.0)
+            esperar(300)
+            Mesa.grabarOParar()
+            esperar(2500)
+            foto("15-grabando")
+            val id = Mesa.grabarOParar()
+            if (id > 0) Vista.ultimaGrabacion = id
+            esperar(500)
+            foto("16-grabado", ambos = false)
+            Mesa.eqAbierta = Mesa.entrada.pista
+            esperar(800)
+            foto("17-eq-entrada")
+            Mesa.eqAbierta = null
+            esperar(400)
+            Analisis.fuenteId = com.wavapp.mezcla.Nucleo.ID_ENTRADA
+            Vista.pestana = Vista.ANALISIS
+            esperar(1500)
+            foto("18-analisis-micro")
+            Analisis.fuenteId = -1
+            Mesa.ponerEscucha(false)
+            Vista.pestana = Vista.MEZCLA
+            esperar(500)
+            foto("19-con-grabacion", ambos = false)
+        }
         if (quiere("vacio")) {
             if (Mesa.reproduciendo) Mesa.reproducirPausar()
             Nucleo.clearProject()

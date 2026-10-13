@@ -1,11 +1,13 @@
 // Pruebas del núcleo nativo (sin Oboe ni Android). Se compilan y corren en Linux:
 //   tests/native/run.sh
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +27,7 @@
 #include "dsp/Resampler.h"
 #include "engine/Exporter.h"
 #include "engine/Importer.h"
+#include "engine/LiveInput.h"
 #include "engine/Meters.h"
 #include "engine/Mixer.h"
 #include "io/Json.h"
@@ -1843,7 +1846,7 @@ TEST(estudioExportaYQuita) {
     CHECK(estado(s)["mensaje"].asString() == "3 pista(s) · 48000 Hz · ≈ 7 MB en disco");
     for (int i = 0; i < 3; ++i) s.removeTrack(idDe(s, 0));
     CHECK(!s.exportMix(crear(tmpPath("vacia.wav")), "v.wav"));  // sin pistas no hay qué exportar
-    CHECK(estado(s)["mensaje"].asString() == "Sin pistas. Agrega archivos WAV o carga las pistas de prueba.");
+    CHECK(estado(s)["mensaje"].asString() == "Sin pistas. Agrega audio, graba o carga las pistas de prueba.");
 }
 
 TEST(estudioOndaConFundidos) {
@@ -1895,6 +1898,329 @@ TEST(estudioMedidoresYAnalisis) {
     CHECK(s.analysisUpdate(5000, false, st) && st[0] == 0.0f);
 }
 
+// ---------------------------------------------------------------- entrada en vivo y grabación
+
+// Seno mono de `n` cuadros empezando en el cuadro `desde`.
+static std::vector<float> senoMono(double freq, int64_t desde, int n, double amp = 0.5) {
+    std::vector<float> v(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) v[static_cast<size_t>(i)] = static_cast<float>(sine(freq, 48000, desde + i, amp));
+    return v;
+}
+
+static float picoDe(const std::vector<float> &v, size_t desde = 0) {
+    float m = 0.0f;
+    for (size_t i = desde; i < v.size(); ++i) m = std::max(m, std::fabs(v[i]));
+    return m;
+}
+
+TEST(colaSinBloqueos) {
+    SpscRing r(8);
+    float a[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, b[10] = {};
+    CHECK(r.write(a, 10) == 8 && r.available() == 8 && r.space() == 0);
+    CHECK(r.read(b, 3) == 3 && b[0] == 1 && b[2] == 3);
+    CHECK(r.write(a + 8, 2) == 2);  // da la vuelta
+    r.skip(2);
+    CHECK(r.read(b, 10) == 5 && b[0] == 6 && b[2] == 8 && b[3] == 9 && b[4] == 10);
+    CHECK(r.available() == 0 && r.space() == 8);
+}
+
+TEST(entradaEnVivoEscucha) {
+    Mixer m(48000);
+    LiveInput in(48000, m);
+    m.setLiveInput(&in);
+    CHECK(!m.needsOutput());
+    in.setActive(true, 1);
+    in.setMonitor(true);
+    CHECK(in.monitoring() && m.needsOutput());
+    std::vector<float> out(192 * 2);
+    float pico = 0.0f;
+    for (int k = 0; k < 100; ++k) {
+        const std::vector<float> x = senoMono(440, k * 192, 192);
+        in.push(x.data(), 192, 1);
+        m.process(out.data(), 192, 2);
+        if (k > 50) pico = std::max(pico, picoDe(out));
+    }
+    CHECK_NEAR(pico, 0.5, 0.02);  // se escucha igual que entra (la mezcla está parada)
+    // Apagada: se va a silencio con un fundido corto.
+    in.setMonitor(false);
+    CHECK(!m.needsOutput());
+    for (int k = 0; k < 20; ++k) {
+        const std::vector<float> x = senoMono(440, k * 192, 192);
+        in.push(x.data(), 192, 1);
+        m.process(out.data(), 192, 2);
+    }
+    CHECK(picoDe(out) < 1e-4f);
+    // Si la entrada se cierra, tampoco se escucha.
+    in.setMonitor(true);
+    in.setActive(false, 1);
+    CHECK(!in.monitoring());
+    m.setLiveInput(nullptr);
+}
+
+TEST(entradaEnVivoNoAcumulaRetraso) {
+    // La entrada llega en ráfagas grandes y la salida pide pedazos chicos: lo de más se tira.
+    Mixer m(48000);
+    LiveInput in(48000, m);
+    m.setLiveInput(&in);
+    in.setActive(true, 1);
+    in.setMonitor(true);
+    std::vector<float> out(64 * 2);
+    for (int k = 0; k < 50; ++k) {
+        const std::vector<float> x = senoMono(440, 0, 960);
+        in.push(x.data(), 960, 1);
+        in.push(x.data(), 960, 1);  // el doble de lo que se consume
+        for (int j = 0; j < 15; ++j) m.process(out.data(), 64, 2);
+    }
+    m.process(out.data(), 64, 2);
+    CHECK(in.monitoring());
+    m.setLiveInput(nullptr);
+}
+
+TEST(entradaGananciaMedidoresYEq) {
+    const std::string dir = nuevaCarpeta("entrada1");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.inputOpened(1);
+    s.setInputGain(6.0f);
+    LiveInput &in = s.input();
+    for (int k = 0; k < 50; ++k) {
+        const std::vector<float> x = senoMono(100, k * 256, 256, 0.25);
+        in.push(x.data(), 256, 1);
+    }
+    float med[MeterBallistics::kCount];
+    s.meters(1000, med);
+    CHECK_NEAR(med[MeterBallistics::kInputL], 20 * std::log10(0.5), 0.3);  // +6 dB
+    CHECK(med[MeterBallistics::kInputClip] == 0.0f);
+    s.setInputGain(24.0f);
+    for (int k = 0; k < 50; ++k) {
+        const std::vector<float> x = senoMono(100, k * 256, 256, 0.25);
+        in.push(x.data(), 256, 1);
+    }
+    s.meters(1100, med);
+    CHECK(med[MeterBallistics::kInputClip] == 1.0f);
+    s.clearClip();
+    s.meters(1200, med);
+    CHECK(med[MeterBallistics::kInputClip] == 0.0f);
+    float st[Studio::kInputStateCount];
+    s.inputState(st);
+    CHECK(st[0] == 1.0f && st[1] == 1.0f && st[2] == 24.0f && st[3] == 0.0f && st[6] == 0.0f);
+    // El EQ de la entrada usa las mismas funciones con el id 0.
+    CHECK(s.addEqBand(Studio::kInputId) == 0);
+    s.setEqBand(Studio::kInputId, 0, kHighPass, 2000, 0, 0.71f, true);
+    std::vector<float> e = s.eqState(Studio::kInputId);
+    CHECK(e.size() == 8 && e[2] == 1.0f && e[3] == kHighPass);
+    const float fr[2] = {100, 10000};
+    float db[2];
+    s.eqResponse(Studio::kInputId, -1, fr, db, 2);
+    CHECK(db[0] < -30.0f && std::fabs(db[1]) < 0.5f);
+    // Con escucha: el grave casi no se oye.
+    s.setInputGain(0.0f);
+    s.setMonitor(true);
+    std::vector<float> out(256 * 2);
+    float pico = 0.0f;
+    for (int k = 0; k < 80; ++k) {
+        const std::vector<float> x = senoMono(100, k * 256, 256, 0.5);
+        in.push(x.data(), 256, 1);
+        s.mixer().process(out.data(), 256, 2);
+        if (k > 40) pico = std::max(pico, picoDe(out));
+    }
+    CHECK(pico < 0.02f);
+    s.inputClosed();
+    s.inputState(st);
+    CHECK(st[0] == 0.0f);
+}
+
+// Simula el audio del celular: cada vuelta pide un pedazo de salida y entrega uno de entrada.
+static void correr(Studio &s, int vueltas, int64_t &cuadro, double freq = 440, int n = 192) {
+    std::vector<float> out(static_cast<size_t>(n) * 2);
+    for (int k = 0; k < vueltas; ++k) {
+        s.mixer().process(out.data(), n, 2);
+        const std::vector<float> x = senoMono(freq, cuadro, n);
+        s.input().push(x.data(), n, 1);
+        cuadro += n;
+    }
+}
+
+TEST(grabacionSinPistas) {
+    const std::string dir = nuevaCarpeta("graba1");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.clearProject();
+    CHECK(!s.recordStart());  // sin entrada abierta no se puede
+    s.inputOpened(1);
+    CHECK(s.recordStart() && s.recording());
+    CHECK(!s.loadDemo());  // no se mezclan trabajos con la grabación
+    int64_t cuadro = 0;
+    correr(s, 250, cuadro);  // 1 s
+    CHECK(s.position() > 0.9);  // corre aunque no haya pistas
+    float st[Studio::kInputStateCount];
+    s.inputState(st);
+    CHECK(st[6] == 1.0f);
+    const int id = s.recordStop();
+    CHECK(id > 0 && !s.recording() && !s.isPlaying());
+    const Json p = pistas(s);
+    CHECK(p.size() == 1 && p[0]["nombre"].asString() == "Grabación 1" && p[0]["canales"].asInt() == 1);
+    CHECK(p[0]["cuadros"].asInt() == 250 * 192);
+    CHECK(p[0]["info"].asString() == "grabación · mono · 48 kHz · 0:01");
+    const std::vector<Region> r = s.regions(id);
+    CHECK(r.size() == 1 && r[0].start == 0 && r[0].src == 0);  // sin mezcla no se compensa
+    // El archivo tiene lo que entró, tal cual.
+    std::vector<float> wave = s.regionWave(id, 0, 0, 48000, 10);
+    CHECK(wave.size() == 20 && wave[1] > 0.45f && wave[1] < 0.55f);
+    CHECK(estado(s)["mensaje"].asString().rfind("Grabación 1 agregada", 0) == 0);
+    s.inputClosed();
+}
+
+TEST(grabacionAlineadaConLaMezcla) {
+    const std::string dir = nuevaCarpeta("graba2");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.inputOpened(1);
+    // EQ de la entrada: la pista nueva lo recibe.
+    s.addEqBand(Studio::kInputId);
+    s.setEqBand(Studio::kInputId, 0, kPeaking, 3000, 4, 1, true);
+    s.setLatencies(480, 960);
+    float st[Studio::kInputStateCount];
+    s.inputState(st);
+    CHECK_NEAR(st[5], 30.0, 0.01);  // ms de ida y vuelta
+    s.seek(2.0);
+    CHECK(s.recordStart());
+    int64_t cuadro = 0;
+    correr(s, 100, cuadro);
+    const int id = s.recordStop();
+    CHECK(id > 0 && s.trackCount() == 5);
+    const std::vector<Region> r = s.regions(id);
+    // El primer cuadro llegó con la mezcla en 2 s + un pedazo; se adelanta lo que tarda el audio.
+    CHECK(r.size() == 1 && r[0].start == 2 * 48000 + 192 - 1440 && r[0].src == 0 && r[0].length == 100 * 192);
+    const std::vector<float> e = s.eqState(id);
+    CHECK(e.size() == 8 && e[4] == 3000.0f && e[5] == 4.0f);
+    s.inputClosed();
+}
+
+TEST(grabacionSigueDespuesDelFinal) {
+    const std::string dir = nuevaCarpeta("graba3");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.inputOpened(1);
+    s.setLatencies(0, 0);
+    s.seek(11.9);
+    CHECK(s.recordStart());
+    int64_t cuadro = 0;
+    correr(s, 125, cuadro);  // 0.5 s: pasa del final (12 s)
+    CHECK(s.isPlaying() && s.position() > 12.3);
+    const int id = s.recordStop();
+    CHECK(id > 0);
+    CHECK(s.duration() > 12.35);
+    const std::vector<Region> r = s.regions(id);
+    CHECK(r.size() == 1 && r[0].end() > 12 * 48000 + 18000);
+    // Al terminar se puede reproducir normal (se detiene al final).
+    s.seek(12.0);
+    s.play();
+    correr(s, 200, cuadro);
+    CHECK(!s.isPlaying());
+    s.inputClosed();
+}
+
+TEST(grabacionCortaYCancelar) {
+    const std::string dir = nuevaCarpeta("graba4");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.inputOpened(2);
+    auto archivos = [&] {
+        int n = 0;
+        if (DIR *d = ::opendir((dir + "/audio").c_str())) {
+            while (dirent *e = ::readdir(d)) n += e->d_name[0] != '.';
+            ::closedir(d);
+        }
+        return n;
+    };
+    CHECK(archivos() == 4);
+    CHECK(s.recordStart());
+    int64_t cuadro = 0;
+    correr(s, 10, cuadro);  // 40 ms
+    CHECK(s.recordStop() == -1 && s.trackCount() == 4 && archivos() == 4);
+    CHECK(estado(s)["mensaje"].asString().rfind("Grabación muy corta", 0) == 0);
+    CHECK(s.recordStart());
+    correr(s, 100, cuadro);
+    s.recordCancel();
+    CHECK(!s.recording() && s.trackCount() == 4 && archivos() == 4 && !s.isPlaying());
+    // Estéreo: dos canales en la pista nueva.
+    CHECK(s.recordStart());
+    std::vector<float> out(192 * 2), x(192 * 2, 0.25f);
+    for (int k = 0; k < 50; ++k) {
+        s.mixer().process(out.data(), 192, 2);
+        s.input().push(x.data(), 192, 2);
+    }
+    const int id = s.recordStop();
+    CHECK(id > 0 && pistas(s)[4]["canales"].asInt() == 2);
+    // Cerrar la entrada a media grabación guarda lo grabado.
+    CHECK(s.recordStart());
+    correr(s, 100, cuadro);
+    s.inputClosed();
+    CHECK(!s.recording() && s.trackCount() == 6);
+}
+
+TEST(entradaEnLaSesion) {
+    const std::string dir = nuevaCarpeta("entrada2");
+    {
+        Studio s;
+        s.open(dir, dir);
+        CHECK(s.waitIdle(30000));
+        s.setInputGain(7.3f);
+        s.setMonitorDb(-12.0f);
+        s.addEqBand(Studio::kInputId);
+        s.setEqBand(Studio::kInputId, 0, kLowShelf, 200, -3, 0.71f, true);
+        s.setEqAutoGain(Studio::kInputId, false);
+        CHECK(s.saveNow());
+    }
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    float st[Studio::kInputStateCount];
+    s.inputState(st);
+    CHECK(st[2] == 7.5f && st[4] == -12.0f && st[3] == 0.0f);  // la escucha empieza apagada
+    std::vector<float> e = s.eqState(Studio::kInputId);
+    CHECK(e.size() == 8 && e[1] == 0.0f && e[3] == kLowShelf && e[4] == 200.0f && e[5] == -3.0f);
+    // Quitar todas las pistas no borra los ajustes de la entrada.
+    s.clearProject();
+    s.inputState(st);
+    e = s.eqState(Studio::kInputId);
+    CHECK(st[2] == 7.5f && e.size() == 8);
+}
+
+TEST(analisisDeLaEntrada) {
+    const std::string dir = nuevaCarpeta("entrada3");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.inputOpened(1);
+    s.setAnalysisSource(Studio::kInputId);
+    CHECK(s.mixer().analysisSource() == Mixer::kTapInput);
+    float st[AnalysisView::kStatCount];
+    bool activo = false;
+    for (int k = 0; k < 40; ++k) {
+        for (int j = 0; j < 4; ++j) {
+            const std::vector<float> x = senoMono(1000, (k * 4 + j) * 512, 512);
+            s.input().push(x.data(), 512, 1);
+        }
+        s.analysisUpdate(40 * (k + 1), false, st);
+        activo = st[0] == 1.0f;
+    }
+    CHECK(activo && !s.isPlaying());  // se analiza aunque la mezcla no suene
+    std::vector<float> cols(200);
+    s.spectrumColumns(cols.data(), 200);
+    const int pico = static_cast<int>(std::max_element(cols.begin(), cols.end()) - cols.begin());
+    const double hz = 20 * std::pow(1000.0, (pico + 0.5) / 200.0);
+    CHECK(hz > 900 && hz < 1100);
+    s.inputClosed();
+    s.setAnalysisSource(-1);
+}
+
 TEST(concurrenciaEstudio) {
     // Audio, pantalla, trabajos y mantenimiento a la vez, sin carreras.
     const std::string dir = nuevaCarpeta("estudio11");
@@ -1944,6 +2270,51 @@ TEST(concurrenciaEstudio) {
     audio.join();
     s.stopBackground();
     CHECK(s.saveNow());
+}
+
+TEST(concurrenciaEntrada) {
+    // Entrada, salida, pantalla y disco a la vez (TSan).
+    const std::string dir = nuevaCarpeta("entrada4");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.inputOpened(1);
+    std::atomic<bool> done{false};
+    std::thread salida([&] {
+        std::vector<float> out(192 * 2);
+        while (!done.load()) s.mixer().process(out.data(), 192, 2);
+    });
+    std::thread entrada([&] {
+        int64_t f = 0;
+        while (!done.load()) {
+            const std::vector<float> x = senoMono(220, f, 240);
+            s.input().push(x.data(), 240, 1);
+            f += 240;
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+    });
+    std::mt19937 rng(11);
+    float buf[64];
+    for (int it = 0; it < 200; ++it) {
+        switch (rng() % 9) {
+            case 0: s.setMonitor(rng() % 2); break;
+            case 1: s.setInputGain((rng() % 48) - 24.0f); s.setMonitorDb(-(rng() % 30) * 1.0f); break;
+            case 2: s.addEqBand(Studio::kInputId); s.setEqBand(Studio::kInputId, 0, rng() % 6, 50.0f + rng() % 9000, 3, 1, true); break;
+            case 3: s.removeEqBand(Studio::kInputId, 0); break;
+            case 4: if (!s.recording()) s.recordStart(); break;
+            case 5: if (s.recording() && rng() % 3 == 0) s.recordStop(); break;
+            case 6: { float m[MeterBallistics::kCount]; s.meters(it * 16, m); s.inputState(buf); } break;
+            case 7: s.setAnalysisSource(rng() % 2 ? Studio::kInputId : -1); s.analysisUpdate(it * 40, false, buf); break;
+            default: s.recordingWave(50, 4.0); break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (s.recording()) s.recordStop();
+    done.store(true);
+    salida.join();
+    entrada.join();
+    s.inputClosed();
+    CHECK(!s.recording());
 }
 
 // ---------------------------------------------------------------- main

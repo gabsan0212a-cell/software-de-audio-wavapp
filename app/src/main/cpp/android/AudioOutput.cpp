@@ -90,10 +90,18 @@ void AudioOutput::info(int32_t out[6]) {
     out[5] = mSleeping.load() ? 1 : 0;
 }
 
+int AudioOutput::latencyFrames() {
+    std::lock_guard<std::mutex> lk(mStreamMutex);
+    if (!mStream || mSleeping.load()) return -1;
+    auto ms = mStream->calculateLatencyMillis();
+    return ms ? static_cast<int>(ms.value() * kSampleRate / 1000.0) : -1;
+}
+
 oboe::DataCallbackResult AudioOutput::onAudioReady(oboe::AudioStream *stream, void *audioData, int32_t numFrames) {
     mMixer.process(static_cast<float *>(audioData), numFrames, stream->getChannelCount());
     // Sin sonar un rato: se duerme (el sistema apaga la ruta de audio y ahorra batería).
-    mIdleFrames = mMixer.isRolling() ? 0 : mIdleFrames + numFrames;
+    // Mientras se escucha la entrada en vivo no se duerme.
+    mIdleFrames = mMixer.needsOutput() ? 0 : mIdleFrames + numFrames;
     if (mIdleFrames > static_cast<int64_t>(stream->getSampleRate()) * kIdleSeconds) {
         mSleeping.store(true);
         return oboe::DataCallbackResult::Stop;

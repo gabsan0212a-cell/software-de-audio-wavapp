@@ -11,6 +11,8 @@
 #include "dsp/Limiter.h"
 #include "io/MappedAudio.h"
 
+class LiveInput;
+
 constexpr int kMaxTracks = 12;
 // Medidores: [0] pico master L, [1] pico master R, [2] reducción del limitador (dB, ≥ 0),
 // luego pico L/R de cada pista: [3 + 2*slot], [4 + 2*slot]. Los picos son lineales.
@@ -70,7 +72,9 @@ public:
     int notch() const { return mNotchHz.load(); }
 
     // Análisis: qué se manda al analizador. -1 = la mezcla (bus, antes del volumen master);
-    // 0..11 = esa pista después de volumen y paneo (antes de mute/solo), como el prototipo.
+    // 0..11 = esa pista después de volumen y paneo (antes de mute/solo), como el prototipo;
+    // kTapInput = la entrada en vivo (después de su EQ; la escribe su hilo con writeInputTap).
+    static constexpr int kTapInput = -2;
     void setAnalysisSource(int slot) { mTapSource.store(slot); }
     int analysisSource() const { return mTapSource.load(); }
     static constexpr int kTapSize = 32768;
@@ -83,6 +87,15 @@ public:
     // Prepara este mezclador para renderizar desde el inicio sin rampas de entrada.
     void prepareOffline();
     std::string trackPath(int slot) const;
+
+    // Entrada en vivo: su escucha se suma a la salida (después del master).
+    void setLiveInput(LiveInput *in) { mLive.store(in); }
+    // Mientras se graba, la canción sigue corriendo después de su final (y aunque no haya pistas).
+    void setFreeRun(bool on) { mFreeRun.store(on); }
+    // La salida tiene algo que dar: la mezcla corre o se está escuchando la entrada.
+    bool needsOutput() const;
+    // Lo llama el hilo de la entrada (solo si el análisis es de la entrada).
+    void writeInputTap(const float *l, const float *r, int n);
 
     void play();
     void pause();
@@ -155,6 +168,8 @@ private:
     std::atomic<float> mPeakL{0.0f}, mPeakR{0.0f}, mReduction{0.0f};
     std::atomic<int> mNotchHz{0};
     std::atomic<int> mTapSource{-1};
+    std::atomic<LiveInput *> mLive{nullptr};
+    std::atomic<bool> mFreeRun{false};
     std::unique_ptr<std::atomic<float>[]> mTapL, mTapR;
     std::atomic<uint64_t> mTapWrite{0};
 

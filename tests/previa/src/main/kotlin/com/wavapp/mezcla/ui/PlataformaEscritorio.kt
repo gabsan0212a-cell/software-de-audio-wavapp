@@ -39,3 +39,11 @@ internal fun imagenDePixeles(px: IntArray, ancho: Int, alto: Int): ImageBitmap {
     bmp.installPixels(bytes)
     return bmp.asComposeImageBitmap()
 }
+
+// Una entrada simulada (la de la vista previa genera una voz de prueba) y audífonos con cable.
+@Composable
+internal fun recordarAudio(): EstadoAudio =
+    EstadoAudio(listOf(EntradaAudio(1, "Celular", true), EntradaAudio(2, "USB · Interfaz", true)), Salida.CABLE)
+
+@Composable
+internal fun recordarPermisoMicrofono(): PermisoMicrofono = PermisoMicrofono(true, false) {}

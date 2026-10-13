@@ -1,5 +1,7 @@
 #include "engine/Mixer.h"
 
+#include "engine/LiveInput.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -222,7 +224,24 @@ void Mixer::setMasterGain(float gain) { mMasterGain.store(std::max(0.0f, gain));
 void Mixer::setLimiter(bool on) { mLimiterOn.store(on); }
 
 void Mixer::play() {
-    if (mLength.load() > 0) mPlaying.store(true);
+    if (mLength.load() > 0 || mFreeRun.load()) mPlaying.store(true);
+}
+
+bool Mixer::needsOutput() const {
+    if (mRolling.load(std::memory_order_relaxed)) return true;
+    const LiveInput *in = mLive.load(std::memory_order_acquire);
+    return in && in->monitoring();
+}
+
+void Mixer::writeInputTap(const float *l, const float *r, int n) {
+    if (mTapSource.load(std::memory_order_relaxed) != kTapInput) return;
+    const uint64_t w = mTapWrite.load(std::memory_order_relaxed);
+    for (int i = 0; i < n; ++i) {
+        const size_t k = static_cast<size_t>((w + i) & (kTapSize - 1));
+        mTapL[k].store(l[i], std::memory_order_relaxed);
+        mTapR[k].store(r[i], std::memory_order_relaxed);
+    }
+    mTapWrite.store(w + n, std::memory_order_release);
 }
 void Mixer::pause() { mPlaying.store(false); }
 void Mixer::stop() {
@@ -266,6 +285,14 @@ void Mixer::process(float *out, int frames, int channels) {
     while (done < frames) {
         const int n = std::min(kBlock, frames - done);
         renderBlock(n);
+        if (LiveInput *in = mLive.load(std::memory_order_acquire)) {
+            // La escucha de la entrada va encima de la mezcla (con su propio volumen).
+            in->mixMonitor(mMixL, mMixR, n);
+            for (int i = 0; i < n; ++i) {
+                mMixL[i] = std::clamp(mMixL[i], -1.0f, 1.0f);
+                mMixR[i] = std::clamp(mMixR[i], -1.0f, 1.0f);
+            }
+        }
         float *o = out + static_cast<size_t>(done) * channels;
         if (channels == 2) {
             for (int i = 0; i < n; ++i) {
@@ -300,7 +327,8 @@ void Mixer::renderBlock(int n) {
         mPos = std::clamp<int64_t>(seek, 0, length);
         if (mSeekTarget.compare_exchange_strong(seek, -1)) seek = -1;
     }
-    if (wantPlay && length == 0) {
+    const bool freeRun = mFreeRun.load(std::memory_order_relaxed);
+    if (wantPlay && length == 0 && !freeRun) {
         bool expected = true;
         mPlaying.compare_exchange_strong(expected, false);
         wantPlay = false;
@@ -418,7 +446,7 @@ void Mixer::renderBlock(int n) {
         std::copy(mMixL, mMixL + n, mBlkTapL);
         std::copy(mMixR, mMixR + n, mBlkTapR);
     }
-    if (!mOffline) {
+    if (!mOffline && tapSource != kTapInput) {
         const uint64_t w = mTapWrite.load(std::memory_order_relaxed);
         for (int i = 0; i < n; ++i) {
             const size_t k = static_cast<size_t>((w + i) & (kTapSize - 1));
@@ -453,7 +481,7 @@ void Mixer::renderBlock(int n) {
     mReduction.store(limiterOn ? mLimiter.reductionDb() : 0.0f, std::memory_order_relaxed);
 
     mPos += n;
-    if (mPos >= length) {
+    if (mPos >= length && !freeRun) {
         if (mSeekTarget.load() >= 0) {
             // Llegó al final con un salto pendiente (p. ej. "al inicio" justo antes de que
             // termine): no se detiene; espera en silencio a que el salto se aplique.

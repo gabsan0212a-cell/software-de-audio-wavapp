@@ -78,12 +78,30 @@ class Pista(
     val eqActivo: Boolean get() = !eqBypass && bandas.any { it.on }
     val editada: Boolean get() = pedazos != listOf(Pedazo(0, 0, cuadros))
     val segundos: Double get() = cuadros / Mesa.RATE
-    val color: Int get() = (id - 1) % 12
+    val color: Int get() = if (id <= 0) 0 else (id - 1) % 12
+    /** No es una pista: es la entrada en vivo (solo se usa su EQ). */
+    val esEntrada: Boolean get() = id == Nucleo.ID_ENTRADA
 
     // Versiones ya leídas del núcleo (-1 = nunca).
     internal var vParams = -1
     internal var vEq = -1
     internal var vPedazos = -1
+}
+
+/** La entrada en vivo (micrófono o interfaz), como la tiene el núcleo. */
+class Entrada {
+    var abierta by mutableStateOf(false)
+    var canales by mutableIntStateOf(1)
+    var gananciaDb by mutableFloatStateOf(0f)
+    var escucha by mutableStateOf(false)
+    var escuchaDb by mutableFloatStateOf(0f)
+    var retrasoMs by mutableIntStateOf(-1)
+    var grabando by mutableStateOf(false)
+    var segundos by mutableDoubleStateOf(0.0)
+    var satura by mutableStateOf(false)
+    val medidor = Medidor()
+    /** Su EQ se maneja como el de una pista (id especial). */
+    val pista by lazy { Pista(-1, Nucleo.ID_ENTRADA, "Micrófono", 1, 0, "entrada en vivo") }
 }
 
 class MedidorMaster {
@@ -156,6 +174,7 @@ object Mesa {
     var eqAbierta by mutableStateOf<Pista?>(null)
 
     val master = MedidorMaster()
+    val entrada = Entrada()
     private var moviendo = false
 
     /** Diagnóstico de la salida de audio (frecuencia, búfer, cortes), una vez por segundo. */
@@ -170,6 +189,7 @@ object Mesa {
     private val vistas = IntArray(Nucleo.VER_FONDO + 1) { -1 }
     private val bufParams = FloatArray(5)
     private val bufMaster = FloatArray(6)
+    private val bufEntrada = FloatArray(Nucleo.DATOS_ENTRADA)
     private val bufMedidores = FloatArray(Nucleo.MEDIDORES)
 
     // Exportación en curso: si sale mal, se borra el archivo que se creó.
@@ -205,6 +225,12 @@ object Mesa {
         if (versiones[Nucleo.VER_ESTADO] != vistas[Nucleo.VER_ESTADO]) leerEstado()
         if (versiones[Nucleo.VER_FONDO] != vistas[Nucleo.VER_FONDO]) Analisis.alCambiarFondo()
         for (i in vistas.indices) vistas[i] = versiones[i]
+        val ve = versiones[Nucleo.VER_ENTRADA]
+        if (ve != entrada.pista.vEq) {
+            entrada.pista.vEq = ve
+            leerEntrada()
+            leerEq(entrada.pista)
+        }
         for (p in pistas) {
             val vp = versiones[Nucleo.verParams(p.slot)]
             if (vp != p.vParams) { p.vParams = vp; leerParams(p) }
@@ -283,6 +309,19 @@ object Mesa {
         notch = bufMaster[3].toInt()
         exportBits = bufMaster[4].toInt()
         exportRate = bufMaster[5].toInt()
+    }
+
+    private fun leerEntrada() {
+        Nucleo.inputState(bufEntrada)
+        val e = entrada
+        e.abierta = bufEntrada[0] != 0f
+        e.canales = bufEntrada[1].toInt()
+        e.gananciaDb = bufEntrada[2]
+        e.escucha = bufEntrada[3] != 0f
+        e.escuchaDb = bufEntrada[4]
+        e.retrasoMs = Math.round(bufEntrada[5])
+        e.grabando = bufEntrada[6] != 0f
+        e.segundos = bufEntrada[7].toDouble()
     }
 
     private fun leerHistorial() {
@@ -412,8 +451,8 @@ object Mesa {
         posicion = Nucleo.positionSeconds()
     }
 
-    /** ¿Hay algo moviéndose en pantalla (audio, un trabajo o medidores bajando)? */
-    fun activa(): Boolean = reproduciendo || ocupada || moviendo
+    /** ¿Hay algo moviéndose en pantalla (audio, entrada, un trabajo o medidores bajando)? */
+    fun activa(): Boolean = reproduciendo || ocupada || moviendo || entrada.abierta
 
     /** Se llama en cada cuadro de pantalla: posición, medidores y análisis. */
     fun tick(ahoraMs: Long) {
@@ -440,7 +479,46 @@ object Mesa {
         m.clipR = bufMedidores[b + 7] != 0f
         m.reduccion = bufMedidores[b + 8]
         moviendo = bufMedidores[b + 9] != 0f
+        val e = entrada
+        val k = Nucleo.medEntradaL()
+        e.medidor.l = bufMedidores[k]
+        e.medidor.r = bufMedidores[k + 1]
+        e.satura = bufMedidores[k + 2] != 0f
+        if (e.grabando) leerEntrada()  // los segundos grabados
     }
+
+    // ------------------------------------------------------------------ entrada en vivo y grabación
+
+    /** Abre la entrada ([dispositivo] 0 = la del sistema). */
+    fun abrirEntrada(dispositivo: Int, canales: Int) {
+        Nucleo.inputStart(dispositivo, canales)
+        sincronizar()
+    }
+
+    fun cerrarEntrada() {
+        Nucleo.inputStop()
+        sincronizar()
+    }
+
+    fun ponerGananciaEntrada(db: Float) { Nucleo.setInputGain(db); sincronizar() }
+    fun ponerEscucha(on: Boolean) { Nucleo.setMonitor(on); sincronizar() }
+    fun ponerVolumenEscucha(db: Float) { Nucleo.setMonitorDb(db); sincronizar() }
+
+    /** Empieza a grabar o termina (la toma queda como pista nueva). Devuelve el id nuevo o -1. */
+    fun grabarOParar(): Int {
+        val id = if (entrada.grabando) Nucleo.recordStop() else { Nucleo.recordStart(); -1 }
+        sincronizar()
+        reproduciendo = Nucleo.isPlaying()
+        return id
+    }
+
+    fun descartarGrabacion() {
+        Nucleo.recordCancel()
+        sincronizar()
+        reproduciendo = Nucleo.isPlaying()
+    }
+
+    fun ondaGrabacion(columnas: Int, segundos: Float): FloatArray = Nucleo.recordingWave(columnas, segundos)
 
     // ------------------------------------------------------------------ exportar
 

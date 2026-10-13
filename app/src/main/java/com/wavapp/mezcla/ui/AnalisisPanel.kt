@@ -91,7 +91,13 @@ fun PestanaAnalisis(abajo: Dp) {
                 item(key = "vacio") { PieGrupo("Agrega pistas en Mezcla para analizarlas.", Modifier.padding(top = 12.dp)) }
                 return@LazyColumn
             }
-            item(key = "diagTitulo") { EncabezadoSeccion("Diagnóstico", detalle = fuente?.nombre ?: "Mezcla completa") }
+            item(key = "diagTitulo") {
+                val detalle = when {
+                    Analisis.fuenteId == Nucleo.ID_ENTRADA -> if (Mesa.entrada.abierta) "Micrófono en vivo" else "Micrófono (cerrado)"
+                    else -> fuente?.nombre ?: "Mezcla completa"
+                }
+                EncabezadoSeccion("Diagnóstico", detalle = detalle)
+            }
             item(key = "diag") {
                 Tarjeta(Modifier.padding(horizontal = 16.dp)) {
                     Segmentado(
@@ -153,7 +159,11 @@ private fun Fuentes(fuente: Pista?) {
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Chip("Mezcla", fuente == null, { Analisis.fuenteId = -1 })
+        Chip("Mezcla", fuente == null && !Analisis.deEntrada, { Analisis.fuenteId = -1 })
+        Chip(
+            "Micrófono", Analisis.fuenteId == Nucleo.ID_ENTRADA, { Analisis.fuenteId = Nucleo.ID_ENTRADA },
+            icono = Iconos.microfono,
+        )
         for (pista in Mesa.pistas) {
             Chip(
                 "${pista.id} · ${pista.nombre}", fuente == pista, { Analisis.fuenteId = pista.id },

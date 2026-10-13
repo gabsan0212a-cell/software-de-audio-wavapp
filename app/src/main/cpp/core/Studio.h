@@ -17,6 +17,7 @@
 #include "dsp/Analyzer.h"
 #include "engine/Decoder.h"
 #include "engine/Importer.h"
+#include "engine/LiveInput.h"
 #include "engine/Meters.h"
 #include "engine/Mixer.h"
 #include "project/Model.h"
@@ -41,7 +42,14 @@ public:
     static constexpr int kMaxHistory = 100;
 
     enum Version { kVerTracks = 0, kVerMaster, kVerHistory, kVerStatus, kVerBackground, kVerFirstSlot };
-    static constexpr int kVersionCount = kVerFirstSlot + 3 * kMaxTracks;
+    // Al final: la entrada en vivo (ganancia, escucha y su EQ).
+    static constexpr int kVerInput = kVerFirstSlot + 3 * kMaxTracks;
+    static constexpr int kVersionCount = kVerInput + 1;
+    // El EQ de la entrada en vivo se maneja con las mismas funciones del EQ, con este id.
+    static constexpr int kInputId = 0;
+    // inputState(): [abierta, canales, ganancia dB, escucha, volumen de escucha dB,
+    // retraso de ida y vuelta (ms), grabando, segundos grabados]
+    static constexpr int kInputStateCount = 8;
     static constexpr int verParams(int slot) { return kVerFirstSlot + 3 * slot; }
     static constexpr int verEq(int slot) { return kVerFirstSlot + 3 * slot + 1; }
     static constexpr int verRegions(int slot) { return kVerFirstSlot + 3 * slot + 2; }
@@ -54,6 +62,7 @@ public:
     Studio &operator=(const Studio &) = delete;
 
     Mixer &mixer() { return mMixer; }
+    LiveInput &input() { return mInput; }
 
     // ---------- Ciclo de vida
     // Abre el proyecto de la carpeta `filesDir` (la sesión y la carpeta "audio"). La primera
@@ -139,6 +148,26 @@ public:
     // vez se calcula aparte y devuelve false; cuando está listo cambia kVerBackground.
     bool spectrogram(int id, std::vector<uint8_t> &out);
 
+    // ---------- Entrada en vivo y grabación
+    // La plataforma abrió (con 1 o 2 canales) o cerró la entrada.
+    void inputOpened(int channels);
+    void inputClosed();
+    // Retrasos medidos por la plataforma (cuadros; -1 = no se sabe).
+    void setLatencies(int inputFrames, int outputFrames);
+    void setInputGain(float db);
+    void setMonitor(bool on);
+    void setMonitorDb(float db);
+    void inputState(float *out) const;  // kInputStateCount valores
+    // Graba desde el cursor mientras suena la mezcla (si hay pistas). false si no se puede
+    // (el motivo queda en el mensaje).
+    bool recordStart();
+    // Termina: la toma queda como pista nueva en su lugar (compensando el retraso), con el EQ
+    // que se estaba escuchando. Devuelve su id o -1.
+    int recordStop();
+    void recordCancel();
+    bool recording() const { return mInput.recording(); }
+    std::vector<float> recordingWave(int cols, double seconds) const { return mInput.recentWave(cols, seconds); }
+
     // ---------- Forma de onda
     // Del pedazo `index`, solo la parte [from, to) de la línea de tiempo, en `cols` columnas:
     // [columna][canal][min, max], ya con sus fundidos.
@@ -172,6 +201,12 @@ private:
     };
 
     // Con mModel tomado:
+    TrackModel *eqTargetLocked(int id);  // una pista o la entrada (kInputId)
+    const TrackModel *eqTargetLocked(int id) const;
+    Equalizer *eqOf(const TrackModel &t);
+    const Equalizer *eqOf(const TrackModel &t) const;
+    int eqVersion(const TrackModel &t) const;
+    void applyInputLocked();
     TrackModel *findLocked(int id);
     const TrackModel *findLocked(int id) const;
     void applyTrackLocked(TrackModel &t);
@@ -207,6 +242,10 @@ private:
 
     const DecodeFunction mDecoder;
     Mixer mMixer{kRate};
+    LiveInput mInput{kRate, mMixer};
+    std::atomic<int> mLatIn{-1}, mLatOut{-1};
+    bool mRecWithMix = false;  // con mModel: había pistas al empezar a grabar
+    int64_t mRecFrom = 0;      // con mModel: dónde estaba el cursor al empezar a grabar
 
     mutable std::mutex mModel;
     ProjectModel mProject;

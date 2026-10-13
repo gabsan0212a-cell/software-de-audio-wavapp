@@ -13,11 +13,12 @@ void MeterBallistics::reset() {
     for (auto &t : mTrack) t[0] = t[1] = kFloor;
     mL = mR = mTickL = mTickR = mMaxL = mMaxR = kFloor;
     mReduction = 0.0f;
-    mClipL = mClipR = false;
+    mInL = mInR = kFloor;
+    mClipL = mClipR = mInClip = false;
     mTickTimeL = mTickTimeR = mLast = 0;
 }
 
-void MeterBallistics::update(const float *raw, int64_t nowMs) {
+void MeterBallistics::update(const float *raw, int64_t nowMs, const float *input) {
     const float dt = mLast == 0 ? 0.016f : static_cast<float>(std::clamp<int64_t>(nowMs - mLast, 0, 200)) / 1000.0f;
     mLast = nowMs;
     const float fallTrack = 45.0f * dt, fallMaster = 36.0f * dt;
@@ -45,10 +46,18 @@ void MeterBallistics::update(const float *raw, int64_t nowMs) {
     if (raw[0] >= 0.999f) mClipL = true;
     if (raw[1] >= 0.999f) mClipR = true;
     mReduction = raw[2];
+    if (input) {
+        mInL = std::max(toDb(input[0]), mInL - fallTrack);
+        mInR = std::max(toDb(input[1]), mInR - fallTrack);
+        if (input[0] >= 0.999f || input[1] >= 0.999f) mInClip = true;
+    } else {
+        mInL = std::max(kFloor, mInL - fallTrack);
+        mInR = std::max(kFloor, mInR - fallTrack);
+    }
 }
 
 bool MeterBallistics::moving() const {
-    if (mL > -119.0f || mR > -119.0f) return true;
+    if (mL > -119.0f || mR > -119.0f || mInL > -119.0f || mInR > -119.0f) return true;
     for (const auto &t : mTrack)
         if (t[0] > -119.0f || t[1] > -119.0f) return true;
     return false;
@@ -69,9 +78,12 @@ void MeterBallistics::read(float *out) const {
     out[kClipR] = mClipR ? 1.0f : 0.0f;
     out[kReduction] = mReduction;
     out[kMoving] = moving() ? 1.0f : 0.0f;
+    out[kInputL] = mInL;
+    out[kInputR] = mInR;
+    out[kInputClip] = mInClip ? 1.0f : 0.0f;
 }
 
 void MeterBallistics::clearClip() {
-    mClipL = mClipR = false;
+    mClipL = mClipR = mInClip = false;
     mMaxL = mMaxR = kFloor;
 }

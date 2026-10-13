@@ -12,6 +12,7 @@ public:
     bool start();
     void stop();
     void info(int32_t out[6]);
+    int latencyFrames() { return 960; }
 private:
     Mixer &mMixer;
     std::thread mThread;

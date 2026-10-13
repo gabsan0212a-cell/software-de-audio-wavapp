@@ -24,6 +24,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import com.wavapp.mezcla.Analisis
 import com.wavapp.mezcla.Edicion
 import com.wavapp.mezcla.Mesa
+import com.wavapp.mezcla.Nucleo
 import com.wavapp.mezcla.Pista
 import kotlinx.coroutines.delay
 
@@ -50,6 +52,7 @@ object Vista {
     const val MEZCLA = 0
     const val EDITAR = 1
     const val ANALISIS = 2
+    const val GRABAR = 3
 
     var pestana by mutableIntStateOf(MEZCLA)
     var reproductor by mutableStateOf(false)
@@ -57,6 +60,11 @@ object Vista {
     var agregar by mutableStateOf(false)
     var opciones by mutableStateOf<Pista?>(null)
     var aQuitar by mutableStateOf<Pista?>(null)
+
+    // Grabar: qué entrada (0 = la primera de la lista), en estéreo o no, y la última toma.
+    var entradaId by mutableIntStateOf(0)
+    var estereo by mutableStateOf(false)
+    var ultimaGrabacion by mutableStateOf<Int?>(null)
 }
 
 private val ALTO_PESTANAS = 50.dp
@@ -73,14 +81,42 @@ fun PantallaMesa() {
             if (!Mesa.activa()) delay(250)  // quieta: 4 veces por segundo basta (ahorra batería)
         }
     }
-    PantallaEncendida(Mesa.reproduciendo)
+    val entrada = Mesa.entrada
+    PantallaEncendida(Mesa.reproduciendo || entrada.grabando || entrada.escucha)
     SideEffect {
         Analisis.abierto = Vista.pestana == Vista.ANALISIS && !Vista.reproductor
+        Analisis.fuenteForzada = if (Vista.pestana == Vista.GRABAR && !Vista.reproductor) Nucleo.ID_ENTRADA else null
         Edicion.abierta = Vista.pestana == Vista.EDITAR
     }
     val abrirArchivos = recordarAbrirArchivos()
     val guardarMezcla = recordarGuardarMezcla()
-    val conMini = Vista.pestana != Vista.EDITAR && Mesa.pistas.isNotEmpty()
+    val audio = recordarAudio()
+    val permiso = recordarPermisoMicrofono()
+    // La entrada se abre solo cuando hace falta: en Grabar, mientras te escuchas o grabas, o si
+    // el análisis es del micrófono. Al cambiar de entrada (o mono/estéreo) se abre de nuevo.
+    val elegida = entradaElegida(audio)
+    val quiere = permiso.concedido && (
+        Vista.pestana == Vista.GRABAR || entrada.escucha || entrada.grabando ||
+            (Vista.pestana == Vista.ANALISIS && Analisis.fuenteId == Nucleo.ID_ENTRADA)
+        )
+    // Sin lista (algunos aparatos no la dan): la entrada del sistema, en mono.
+    val config = elegida?.let { it.id to (if (it.estereo && Vista.estereo) 2 else 1) } ?: (0 to 1)
+    val abierta = remember { arrayOfNulls<Pair<Int, Int>>(1) }
+    LaunchedEffect(quiere, config, entrada.abierta) {
+        when {
+            quiere && (!entrada.abierta || abierta[0] != config) -> {
+                if (!entrada.grabando) {
+                    abierta[0] = config
+                    Mesa.abrirEntrada(config.first, config.second)
+                }
+            }
+            !quiere && entrada.abierta -> {
+                abierta[0] = null
+                Mesa.cerrarEntrada()
+            }
+        }
+    }
+    val conMini = Vista.pestana != Vista.EDITAR && Vista.pestana != Vista.GRABAR && Mesa.pistas.isNotEmpty()
     val abajo = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + ALTO_PESTANAS +
         (if (conMini) ALTO_MINI else 0.dp)
 
@@ -88,6 +124,7 @@ fun PantallaMesa() {
         when (Vista.pestana) {
             Vista.EDITAR -> PestanaEdicion(abajo)
             Vista.ANALISIS -> PestanaAnalisis(abajo)
+            Vista.GRABAR -> PestanaGrabar(abajo, audio, permiso)
             else -> PestanaMezcla(abajo, abrirArchivos)
         }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
@@ -152,6 +189,7 @@ private fun BarraPestanas() {
         Separador()
         Row(Modifier.fillMaxWidth().height(ALTO_PESTANAS)) {
             Pestana(Iconos.mezclador, "Mezcla", Vista.MEZCLA)
+            Pestana(Iconos.microfono, "Grabar", Vista.GRABAR)
             Pestana(Iconos.tijeras, "Editar", Vista.EDITAR)
             Pestana(Iconos.onda, "Análisis", Vista.ANALISIS)
         }

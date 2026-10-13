@@ -256,7 +256,13 @@ fun Chip(
 
 /** Interruptor de iOS (verde al prenderse). */
 @Composable
-fun Interruptor(encendido: Boolean, alCambiar: (Boolean) -> Unit, modifier: Modifier = Modifier, descripcion: String? = null) {
+fun Interruptor(
+    encendido: Boolean,
+    alCambiar: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    descripcion: String? = null,
+    habilitado: Boolean = true,
+) {
     val p = LocalPaleta.current
     val t by animateFloatAsState(if (encendido) 1f else 0f, tween(220), label = "interruptor")
     val apagado = if (p.oscuro) Color(0xFF39393D) else Color(0xFFE9E9EA)
@@ -267,8 +273,9 @@ fun Interruptor(encendido: Boolean, alCambiar: (Boolean) -> Unit, modifier: Modi
             .semantics { if (descripcion != null) contentDescription = descripcion }
             .toggleable(
                 value = encendido, interactionSource = remember { MutableInteractionSource() }, indication = null,
-                role = Role.Switch, onValueChange = alCambiar,
-            ),
+                enabled = habilitado, role = Role.Switch, onValueChange = alCambiar,
+            )
+            .graphicsLayer { alpha = if (habilitado) 1f else 0.4f },
     ) {
         val r = size.height / 2
         drawRoundRect(lerp(apagado, verde, t), cornerRadius = CornerRadius(r))
@@ -517,14 +524,15 @@ fun FilaInterruptor(
     encendido: Boolean,
     alCambiar: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    habilitado: Boolean = true,
     subtitulo: (@Composable () -> Unit)? = null,
 ) {
     Row(modifier.fillMaxWidth().heightIn(min = 50.dp).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).padding(end = 12.dp)) {
-            Texto(titulo, Tipo.cuerpo, LocalPaleta.current.texto, lineas = 1)
+            Texto(titulo, Tipo.cuerpo, if (habilitado) LocalPaleta.current.texto else LocalPaleta.current.texto3, lineas = 1)
             subtitulo?.invoke()
         }
-        Interruptor(encendido, alCambiar, descripcion = titulo)
+        Interruptor(encendido, alCambiar, descripcion = titulo, habilitado = habilitado)
     }
 }
 

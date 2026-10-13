@@ -17,11 +17,14 @@ public:
     static constexpr int kClipL = kMasterL + 6, kClipR = kMasterL + 7;  // 0 o 1
     static constexpr int kReduction = kMasterL + 8;                      // dB del limitador
     static constexpr int kMoving = kMasterL + 9;                         // 1 si algo sigue bajando
-    static constexpr int kCount = kMasterL + 10;
+    static constexpr int kInputL = kMasterL + 10, kInputR = kMasterL + 11; // entrada en vivo (dB)
+    static constexpr int kInputClip = kMasterL + 12;                     // la entrada saturó (0 o 1)
+    static constexpr int kCount = kMasterL + 13;
 
     MeterBallistics() { reset(); }
-    // `raw`: picos lineales de Mixer::readMeters (desde la lectura anterior).
-    void update(const float *raw, int64_t nowMs);
+    // `raw`: picos lineales de Mixer::readMeters (desde la lectura anterior); `input`: L y R de
+    // la entrada en vivo (opcional).
+    void update(const float *raw, int64_t nowMs, const float *input = nullptr);
     void read(float *out) const;
     bool moving() const;
     void clearClip();  // borra los clips y el pico máximo
@@ -30,6 +33,7 @@ public:
 private:
     float mTrack[kMaxTracks][2];
     float mL, mR, mTickL, mTickR, mMaxL, mMaxR, mReduction;
-    bool mClipL, mClipR;
+    float mInL, mInR;
+    bool mClipL, mClipR, mInClip;
     int64_t mTickTimeL, mTickTimeR, mLast;
 };

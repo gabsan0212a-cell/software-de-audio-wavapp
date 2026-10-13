@@ -25,6 +25,11 @@ object Analisis {
     var fuenteId by mutableIntStateOf(-1)
     var modoClasico by mutableStateOf(false)
     val notch: Int get() = Mesa.notch
+    /** La pantalla pide analizar algo aunque el panel esté cerrado (la pestaña Grabar: la entrada). */
+    var fuenteForzada by mutableStateOf<Int?>(null)
+    /** Se está analizando la entrada en vivo. */
+    val deEntrada: Boolean
+        get() = Mesa.eqAbierta?.esEntrada ?: (fuenteForzada ?: fuenteId) == Nucleo.ID_ENTRADA
 
     var correlacion by mutableFloatStateOf(1f)
         private set
@@ -58,9 +63,17 @@ object Analisis {
     /** Se llama en cada cuadro de pantalla. */
     fun tick(ahoraMs: Long) {
         val eq = Mesa.eqAbierta
-        // Qué escucha el analizador: la pista del EQ abierto, o la fuente elegida.
-        Nucleo.setAnalysisSource(eq?.id ?: (Mesa.pistas.firstOrNull { it.id == fuenteId }?.id ?: -1))
-        if (!abierto && eq == null) return
+        val forzada = fuenteForzada
+        // Qué escucha el analizador: la pista (o la entrada) del EQ abierto, lo que pida la
+        // pantalla, o la fuente elegida.
+        val fuente = when {
+            eq != null -> eq.id
+            forzada != null -> forzada
+            fuenteId == Nucleo.ID_ENTRADA -> if (Mesa.entrada.abierta) Nucleo.ID_ENTRADA else -1
+            else -> Mesa.pistas.firstOrNull { it.id == fuenteId }?.id ?: -1
+        }
+        Nucleo.setAnalysisSource(fuente)
+        if (!abierto && eq == null && forzada == null) return
         if (!Nucleo.analysis(ahoraMs, modoClasico, stats)) return
         activo = stats[0] != 0f
         fuerte = stats[1] != 0f
@@ -78,7 +91,13 @@ object Analisis {
 
     /** Veredicto de fase y paneo, con los mismos textos que el prototipo. */
     fun veredicto(): Pair<String, Boolean> {
-        if (codigoVeredicto == 0) return (if (Mesa.reproduciendo) "Silencio." else "Reproduce para medir.") to false
+        if (codigoVeredicto == 0) {
+            return when {
+                deEntrada -> (if (Mesa.entrada.abierta) "Silencio en la entrada." else "La entrada está cerrada.") to false
+                Mesa.reproduciendo -> "Silencio." to false
+                else -> "Reproduce para medir." to false
+            }
+        }
         var t = when (codigoVeredicto) {
             1 -> "Fuera de fase: se cancela en mono. Revisa polaridad o fase entre canales."
             2 -> "Muy ancho: revisa que no pierda cuerpo al sumar a mono."
@@ -90,7 +109,7 @@ object Analisis {
     }
 
     fun textoZumbido(): Pair<String, Boolean> {
-        if (!activo) return "Zumbido: reproduce para analizar." to false
+        if (!activo) return (if (deEntrada) "Zumbido: haz sonar la entrada para analizar." else "Zumbido: reproduce para analizar.") to false
         if (zumbidoHz > 0) {
             val extra = if (notch == zumbidoHz) "" else " Prueba el notch de $zumbidoHz Hz."
             return "Posible zumbido de $zumbidoHz Hz: $zumbidoArmonicos de 4 armónicos marcados, unos +$zumbidoDb dB " +
@@ -124,6 +143,6 @@ object Analisis {
         val ids = Mesa.pistas.map { it.id }.toSet()
         espectrogramas.keys.filter { it !in ids }.forEach { espectrogramas.remove(it) }
         pedidos.retainAll(ids)
-        if (fuenteId != -1 && fuenteId !in ids) fuenteId = -1
+        if (fuenteId != -1 && fuenteId != Nucleo.ID_ENTRADA && fuenteId !in ids) fuenteId = -1
     }
 }

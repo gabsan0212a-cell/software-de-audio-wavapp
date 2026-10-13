@@ -19,10 +19,13 @@
 - Solo `androidx.compose.foundation` (sin Material): componentes propios en `ui/Componentes.kt`
   y `ui/Superpuestos.kt`, colores y tipografía de iOS en `ui/Tema.kt`, íconos con rutas en
   `ui/Iconos.kt`. Claro u oscuro según el celular.
-- Pestañas abajo (Mezcla, Editar, Análisis), mini reproductor que abre el reproductor a
+- Pestañas abajo (Mezcla, Grabar, Editar, Análisis), mini reproductor que abre el reproductor a
   pantalla completa, hojas que suben desde abajo, menús de acciones y alertas de iOS.
 - Lo que cambia en cada cuadro (posición, medidores) se lee al dibujar, no al componer.
-- Lo que obliga Android en la pantalla va solo en `ui/Plataforma.kt`.
+- Lo que obliga Android en la pantalla va solo en `ui/Plataforma.kt` (también el permiso del
+  micrófono y la lista de entradas/salidas de audio).
+- Grabación: `core/engine/LiveInput` (entrada → ganancia → se graba → EQ → escucha/análisis) y
+  `android/AudioInput` (Oboe). El EQ de la entrada usa las funciones del EQ con `Studio::kInputId`.
 
 ## Cómo se trabaja
 - El dueño no tiene computadora: usa Android + GitHub. Todo se compila en GitHub Actions; el

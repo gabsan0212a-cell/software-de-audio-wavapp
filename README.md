@@ -10,7 +10,7 @@ La versión web ("Mesa de Audio") es el prototipo de referencia: la app nativa c
 comportamiento (volumen, paneo, limitador, medidores, análisis, edición).
 
 La pantalla tiene el estilo de Apple Music con toques de estudio (como GarageBand): pestañas
-abajo (Mezcla, Editar, Análisis), mini reproductor que se abre a pantalla completa, títulos
+abajo (Mezcla, Grabar, Editar, Análisis), mini reproductor que se abre a pantalla completa, títulos
 grandes, acento rojo, colores por pista y regiones de color. Claro u oscuro según el celular.
 
 ## Cómo instalar en el celular
@@ -38,7 +38,10 @@ El APK solo se publica si pasan todas las pruebas.
       pedazos, borrar, imán, zoom y deshacer/rehacer
 - [x] 5b. Interfaz estilo Apple Music y optimización (APK release con R8 solo para ARM, sin
       Material; la salida de audio se duerme si no suena)
-- [ ] 6. Grabación
+- [x] 6. Grabación: micrófono del celular, de los audífonos o interfaz USB (mono o estéreo),
+      con ganancia, medidor, escucha en vivo con EQ en tiempo real y análisis del micrófono.
+      Graba desde el cursor con la mezcla sonando; la toma queda alineada (se compensa el
+      retraso del audio) como pista nueva, sin efecto y con el EQ que se escuchó
 - [ ] 7. Guardar/abrir proyectos (por ahora la mezcla actual se guarda sola)
 
 Sin plugins VST en Android.
@@ -55,11 +58,11 @@ Sin plugins VST en Android.
     como Web Audio), `Limiter`, `Analyzer` (FFT, espectro, fase, zumbido, espectrograma) y
     `AnalysisView` (lo que muestra el panel: veredicto, goniómetro, espectro por columnas).
   - `engine/`: `Mixer` (la mezcla en tiempo real; cada pista es una lista de pedazos con
-    fundidos), `Importer` (WAV o decodificado → formato interno), `Exporter`, `Meters`
+    fundidos), `LiveInput` (la entrada en vivo: ganancia, EQ, escucha, medidores y el grabador), `Importer` (WAV o decodificado → formato interno), `Exporter`, `Meters`
     (caídas y picos de los medidores) y `Decoder.h` (lo que debe dar la plataforma).
   - `project/`: `Model` (el proyecto), `Session` (sesion.json) y `Edit` (mover, recortar,
     fundidos, cortar, imán).
-- `app/src/main/cpp/android/`: lo de la plataforma: `AudioOutput` (Oboe), `MediaDecoder`
+- `app/src/main/cpp/android/`: lo de la plataforma: `AudioOutput` y `AudioInput` (Oboe), `MediaDecoder`
   (MP3, AAC, FLAC, OGG, Opus... con MediaCodec desde C++) y `jni_bridge.cpp` (el puente).
 - `app/src/main/java/.../`: **solo pantalla**. `Nucleo.kt` (el puente), `Mesa.kt` (espejo del
   estado del núcleo para Compose), `Analisis.kt` y `Edicion.kt` (lo que recuerda cada panel)

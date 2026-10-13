@@ -105,9 +105,17 @@ int64_t fileSize(const std::string &p) {
 
 }  // namespace
 
-Studio::Studio(DecodeFunction decoder) : mDecoder(std::move(decoder)) {}
+Studio::Studio(DecodeFunction decoder) : mDecoder(std::move(decoder)) {
+    mMixer.setLiveInput(&mInput);
+    mProject.input.name = "Micrófono";
+    applyInputLocked();
+}
 
-Studio::~Studio() { stopBackground(); }
+Studio::~Studio() {
+    stopBackground();
+    if (mInput.recording()) mInput.stopRecording();  // el archivo se limpia al abrir la próxima vez
+    mMixer.setLiveInput(nullptr);
+}
 
 // ---------------------------------------------------------------- ciclo de vida
 
@@ -123,7 +131,9 @@ void Studio::open(const std::string &filesDir, const std::string &cacheDir) {
         std::lock_guard<std::mutex> lk(mModel);
         removeAllLocked(false);
         mProject = ProjectModel();
+        mProject.input.name = "Micrófono";
         applyMasterLocked();
+        applyInputLocked();
         mUndo.clear();
         mRedo.clear();
         mGesture = Gesture();
@@ -211,8 +221,13 @@ void Studio::clearProject() {
         std::lock_guard<std::mutex> lk(mModel);
         removeAllLocked(true);
         const int next = mProject.nextId;
+        TrackModel input = std::move(mProject.input);  // los ajustes de la entrada se quedan
+        const float gain = mProject.inputGainDb, monitor = mProject.monitorDb;
         mProject = ProjectModel();
         mProject.nextId = next;
+        mProject.input = std::move(input);
+        mProject.inputGainDb = gain;
+        mProject.monitorDb = monitor;
         applyMasterLocked();
         mUndo.clear();
         mRedo.clear();
@@ -271,7 +286,7 @@ bool Studio::trackParams(int id, float *out) const {
 
 std::vector<float> Studio::eqState(int id) const {
     std::lock_guard<std::mutex> lk(mModel);
-    const TrackModel *t = findLocked(id);
+    const TrackModel *t = eqTargetLocked(id);
     if (!t) return {};
     std::vector<float> v = {t->eqBypass ? 1.0f : 0.0f, t->eqAuto ? 1.0f : 0.0f, static_cast<float>(t->bands.size())};
     for (const EqBandModel &b : t->bands)
@@ -331,7 +346,7 @@ std::string Studio::baseStatus() const {
         n = static_cast<int>(mProject.tracks.size());
         for (const TrackModel &t : mProject.tracks) bytes += fileSize(mAudioDir + "/" + t.file);
     }
-    if (n == 0) return "Sin pistas. Agrega archivos WAV o carga las pistas de prueba.";
+    if (n == 0) return "Sin pistas. Agrega audio, graba o carga las pistas de prueba.";
     return std::to_string(n) + " pista(s) · 48000 Hz · ≈ " +
            std::to_string(static_cast<long long>(std::llround(bytes / 1048576.0))) + " MB en disco";
 }
@@ -346,6 +361,10 @@ void Studio::setMessage(const std::string &message) {
 }
 
 bool Studio::beginJob(const std::string &text, bool exporting) {
+    if (mInput.recording()) {
+        setMessage("Termina la grabación primero");
+        return false;
+    }
     {
         std::lock_guard<std::mutex> lk(mStatus);
         if (mBusy) return false;
@@ -400,8 +419,28 @@ void Studio::applyTrackLocked(TrackModel &t) {
     applyEqLocked(t);
 }
 
+TrackModel *Studio::eqTargetLocked(int id) { return id == kInputId ? &mProject.input : findLocked(id); }
+
+const TrackModel *Studio::eqTargetLocked(int id) const { return id == kInputId ? &mProject.input : findLocked(id); }
+
+Equalizer *Studio::eqOf(const TrackModel &t) { return t.id == kInputId ? &mInput.eq() : mMixer.trackEq(t.slot); }
+
+const Equalizer *Studio::eqOf(const TrackModel &t) const {
+    return t.id == kInputId ? &mInput.eq() : mMixer.trackEq(t.slot);
+}
+
+int Studio::eqVersion(const TrackModel &t) const { return t.id == kInputId ? kVerInput : verEq(t.slot); }
+
+void Studio::applyInputLocked() {
+    mProject.inputGainDb = std::clamp(roundTo(mProject.inputGainDb, 0.5f), LiveInput::kGainMin, LiveInput::kGainMax);
+    mProject.monitorDb = std::clamp(roundTo(mProject.monitorDb, 0.5f), kVolMin, kVolMax);
+    mInput.setGainDb(mProject.inputGainDb);
+    mInput.setMonitorGain(dbToGain(mProject.monitorDb, kVolMin + 0.1f));
+    applyEqLocked(mProject.input);
+}
+
 void Studio::applyEqLocked(TrackModel &t) {
-    Equalizer *eq = mMixer.trackEq(t.slot);
+    Equalizer *eq = eqOf(t);
     if (!eq) return;
     bool used[kMaxBands] = {};
     for (const EqBandModel &b : t.bands) {
@@ -689,8 +728,17 @@ void Studio::jobRestore() {
         mProject.master.volDb = std::clamp(roundTo(pm.master.volDb, 0.5f), kMasterMin, kVolMax);
         mProject.nextId = pm.nextId;
         applyMasterLocked();
+        mProject.input = std::move(pm.input);
+        mProject.input.id = kInputId;
+        mProject.input.name = "Micrófono";
+        int k = 0;
+        for (EqBandModel &b : mProject.input.bands) b.slot = k++;
+        mProject.inputGainDb = pm.inputGainDb;
+        mProject.monitorDb = pm.monitorDb;
+        applyInputLocked();
     }
     bump(kVerMaster);
+    bump(kVerInput);
     int missing = 0;
     std::set<std::string> used;
     for (TrackModel &t : pm.tracks) {
@@ -801,7 +849,7 @@ void Studio::setPhase(int id, bool on) {
 
 int Studio::addEqBand(int id) {
     std::lock_guard<std::mutex> lk(mModel);
-    TrackModel *t = findLocked(id);
+    TrackModel *t = eqTargetLocked(id);
     if (!t || static_cast<int>(t->bands.size()) >= kMaxBands) return -1;
     int slot = 0;
     while (std::any_of(t->bands.begin(), t->bands.end(), [slot](const EqBandModel &b) { return b.slot == slot; })) ++slot;
@@ -814,24 +862,24 @@ int Studio::addEqBand(int id) {
     b.on = true;
     t->bands.push_back(b);
     applyEqLocked(*t);
-    bump(verEq(t->slot));
+    bump(eqVersion(*t));
     markDirty();
     return static_cast<int>(t->bands.size()) - 1;
 }
 
 void Studio::removeEqBand(int id, int pos) {
     std::lock_guard<std::mutex> lk(mModel);
-    TrackModel *t = findLocked(id);
+    TrackModel *t = eqTargetLocked(id);
     if (!t || pos < 0 || pos >= static_cast<int>(t->bands.size())) return;
     t->bands.erase(t->bands.begin() + pos);
     applyEqLocked(*t);
-    bump(verEq(t->slot));
+    bump(eqVersion(*t));
     markDirty();
 }
 
 void Studio::setEqBand(int id, int pos, int type, float freq, float gain, float q, bool on) {
     std::lock_guard<std::mutex> lk(mModel);
-    TrackModel *t = findLocked(id);
+    TrackModel *t = eqTargetLocked(id);
     if (!t || pos < 0 || pos >= static_cast<int>(t->bands.size())) return;
     EqBandModel &b = t->bands[pos];
     b.type = std::clamp(type, 0, kFilterTypes - 1);
@@ -839,53 +887,53 @@ void Studio::setEqBand(int id, int pos, int type, float freq, float gain, float 
     b.gain = roundTo(std::clamp(gain, -15.0f, 15.0f), 0.5f);
     b.q = roundTo(std::clamp(q, 0.1f, 18.0f), 0.01f);
     b.on = on;
-    if (Equalizer *eq = mMixer.trackEq(t->slot)) eq->setBand(b.slot, true, b.on, b.type, b.freq, b.gain, b.q);
-    bump(verEq(t->slot));
+    if (Equalizer *eq = eqOf(*t)) eq->setBand(b.slot, true, b.on, b.type, b.freq, b.gain, b.q);
+    bump(eqVersion(*t));
     markDirty();
 }
 
 void Studio::setEqBypass(int id, bool on) {
     std::lock_guard<std::mutex> lk(mModel);
-    TrackModel *t = findLocked(id);
+    TrackModel *t = eqTargetLocked(id);
     if (!t) return;
     t->eqBypass = on;
-    if (Equalizer *eq = mMixer.trackEq(t->slot)) eq->setBypass(on);
-    bump(verEq(t->slot));
+    if (Equalizer *eq = eqOf(*t)) eq->setBypass(on);
+    bump(eqVersion(*t));
     markDirty();
 }
 
 void Studio::setEqAutoGain(int id, bool on) {
     std::lock_guard<std::mutex> lk(mModel);
-    TrackModel *t = findLocked(id);
+    TrackModel *t = eqTargetLocked(id);
     if (!t) return;
     t->eqAuto = on;
-    if (Equalizer *eq = mMixer.trackEq(t->slot)) eq->setAutoGain(on);
-    bump(verEq(t->slot));
+    if (Equalizer *eq = eqOf(*t)) eq->setAutoGain(on);
+    bump(eqVersion(*t));
     markDirty();
 }
 
 void Studio::resetEq(int id) {
     std::lock_guard<std::mutex> lk(mModel);
-    TrackModel *t = findLocked(id);
+    TrackModel *t = eqTargetLocked(id);
     if (!t) return;
     t->bands.clear();
     applyEqLocked(*t);
-    bump(verEq(t->slot));
+    bump(eqVersion(*t));
     markDirty();
 }
 
 float Studio::eqTrimDb(int id) const {
     std::lock_guard<std::mutex> lk(mModel);
-    const TrackModel *t = findLocked(id);
+    const TrackModel *t = eqTargetLocked(id);
     if (!t) return 0.0f;
-    const Equalizer *eq = mMixer.trackEq(t->slot);
+    const Equalizer *eq = eqOf(*t);
     return eq ? eq->trimDb() : 0.0f;
 }
 
 void Studio::eqResponse(int id, int pos, const float *freqs, float *outDb, int n) const {
     std::lock_guard<std::mutex> lk(mModel);
-    const TrackModel *t = findLocked(id);
-    const Equalizer *eq = t ? mMixer.trackEq(t->slot) : nullptr;
+    const TrackModel *t = eqTargetLocked(id);
+    const Equalizer *eq = t ? eqOf(*t) : nullptr;
     if (!eq || (pos >= static_cast<int>(t->bands.size()))) {
         std::fill(outDb, outDb + n, 0.0f);
         return;
@@ -1006,15 +1054,18 @@ void Studio::seek(double seconds) {
 // ---------------------------------------------------------------- medidores y análisis
 
 void Studio::meters(int64_t now, float *out) {
-    float raw[kMeterCount];
+    float raw[kMeterCount], in[2];
     mMixer.readMeters(raw);
-    mMeters.update(raw, now);
+    mInput.readPeaks(in);
+    mMeters.update(raw, now, mInput.active() ? in : nullptr);
     mMeters.read(out);
 }
 
 void Studio::setAnalysisSource(int id) {
     int slot = -1;
-    if (id >= 0) {
+    if (id == kInputId) {
+        slot = Mixer::kTapInput;
+    } else if (id > 0) {
         std::lock_guard<std::mutex> lk(mModel);
         if (const TrackModel *t = findLocked(id)) slot = t->slot;
     }
@@ -1025,7 +1076,9 @@ void Studio::setAnalysisSource(int id) {
 }
 
 bool Studio::analysisUpdate(int64_t now, bool classic, float *stats) {
-    const bool changed = mView.update(mAnalyzer, mMixer, mMixer.isPlaying(), now, classic);
+    // La entrada se analiza aunque la mezcla no suene.
+    const bool live = mMixer.analysisSource() == Mixer::kTapInput && mInput.active();
+    const bool changed = mView.update(mAnalyzer, mMixer, mMixer.isPlaying() || live, now, classic);
     mView.stats(stats);
     return changed;
 }
@@ -1072,6 +1125,181 @@ bool Studio::spectrogram(int id, std::vector<uint8_t> &out) {
         bump(kVerBackground);
     });
     return false;
+}
+
+// ---------------------------------------------------------------- entrada en vivo y grabación
+
+void Studio::inputOpened(int channels) {
+    mInput.setActive(true, channels);
+    bump(kVerInput);
+}
+
+void Studio::inputClosed() {
+    if (mInput.recording()) recordStop();  // lo grabado no se pierde
+    mInput.setActive(false, mInput.channels());
+    bump(kVerInput);
+}
+
+void Studio::setLatencies(int inputFrames, int outputFrames) {
+    mLatIn.store(inputFrames);
+    mLatOut.store(outputFrames);
+}
+
+void Studio::setInputGain(float db) {
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        mProject.inputGainDb = db;
+        applyInputLocked();
+    }
+    bump(kVerInput);
+    markDirty();
+}
+
+void Studio::setMonitor(bool on) {
+    mInput.setMonitor(on);
+    bump(kVerInput);
+}
+
+void Studio::setMonitorDb(float db) {
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        mProject.monitorDb = db;
+        applyInputLocked();
+    }
+    bump(kVerInput);
+    markDirty();
+}
+
+void Studio::inputState(float *out) const {
+    float gain, monitorDb;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        gain = mProject.inputGainDb;
+        monitorDb = mProject.monitorDb;
+    }
+    const int li = mLatIn.load(), lo = mLatOut.load();
+    out[0] = mInput.active() ? 1.0f : 0.0f;
+    out[1] = static_cast<float>(mInput.channels());
+    out[2] = gain;
+    out[3] = mInput.monitorOn() ? 1.0f : 0.0f;
+    out[4] = monitorDb;
+    out[5] = li >= 0 && lo >= 0 ? (li + lo) * 1000.0f / kRate : -1.0f;
+    out[6] = mInput.recording() ? 1.0f : 0.0f;
+    out[7] = static_cast<float>(mInput.recordedSeconds());
+}
+
+bool Studio::recordStart() {
+    if (mInput.recording()) return true;
+    if (!mInput.active()) {
+        setMessage("Activa la entrada para grabar");
+        return false;
+    }
+    bool busy;
+    {
+        std::lock_guard<std::mutex> lk(mStatus);
+        busy = mBusy;
+    }
+    if (busy) {
+        setMessage("Espera a que termine el trabajo en curso");
+        return false;
+    }
+    std::string path;
+    bool full;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        full = mProject.tracks.size() >= static_cast<size_t>(kMaxTracks);
+        if (!full && !mAudioDir.empty()) path = mAudioDir + "/" + newFileName("grabacion");
+        mRecWithMix = !mProject.tracks.empty();
+        mRecFrom = mMixer.position();
+    }
+    if (full || path.empty()) {
+        setMessage(full ? "Límite de 12 pistas: quita una para grabar" : "No hay proyecto abierto");
+        return false;
+    }
+    std::string err;
+    mMixer.setFreeRun(true);
+    if (!mInput.startRecording(path, err)) {
+        mMixer.setFreeRun(false);
+        setMessage("No se pudo grabar: " + err);
+        return false;
+    }
+    mMixer.play();
+    bump(kVerInput);
+    setMessage("Grabando…");
+    return true;
+}
+
+int Studio::recordStop() {
+    if (!mInput.recording()) return -1;
+    const Take take = mInput.stopRecording();
+    mMixer.pause();
+    mMixer.setFreeRun(false);
+    bump(kVerInput);
+    auto fail = [&](const std::string &m) {
+        std::remove(take.path.c_str());
+        setMessage(m);
+        return -1;
+    };
+    if (!take.error.empty()) return fail("No se guardó la grabación: " + take.error);
+    if (take.frames < kRate / 10) return fail("Grabación muy corta: no se guardó");
+    std::string err;
+    auto audio = MappedAudio::open(take.path, err);
+    if (!audio) return fail("No se guardó la grabación: " + err);
+    std::vector<float> peaks = computePeaks(*audio, kPeakBucket);
+    // Lo que entra por el micrófono llega tarde respecto a lo que se oye: el retraso de la
+    // salida más el de la entrada. Si no se conocen, ~10 ms cada uno.
+    const int li = mLatIn.load(), lo = mLatOut.load();
+    const int64_t latency = (li >= 0 ? li : kRate / 100) + (lo >= 0 ? lo : kRate / 100);
+    const size_t slash = take.path.find_last_of('/');
+    const std::string file = slash == std::string::npos ? take.path : take.path.substr(slash + 1);
+    int id = -1;
+    std::string name;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        // Sin pistas no hay con qué alinear: la toma empieza donde estaba el cursor.
+        int64_t start = mRecWithMix ? take.start - latency : mRecFrom, src = 0;
+        if (start < 0) {
+            src = std::min(-start, take.frames - 1);
+            start = 0;
+        }
+        int n = 1;
+        for (const TrackModel &t : mProject.tracks)
+            if (t.name.rfind("Grabación", 0) == 0) ++n;
+        TrackModel t;
+        t.id = mProject.nextId++;
+        t.name = "Grabación " + std::to_string(n);
+        t.file = file;
+        const int secs = static_cast<int>(take.frames / kRate);
+        t.info = std::string("grabación · ") + (take.channels == 2 ? "estéreo" : "mono") + " · 48 kHz · " +
+                 std::to_string(secs / 60) + ":" + (secs % 60 < 10 ? "0" : "") + std::to_string(secs % 60);
+        // Suena como se escuchó: la pista recibe el EQ de la entrada (y se puede cambiar).
+        t.bands = mProject.input.bands;
+        t.eqBypass = mProject.input.eqBypass;
+        t.eqAuto = mProject.input.eqAuto;
+        t.regions = {Region{start, src, take.frames - src, 0, 0}};
+        t.hasRegions = true;
+        t.peaks = std::move(peaks);
+        id = t.id;
+        name = t.name;
+        err = addTrackLocked(std::move(t), std::move(audio));
+    }
+    if (!err.empty()) return fail("No se guardó la grabación: " + err);
+    markDirty();
+    std::string msg = name + " agregada";
+    if (take.dropped > 0)
+        msg += " (se perdieron " + std::to_string(take.dropped * 1000 / kRate) + " ms: el celular no alcanzó a guardar)";
+    setMessage(msg);
+    return id;
+}
+
+void Studio::recordCancel() {
+    if (!mInput.recording()) return;
+    const Take take = mInput.stopRecording();
+    mMixer.pause();
+    mMixer.setFreeRun(false);
+    std::remove(take.path.c_str());
+    bump(kVerInput);
+    setMessage("Grabación descartada");
 }
 
 // ---------------------------------------------------------------- forma de onda

@@ -1,5 +1,6 @@
 package com.wavapp.mezcla
 
+import android.Manifest
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import androidx.compose.ui.geometry.Offset
@@ -20,6 +21,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.rule.GrantPermissionRule
 import com.wavapp.mezcla.ui.Vista
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -32,7 +34,10 @@ import java.io.FileOutputStream
 /** Abre la app como lo haría una persona, usa los controles principales y toma capturas. */
 @RunWith(AndroidJUnit4::class)
 class PantallaTest {
-    @get:Rule
+    @get:Rule(order = 0)
+    val microfono: GrantPermissionRule = GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO)
+
+    @get:Rule(order = 1)
     val regla = createAndroidComposeRule<MainActivity>()
 
     @Test
@@ -193,6 +198,27 @@ class PantallaTest {
         regla.onNodeWithText("Agregar archivos…").assertIsDisplayed()
         regla.onNodeWithText("Cancelar").performClick()
         regla.waitUntil(2_000) { !Vista.agregar }
+
+        // Grabar: la pestaña abre la entrada; se graba un poco con la mezcla y queda una pista nueva.
+        regla.onNodeWithTag("pestana-3").performClick()
+        regla.waitUntil(5_000) { Mesa.entrada.abierta }
+        avanzarMedidores()
+        captura("14-grabar")
+        regla.onNodeWithContentDescription("Grabar").performClick()
+        regla.waitUntil(3_000) { Mesa.entrada.grabando }
+        avanzarHasta(8_000, { "la grabación no avanzó: ${Mesa.entrada.segundos} s, ${Mesa.estado}" }) {
+            Mesa.entrada.segundos > 1.2
+        }
+        captura("15-grabando")
+        regla.onNodeWithContentDescription("Detener grabación").performClick()
+        regla.waitUntil(5_000) { !Mesa.entrada.grabando && Mesa.pistas.size == 5 }
+        assertEquals("Grabación 1", Mesa.pistas.last().nombre)
+        regla.onNodeWithTag("pestana-0").performClick()
+        regla.waitUntil(2_000) { !Mesa.entrada.abierta }
+        regla.waitForIdle()
+        captura("16-grabado")
+        regla.runOnUiThread { Mesa.quitar(Mesa.pistas.last()) }
+        regla.waitUntil(2_000) { Mesa.pistas.size == 4 }
 
         if (Mesa.reproduciendo) regla.onNodeWithContentDescription("Pausar").performClick()
         regla.waitUntil(5_000) { !Mesa.reproduciendo }

@@ -48,4 +48,8 @@ struct ProjectModel {
     int nextId = 1;
     MasterModel master;
     std::vector<TrackModel> tracks;  // en el orden de la pantalla
+    // Entrada en vivo (micrófono o interfaz): su EQ se guarda como el de una pista con id 0.
+    TrackModel input;
+    float inputGainDb = 0.0f;   // -24 .. +24
+    float monitorDb = 0.0f;     // volumen de la escucha: -60 (= -∞) .. +6
 };

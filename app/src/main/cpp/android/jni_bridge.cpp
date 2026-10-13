@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "AudioInput.h"
 #include "AudioOutput.h"
 #include "MediaDecoder.h"
 #include "Studio.h"
@@ -14,6 +15,7 @@
 
 static Studio gStudio(decodeWithMediaCodec);
 static AudioOutput gOutput(gStudio.mixer());
+static AudioInput gInput(gStudio.input());
 
 #define JNI(ret, name) extern "C" JNIEXPORT ret JNICALL Java_com_wavapp_mezcla_Nucleo_##name
 
@@ -48,6 +50,8 @@ JNI(jboolean, start)(JNIEnv *, jobject) {
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 JNI(void, stop)(JNIEnv *, jobject) {
+    gStudio.inputClosed();  // si estaba grabando, la toma se guarda
+    gInput.stop();
     gOutput.stop();
     gStudio.stopBackground();
 }
@@ -62,11 +66,12 @@ JNI(jintArray, outputInfo)(JNIEnv *env, jobject) {
     return a;
 }
 // [pistas máx., bandas máx., medidores, datos de análisis, versiones, columnas y filas del
-//  espectrograma, frecuencia del proyecto, pedazos máx.]
+//  espectrograma, frecuencia del proyecto, pedazos máx., versión de la entrada, datos de la
+//  entrada, id del EQ de la entrada]
 JNI(jintArray, constants)(JNIEnv *env, jobject) {
     const int32_t v[] = {kMaxTracks, kMaxBands, MeterBallistics::kCount, AnalysisView::kStatCount,
                          Studio::kVersionCount, Studio::kSpectrogramCols, Studio::kSpectrogramRows, Studio::kRate,
-                         kMaxRegions};
+                         kMaxRegions, Studio::kVerInput, Studio::kInputStateCount, Studio::kInputId};
     const jsize n = static_cast<jsize>(sizeof v / sizeof v[0]);
     jintArray a = env->NewIntArray(n);
     env->SetIntArrayRegion(a, 0, n, v);
@@ -209,6 +214,52 @@ JNI(jbyteArray, spectrogram)(JNIEnv *env, jobject, jint id) {
     jbyteArray a = env->NewByteArray(static_cast<jsize>(v.size()));
     env->SetByteArrayRegion(a, 0, static_cast<jsize>(v.size()), reinterpret_cast<const jbyte *>(v.data()));
     return a;
+}
+
+// ---------- Entrada en vivo y grabación
+// Abre la entrada (deviceId 0 = la del sistema). Devuelve los canales abiertos o 0.
+JNI(jint, inputStart)(JNIEnv *, jobject, jint deviceId, jint channels) {
+    gOutput.start();  // para escucharse hace falta la salida
+    gStudio.inputClosed();
+    const int ch = gInput.start(deviceId, channels);
+    if (ch > 0) gStudio.inputOpened(ch);
+    else gStudio.notify("No se pudo abrir la entrada de audio");
+    return ch;
+}
+JNI(void, inputStop)(JNIEnv *, jobject) {
+    gStudio.inputClosed();
+    gInput.stop();
+}
+JNI(void, setInputGain)(JNIEnv *, jobject, jfloat db) { gStudio.setInputGain(db); }
+JNI(void, setMonitor)(JNIEnv *, jobject, jboolean on) {
+    if (on) gOutput.start();
+    gStudio.setMonitor(on);
+}
+JNI(void, setMonitorDb)(JNIEnv *, jobject, jfloat db) { gStudio.setMonitorDb(db); }
+JNI(void, inputState)(JNIEnv *env, jobject, jfloatArray out) {
+    if (gInput.lost()) {
+        gStudio.inputClosed();
+        gStudio.notify("Se desconectó la entrada de audio");
+    }
+    gStudio.setLatencies(gInput.latencyFrames(), gOutput.latencyFrames());
+    float v[Studio::kInputStateCount];
+    gStudio.inputState(v);
+    const jsize n = std::min<jsize>(env->GetArrayLength(out), Studio::kInputStateCount);
+    env->SetFloatArrayRegion(out, 0, n, v);
+}
+JNI(jboolean, recordStart)(JNIEnv *, jobject) {
+    gOutput.start();
+    gStudio.setLatencies(gInput.latencyFrames(), gOutput.latencyFrames());
+    return gStudio.recordStart() ? JNI_TRUE : JNI_FALSE;
+}
+JNI(jint, recordStop)(JNIEnv *, jobject) {
+    gStudio.setLatencies(gInput.latencyFrames(), gOutput.latencyFrames());
+    return gStudio.recordStop();
+}
+JNI(void, recordCancel)(JNIEnv *, jobject) { gStudio.recordCancel(); }
+// Lo último de la toma en curso: `cols` valores de 0 a 1 que cubren `seconds`.
+JNI(jfloatArray, recordingWave)(JNIEnv *env, jobject, jint cols, jfloat seconds) {
+    return floats(env, gStudio.recordingWave(cols, seconds));
 }
 
 // ---------- Forma de onda

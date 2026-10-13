@@ -1,5 +1,6 @@
 package com.wavapp.mezcla
 
+import android.Manifest
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -8,6 +9,7 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.rule.GrantPermissionRule
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
@@ -18,6 +20,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -34,6 +37,9 @@ import kotlin.math.sin
  */
 @RunWith(AndroidJUnit4::class)
 class MotorTest {
+    @get:Rule
+    val microfono: GrantPermissionRule = GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO)
+
     private val ctx get() = InstrumentationRegistry.getInstrumentation().targetContext
     private lateinit var proyecto: File
     private lateinit var archivos: File
@@ -50,6 +56,9 @@ class MotorTest {
 
     @After
     fun limpiar() {
+        Nucleo.recordCancel()
+        Nucleo.setMonitor(false)
+        Nucleo.inputStop()
         Nucleo.stopTransport()
         Nucleo.waitIdle(60_000)
         Nucleo.clearProject()
@@ -325,5 +334,41 @@ class MotorTest {
         h.putShort(2)  // blockAlign mal escrito por la grabadora
         h.putShort(16).put("data".toByteArray()).putInt(cuadros * 4)
         f.writeBytes(h.array() + datos.array())
+    }
+
+    @Test
+    fun grabaDelMicrofonoConLaMezcla() {
+        cargarPrueba()
+        val datos = FloatArray(Nucleo.DATOS_ENTRADA)
+        assertTrue("se abre la entrada de audio", Nucleo.inputStart(0, 1) > 0)
+        Nucleo.inputState(datos)
+        assertEquals(1f, datos[0])
+        // Escucha y EQ en vivo: la pista nueva recibe el EQ de la entrada.
+        Nucleo.setMonitor(true)
+        assertEquals(0, Nucleo.addEqBand(Nucleo.ID_ENTRADA))
+        Nucleo.inputState(datos)
+        assertEquals(1f, datos[3])
+        Nucleo.seek(2.0)
+        assertTrue(Nucleo.recordStart())
+        Thread.sleep(1500)
+        Nucleo.inputState(datos)
+        assertEquals(1f, datos[6])
+        assertTrue("cuenta lo grabado (${datos[7]} s)", datos[7] > 0.8f)
+        assertTrue("la mezcla suena mientras se graba", Nucleo.isPlaying())
+        val id = Nucleo.recordStop()
+        assertTrue("la toma quedó como pista (${estado()})", id > 0)
+        assertFalse(Nucleo.isPlaying())
+        val p = pistas()
+        assertEquals(5, p.length())
+        val nueva = p.getJSONObject(4)
+        assertEquals("Grabación 1", nueva.getString("nombre"))
+        assertTrue(nueva.getLong("cuadros") > 48000)
+        val r = Nucleo.regions(id)
+        assertTrue("empieza cerca de los 2 s (${r[0]})", r[0] in (2L * 48000 - 9600)..(2L * 48000 + 9600))
+        assertEquals(1, Nucleo.eqState(id)[2].toInt())
+        Nucleo.setMonitor(false)
+        Nucleo.inputStop()
+        Nucleo.inputState(datos)
+        assertEquals(0f, datos[0])
     }
 }

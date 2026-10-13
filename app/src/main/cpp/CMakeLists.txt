@@ -9,6 +9,7 @@ file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS core/*.cpp)
 
 add_library(wavapp SHARED
     ${CORE_SOURCES}
+    android/AudioInput.cpp
     android/AudioOutput.cpp
     android/MediaDecoder.cpp
     android/jni_bridge.cpp)

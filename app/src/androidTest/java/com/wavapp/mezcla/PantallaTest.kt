@@ -252,7 +252,7 @@ class PantallaTest {
         regla.waitUntil(2_000) { Vista.efectos != null }
         regla.onNodeWithContentDescription("Preset Voz").performClick()
         regla.waitUntil(2_000) { p0.fxOn(Nucleo.FX_COMP) && p0.fxOn(Nucleo.FX_REVERB) && !p0.fxOn(Nucleo.FX_DELAY) }
-        regla.onNodeWithText("Delay").performScrollTo().performClick()
+        regla.onNodeWithContentDescription("Delay").performScrollTo().performClick()
         regla.waitUntil(2_000) { p0.fxOn(Nucleo.FX_DELAY) }
         regla.waitForIdle()
         captura("22-efectos")
@@ -296,11 +296,11 @@ class PantallaTest {
         regla.waitUntil(2_000) { Mesa.exportBits == 32 }
         regla.onNodeWithText("24 bits").performClick()
         regla.waitUntil(2_000) { Mesa.exportBits == 24 }
-        regla.onNodeWithText("Ajustar el volumen").performScrollTo().performClick()
+        regla.onNodeWithContentDescription("Ajustar el volumen").performScrollTo().performClick()
         regla.waitUntil(2_000) { Mesa.ajustarAlExportar }
         regla.waitForIdle()
         captura("9-exportar")
-        regla.onNodeWithText("Ajustar el volumen").performScrollTo().performClick()
+        regla.onNodeWithContentDescription("Ajustar el volumen").performScrollTo().performClick()
         regla.waitUntil(2_000) { !Mesa.ajustarAlExportar }
         regla.onNodeWithText("Cancelar").performClick()
         regla.waitUntil(2_000) { !Vista.exportar }

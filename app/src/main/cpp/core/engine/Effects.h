@@ -66,7 +66,6 @@ public:
 private:
     bool on(int p) const { return get(p) > 0.5f; }
 
-    int mRate;
     std::array<std::atomic<float>, fx::kCount> mParams;
     std::atomic<float> mReduction{0.0f};
     Compressor mComp;

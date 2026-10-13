@@ -103,7 +103,7 @@ const Preset &preset(int i) { return presets()[static_cast<size_t>(std::clamp(i,
 
 }  // namespace fx
 
-TrackFx::TrackFx(int sampleRate) : mRate(sampleRate) {
+TrackFx::TrackFx(int sampleRate) {
     const fx::Values d = fx::defaults();
     for (int p = 0; p < fx::kCount; ++p) mParams[static_cast<size_t>(p)].store(d[static_cast<size_t>(p)]);
     mComp.setup(sampleRate);

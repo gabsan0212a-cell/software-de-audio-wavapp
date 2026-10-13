@@ -23,6 +23,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
@@ -282,9 +283,10 @@ class PantallaTest {
         } else {
             "Medir otra vez"
         }
-        regla.onNodeWithTag("panelAnalisis").performScrollToNode(hasText(boton))
-        // Al desplazarse, el botón puede quedar abajo, detrás del mini reproductor: se toca por su
-        // acción (como lo haría el lector de pantalla), no por la posición del dedo.
+        // La tarjeta de la canción se sube arriba para que se vea entera (y no detrás del mini
+        // reproductor); el botón se toca por su acción, como lo haría el lector de pantalla.
+        regla.onNodeWithTag("panelAnalisis").performScrollToKey("lufsCancionTitulo")
+        regla.waitForIdle()
         regla.onNodeWithText(boton).performSemanticsAction(SemanticsActions.OnClick)
         avanzarHasta(60_000, {
             "no midió la canción: ${Mesa.volumen.cancion}, ocupada=${Mesa.ocupada}, estado=${Mesa.estado}"

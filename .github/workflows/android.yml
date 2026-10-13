@@ -38,11 +38,12 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - name: Compilar
+      - name: Compilar (release: optimizado con R8, solo ARM)
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
-          cp app/build/outputs/apk/debug/app-debug.apk wavapp.apk
+          ./gradlew assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk wavapp.apk
+          ls -l wavapp.apk
       - id: version
         run: echo "version=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4

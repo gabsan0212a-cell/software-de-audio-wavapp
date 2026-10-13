@@ -10,10 +10,28 @@
 
 AudioOutput::~AudioOutput() { stop(); }
 
+namespace {
+constexpr int kIdleSeconds = 5;  // sin sonar este tiempo, la salida se duerme
+}
+
 bool AudioOutput::start() {
     std::lock_guard<std::mutex> lk(mStreamMutex);
     mWanted = true;
-    return mStream ? true : openStream();
+    if (!mStream) return openStream();
+    if (!mSleeping.load()) return true;
+    // Dormida: esperar a que termine de detenerse y volver a arrancar.
+    oboe::StreamState state = mStream->getState();
+    if (state == oboe::StreamState::Stopping) {
+        oboe::StreamState next = state;
+        mStream->waitForStateChange(state, &next, 200 * 1000000LL);
+    }
+    mIdleFrames = 0;
+    mSleeping.store(false);
+    if (mStream->requestStart() == oboe::Result::OK) return true;
+    LOGE("no se pudo despertar la salida: se abre de nuevo");
+    mStream->close();
+    mStream.reset();
+    return openStream();
 }
 
 bool AudioOutput::openStream() {
@@ -27,6 +45,8 @@ bool AudioOutput::openStream() {
         ->setSampleRateConversionQuality(oboe::SampleRateConversionQuality::Medium)
         ->setDataCallback(this)
         ->setErrorCallback(this);
+    mSleeping.store(false);
+    mIdleFrames = 0;
     oboe::Result r = builder.openStream(mStream);
     if (r != oboe::Result::OK) {
         LOGE("openStream: %s", oboe::convertToText(r));
@@ -57,9 +77,9 @@ void AudioOutput::stop() {
     }
 }
 
-void AudioOutput::info(int32_t out[5]) {
+void AudioOutput::info(int32_t out[6]) {
     std::lock_guard<std::mutex> lk(mStreamMutex);
-    for (int i = 0; i < 5; ++i) out[i] = 0;
+    for (int i = 0; i < 6; ++i) out[i] = 0;
     if (!mStream) return;
     out[0] = mStream->getSampleRate();
     out[1] = mStream->getFramesPerBurst();
@@ -67,10 +87,17 @@ void AudioOutput::info(int32_t out[5]) {
     auto x = mStream->getXRunCount();
     out[3] = x ? x.value() : -1;
     out[4] = mStream->getSharingMode() == oboe::SharingMode::Exclusive ? 1 : 0;
+    out[5] = mSleeping.load() ? 1 : 0;
 }
 
 oboe::DataCallbackResult AudioOutput::onAudioReady(oboe::AudioStream *stream, void *audioData, int32_t numFrames) {
     mMixer.process(static_cast<float *>(audioData), numFrames, stream->getChannelCount());
+    // Sin sonar un rato: se duerme (el sistema apaga la ruta de audio y ahorra batería).
+    mIdleFrames = mMixer.isRolling() ? 0 : mIdleFrames + numFrames;
+    if (mIdleFrames > static_cast<int64_t>(stream->getSampleRate()) * kIdleSeconds) {
+        mSleeping.store(true);
+        return oboe::DataCallbackResult::Stop;
+    }
     return oboe::DataCallbackResult::Continue;
 }
 

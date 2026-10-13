@@ -1,3 +1,6 @@
+// -PconX86=true: el APK final también para x86_64 (solo para probarlo en el emulador).
+val conX86 = (project.findProperty("conX86") as String?) == "true"
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -15,8 +18,6 @@ android {
         versionCode = 9
         versionName = "0.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        // x86_64 es para el emulador de las pruebas automáticas.
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
         externalNativeBuild {
             cmake {
                 cppFlags += listOf("-std=c++17", "-O2")
@@ -36,9 +37,22 @@ android {
     }
 
     buildTypes {
-        // El APK que se instala es "debug": que el código nativo vaya optimizado igual.
+        // "debug" es para las pruebas en el emulador (x86_64 incluido), con el C++ optimizado igual.
         getByName("debug") {
+            ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
             externalNativeBuild { cmake { arguments += "-DCMAKE_BUILD_TYPE=Release" } }
+        }
+        // "release" es el APK que se instala: R8 quita lo que no se usa y optimiza (más ligero y
+        // más fluido que debug), solo para celulares ARM. Misma llave: se instala encima.
+        getByName("release") {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("debug")
+            ndk {
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+                if (conX86) abiFilters += "x86_64"
+            }
         }
     }
 

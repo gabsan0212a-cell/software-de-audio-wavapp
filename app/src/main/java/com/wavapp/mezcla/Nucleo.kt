@@ -55,7 +55,7 @@ object Nucleo {
     external fun clearProject()
     /** Espera a que terminen los trabajos en segundo plano (pruebas). */
     external fun waitIdle(timeoutMs: Int): Boolean
-    /** Salida real: [frecuencia, ráfaga, búfer en cuadros, cortes, exclusivo 1/0]. */
+    /** Salida real: [frecuencia, ráfaga, búfer en cuadros, cortes, exclusivo 1/0, dormida 1/0]. */
     external fun outputInfo(): IntArray
     external fun constants(): IntArray
 

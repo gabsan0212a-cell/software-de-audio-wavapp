@@ -55,10 +55,10 @@ JNI(void, saveNow)(JNIEnv *, jobject) { gStudio.saveNow(); }
 JNI(void, clearProject)(JNIEnv *, jobject) { gStudio.clearProject(); }
 JNI(jboolean, waitIdle)(JNIEnv *, jobject, jint timeoutMs) { return gStudio.waitIdle(timeoutMs) ? JNI_TRUE : JNI_FALSE; }
 JNI(jintArray, outputInfo)(JNIEnv *env, jobject) {
-    int32_t v[5];
+    int32_t v[6];
     gOutput.info(v);
-    jintArray a = env->NewIntArray(5);
-    env->SetIntArrayRegion(a, 0, 5, v);
+    jintArray a = env->NewIntArray(6);
+    env->SetIntArrayRegion(a, 0, 6, v);
     return a;
 }
 // [pistas máx., bandas máx., medidores, datos de análisis, versiones, columnas y filas del
@@ -159,9 +159,16 @@ JNI(jboolean, exportMix)(JNIEnv *env, jobject, jint fd, jstring name) {
 JNI(void, cancelExport)(JNIEnv *, jobject) { gStudio.cancelExport(); }
 
 // ---------- Transporte
-JNI(void, play)(JNIEnv *, jobject) { gStudio.play(); }
+// Reproducir despierta la salida de audio si estaba dormida.
+JNI(void, play)(JNIEnv *, jobject) {
+    gOutput.start();
+    gStudio.play();
+}
 JNI(void, pause)(JNIEnv *, jobject) { gStudio.pause(); }
-JNI(void, playPause)(JNIEnv *, jobject) { gStudio.playPause(); }
+JNI(void, playPause)(JNIEnv *, jobject) {
+    if (!gStudio.isPlaying()) gOutput.start();
+    gStudio.playPause();
+}
 JNI(void, stopTransport)(JNIEnv *, jobject) { gStudio.stop(); }
 JNI(void, seek)(JNIEnv *, jobject, jdouble seconds) { gStudio.seek(seconds); }
 JNI(jboolean, isPlaying)(JNIEnv *, jobject) { return gStudio.isPlaying() ? JNI_TRUE : JNI_FALSE; }

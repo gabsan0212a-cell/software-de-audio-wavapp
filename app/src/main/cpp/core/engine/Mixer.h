@@ -89,6 +89,8 @@ public:
     void stop();
     void seek(int64_t frame);
     bool isPlaying() const { return mPlaying.load(); }
+    // Está sonando algo (reproduciendo o terminando la rampa de pausa).
+    bool isRolling() const { return mRolling.load(std::memory_order_relaxed); }
     int64_t position() const;
     int64_t length() const { return mLength.load(); }
     void readMeters(float *out);  // picos desde la lectura anterior

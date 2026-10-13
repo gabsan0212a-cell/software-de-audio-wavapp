@@ -38,7 +38,7 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - name: Compilar (release: optimizado con R8, solo ARM)
+      - name: Compilar el APK optimizado (release con R8, solo ARM)
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease

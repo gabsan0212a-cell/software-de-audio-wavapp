@@ -59,6 +59,9 @@ fun etiquetaHz(f: Float): String {
     return t + "k"
 }
 
+/** Frecuencia con unidad: 120 Hz, 3 kHz, 12.5 kHz. */
+fun textoHz(f: Float): String = if (f < 1000f) "${f.roundToInt()} Hz" else etiquetaHz(f).dropLast(1) + " kHz"
+
 // Escalas de los deslizadores (0..1000), iguales a las del prototipo.
 private fun fDesdePos(v: Float) = 20f * 1000f.pow(v / 1000f)
 private fun posDesdeF(f: Float) = (ln(f / 20f) / ln(1000f)) * 1000f
@@ -169,7 +172,7 @@ private fun ControlesBanda(p: Pista, b: Banda) {
             Filtros.nombres.subList(3, 6), if (b.tipo >= 3) b.tipo - 3 else -1, { Mesa.cambiarBanda(p, b, tipo = it + 3) },
             Modifier.fillMaxWidth(),
         )
-        FilaAjuste("Frecuencia", etiquetaHz(b.f) + " Hz") {
+        FilaAjuste("Frecuencia", textoHz(b.f)) {
             Deslizador(
                 posDesdeF(b.f), 0f, 1000f, { Mesa.cambiarBanda(p, b, f = fDesdePos(it)) }, it,
                 alReiniciar = { Mesa.cambiarBanda(p, b, f = 1000f) }, descripcion = "Frecuencia banda",

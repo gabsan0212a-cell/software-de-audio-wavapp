@@ -2,6 +2,7 @@ package com.wavapp.mezcla.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -49,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -280,10 +282,13 @@ fun EncabezadoFlotante(lista: LazyListState, titulo: String, acciones: @Composab
     val tituloFuera by remember {
         derivedStateOf { lista.firstVisibleItemIndex > 1 || lista.firstVisibleItemScrollOffset > umbral }
     }
+    val fondo by animateFloatAsState(if (desplazada || tituloFuera) 1f else 0f, tween(140), label = "fondoBarra")
+    val barra = p.barra
     Column(Modifier.fillMaxWidth()) {
-        AnimatedVisibility(desplazada || tituloFuera, enter = fadeIn(tween(120)), exit = fadeOut(tween(120))) {
-            Box(Modifier.fillMaxWidth().background(p.barra).windowInsetsTopHeight(WindowInsets.statusBars))
-        }
+        Spacer(
+            Modifier.fillMaxWidth().windowInsetsTopHeight(WindowInsets.statusBars)
+                .drawBehind { drawRect(barra, alpha = fondo) },
+        )
         Box(Modifier.fillMaxWidth().height(44.dp)) {
             TituloChico(tituloFuera, titulo, Modifier.matchParentSize())
             Row(

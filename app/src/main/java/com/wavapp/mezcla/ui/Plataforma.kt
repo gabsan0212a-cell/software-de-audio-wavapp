@@ -32,7 +32,7 @@ internal fun PantallaEncendida(encendida: Boolean) {
     }
 }
 
-/** Íconos claros en la barra de estado mientras se ve algo oscuro (el reproductor). */
+/** Íconos claros en las barras del sistema mientras se ve algo oscuro (el reproductor). */
 @Composable
 internal fun BarraDeEstadoClara(activa: Boolean, temaOscuro: Boolean) {
     val vista = LocalView.current
@@ -45,11 +45,12 @@ internal fun BarraDeEstadoClara(activa: Boolean, temaOscuro: Boolean) {
 @Suppress("DEPRECATION")
 private fun iconosOscuros(vista: View, oscuros: Boolean) {
     if (Build.VERSION.SDK_INT >= 30) {
-        val bandera = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-        vista.windowInsetsController?.setSystemBarsAppearance(if (oscuros) bandera else 0, bandera)
+        val banderas = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        vista.windowInsetsController?.setSystemBarsAppearance(if (oscuros) banderas else 0, banderas)
     } else {
-        val bandera = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-        vista.systemUiVisibility = if (oscuros) vista.systemUiVisibility or bandera else vista.systemUiVisibility and bandera.inv()
+        val banderas = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        vista.systemUiVisibility = if (oscuros) vista.systemUiVisibility or banderas else vista.systemUiVisibility and banderas.inv()
     }
 }
 

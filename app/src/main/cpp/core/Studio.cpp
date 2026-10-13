@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <random>
@@ -137,6 +138,8 @@ void Studio::open(const std::string &filesDir, const std::string &cacheDir) {
         mUndo.clear();
         mRedo.clear();
         mGesture = Gesture();
+        mAutoGesture = AutoGesture();
+        mTouch = AutoTouch();
         mFilesDir = filesDir;
         mAudioDir = filesDir + "/audio";
         mCacheDir = cacheDir.empty() ? filesDir : cacheDir;
@@ -232,6 +235,8 @@ void Studio::clearProject() {
         mUndo.clear();
         mRedo.clear();
         mGesture = Gesture();
+        mAutoGesture = AutoGesture();
+        mTouch = AutoTouch();
     }
     {
         std::lock_guard<std::mutex> lk(mSgMutex);
@@ -281,6 +286,7 @@ bool Studio::trackParams(int id, float *out) const {
     out[2] = t->mute ? 1.0f : 0.0f;
     out[3] = t->solo ? 1.0f : 0.0f;
     out[4] = t->phase ? 1.0f : 0.0f;
+    out[5] = static_cast<float>(t->autoMode);
     return true;
 }
 
@@ -417,6 +423,7 @@ void Studio::applyTrackLocked(TrackModel &t) {
     mMixer.setTrackSolo(t.slot, t.solo);
     mMixer.setTrackInvert(t.slot, t.phase);
     applyEqLocked(t);
+    for (int k = 0; k < autom::kParamCount; ++k) applyAutoLocked(t, k);
 }
 
 TrackModel *Studio::eqTargetLocked(int id) { return id == kInputId ? &mProject.input : findLocked(id); }
@@ -477,6 +484,12 @@ std::string Studio::addTrackLocked(TrackModel t, std::unique_ptr<MappedAudio> au
     t.slot = slot;
     t.volDb = std::clamp(roundTo(t.volDb, 0.5f), kVolMin, kVolMax);
     t.pan = std::clamp(t.pan, -100, 100);
+    if (t.autoMode < kAutoOff || t.autoMode > kAutoWrite) t.autoMode = kAutoRead;
+    for (int p = 0; p < autom::kParamCount; ++p) {
+        std::vector<autom::Point> pts = t.autoPts[p].get();
+        autom::normalize(p, pts);
+        t.autoPts[p] = std::move(pts);
+    }
     int k = 0;
     for (EqBandModel &b : t.bands) b.slot = k++;
     applyTrackLocked(t);
@@ -489,6 +502,7 @@ std::string Studio::addTrackLocked(TrackModel t, std::unique_ptr<MappedAudio> au
     t.hasRegions = true;
     bump(verParams(slot));
     bump(verEq(slot));
+    bump(verAuto(slot));
     mProject.nextId = std::max(mProject.nextId, t.id + 1);
     mProject.tracks.push_back(std::move(t));
     bump(kVerTracks);
@@ -501,9 +515,13 @@ void Studio::removeAllLocked(bool deleteFiles) {
         bump(verParams(t.slot));
         bump(verEq(t.slot));
         bump(verRegions(t.slot));
+        bump(verAuto(t.slot));
         if (deleteFiles) std::remove((mAudioDir + "/" + t.file).c_str());
     }
     mProject.tracks.clear();
+    mGesture.active = false;
+    mAutoGesture.active = false;
+    mTouch = AutoTouch();
     mMixer.setAnalysisSource(-1);
     bump(kVerTracks);
 }
@@ -779,11 +797,14 @@ bool Studio::removeTrack(int id) {
         file = mAudioDir + "/" + it->file;
         mProject.tracks.erase(it);
         if (mGesture.active && mGesture.id == id) mGesture.active = false;
+        if (mAutoGesture.active && mAutoGesture.id == id) mAutoGesture.active = false;
+        if (mTouch.active && mTouch.id == id) mTouch = AutoTouch();
         if (mProject.tracks.empty()) mMixer.stop();
         bump(kVerTracks);
         bump(verParams(slot));
         bump(verEq(slot));
         bump(verRegions(slot));
+        bump(verAuto(slot));
     }
     std::remove(file.c_str());
     {
@@ -799,19 +820,34 @@ void Studio::setVolume(int id, float db) {
     std::lock_guard<std::mutex> lk(mModel);
     TrackModel *t = findLocked(id);
     if (!t) return;
-    t->volDb = std::clamp(roundTo(db, 0.5f), kVolMin, kVolMax);
-    mMixer.setTrackGain(t->slot, dbToGain(t->volDb, kVolMin + 0.1f));
-    bump(verParams(t->slot));
-    markDirty();
+    const float before = staticValueLocked(*t, autom::kVolume);
+    setStaticLocked(*t, autom::kVolume, db);
+    // Lo que se graba va con más detalle que el valor fijo (0.1 dB en vez de 0.5).
+    touchValueLocked(*t, autom::kVolume, before, autom::clampValue(autom::kVolume, db));
 }
 
 void Studio::setPan(int id, float pan) {
     std::lock_guard<std::mutex> lk(mModel);
     TrackModel *t = findLocked(id);
     if (!t) return;
-    t->pan = static_cast<int>(std::lround(std::clamp(pan, -100.0f, 100.0f)));
-    mMixer.setTrackPan(t->slot, static_cast<float>(t->pan) / 100.0f);
-    bump(verParams(t->slot));
+    const float before = staticValueLocked(*t, autom::kPan);
+    setStaticLocked(*t, autom::kPan, pan);
+    touchValueLocked(*t, autom::kPan, before, static_cast<float>(t->pan));
+}
+
+float Studio::staticValueLocked(const TrackModel &t, int param) const {
+    return param == autom::kPan ? static_cast<float>(t.pan) : t.volDb;
+}
+
+void Studio::setStaticLocked(TrackModel &t, int param, float value) {
+    if (param == autom::kPan) {
+        t.pan = static_cast<int>(std::lround(std::clamp(std::isfinite(value) ? value : 0.0f, -100.0f, 100.0f)));
+        mMixer.setTrackPan(t.slot, static_cast<float>(t.pan) / 100.0f);
+    } else {
+        t.volDb = std::clamp(roundTo(std::isfinite(value) ? value : 0.0f, 0.5f), kVolMin, kVolMax);
+        mMixer.setTrackGain(t.slot, dbToGain(t.volDb, kVolMin + 0.1f));
+    }
+    bump(verParams(t.slot));
     markDirty();
 }
 
@@ -1343,14 +1379,26 @@ std::vector<float> Studio::regionWave(int id, int index, int64_t from, int64_t t
 
 Studio::Snapshot Studio::snapshotLocked() const {
     Snapshot s;
-    for (const TrackModel &t : mProject.tracks) s.emplace_back(t.id, t.regions);
+    for (const TrackModel &t : mProject.tracks) {
+        TrackSnap ts;
+        ts.id = t.id;
+        ts.regions = t.regions;
+        for (int k = 0; k < autom::kParamCount; ++k) ts.autos[k] = t.autoPts[k];
+        s.push_back(std::move(ts));
+    }
     return s;
 }
 
 void Studio::restoreLocked(const Snapshot &s) {
-    for (const auto &kv : s) {
-        TrackModel *t = findLocked(kv.first);
-        if (t && t->regions != kv.second) applyRegionsLocked(*t, kv.second);
+    for (const TrackSnap &ts : s) {
+        TrackModel *t = findLocked(ts.id);
+        if (!t) continue;
+        if (t->regions != ts.regions) applyRegionsLocked(*t, ts.regions);
+        for (int k = 0; k < autom::kParamCount; ++k) {
+            if (t->autoPts[k] == ts.autos[k]) continue;
+            t->autoPts[k] = ts.autos[k];
+            applyAutoLocked(*t, k);
+        }
     }
 }
 
@@ -1523,7 +1571,7 @@ void Studio::restoreRegions(int id) {
 
 bool Studio::undo() {
     std::lock_guard<std::mutex> lk(mModel);
-    if (mUndo.empty() || mGesture.active) return false;
+    if (mUndo.empty() || mGesture.active || mAutoGesture.active || mTouch.active) return false;
     mRedo.push_back(snapshotLocked());
     restoreLocked(mUndo.back());
     mUndo.pop_back();
@@ -1535,7 +1583,7 @@ bool Studio::undo() {
 
 bool Studio::redo() {
     std::lock_guard<std::mutex> lk(mModel);
-    if (mRedo.empty() || mGesture.active) return false;
+    if (mRedo.empty() || mGesture.active || mAutoGesture.active || mTouch.active) return false;
     mUndo.push_back(snapshotLocked());
     restoreLocked(mRedo.back());
     mRedo.pop_back();
@@ -1543,4 +1591,320 @@ bool Studio::redo() {
     bump(kVerHistory);
     markDirty();
     return true;
+}
+
+// ---------------------------------------------------------------- automatización
+
+namespace {
+// Al simplificar lo grabado (escala del carril): el cursor avanza a saltos (lo que pide la salida
+// de audio cada vez), así que lo grabado trae un poco de temblor que no vale la pena guardar.
+constexpr float kAutoTolerance = 0.008f;
+constexpr int64_t kCursorNear = Studio::kRate / 100;  // 10 ms: "el punto del cursor"
+constexpr int64_t kStillMs = 250;                     // el dedo quieto este tiempo: el valor se quedó
+}  // namespace
+
+bool Studio::automatedLocked(const TrackModel &t, int param) const {
+    return t.autoMode != kAutoOff && !t.autoPts[param].empty();
+}
+
+void Studio::applyAutoLocked(TrackModel &t, int param) {
+    std::vector<autom::PosPoint> pts;
+    if (t.autoMode != kAutoOff) pts = autom::toPosPoints(param, t.autoPts[param].get());
+    mMixer.setAutomation(t.slot, param, std::move(pts));
+    bump(verAuto(t.slot));
+}
+
+void Studio::changeAutoLocked(TrackModel &t, int param, std::vector<autom::Point> pts, bool undo) {
+    autom::normalize(param, pts);
+    if (pts == t.autoPts[param].get()) return;
+    if (undo) pushUndoLocked(snapshotLocked());
+    mLastKey.clear();
+    t.autoPts[param] = std::move(pts);
+    applyAutoLocked(t, param);
+    markDirty();
+}
+
+float Studio::lanePosToValue(int param, float pos) const {
+    float v = autom::clampValue(param, autom::fromPos(param, pos));
+    // Un poco de imán en el centro del paneo y en 0 dB: es difícil atinarles con el dedo.
+    if (param == autom::kPan && std::fabs(v) <= 2.0f) v = 0.0f;
+    if (param == autom::kVolume && std::fabs(v) <= 0.3f) v = 0.0f;
+    return v;
+}
+
+void Studio::setAutoMode(int id, int mode) {
+    std::lock_guard<std::mutex> lk(mModel);
+    TrackModel *t = findLocked(id);
+    if (!t || mode < kAutoOff || mode > kAutoWrite || t->autoMode == mode) return;
+    if (mTouch.active && mTouch.id == id) endTouchLocked();
+    t->autoMode = mode;
+    for (int k = 0; k < autom::kParamCount; ++k) applyAutoLocked(*t, k);
+    bump(verParams(t->slot));
+    markDirty();
+}
+
+std::vector<double> Studio::autoLane(int id, int param) const {
+    std::lock_guard<std::mutex> lk(mModel);
+    const TrackModel *t = findLocked(id);
+    if (!t || param < 0 || param >= autom::kParamCount) return {};
+    const std::vector<autom::Point> &pts = t->autoPts[param].get();
+    const float fixed = staticValueLocked(*t, param);
+    std::vector<double> v = {static_cast<double>(pts.size()), autom::toPos(param, fixed), fixed,
+                             param == autom::kVolume ? autom::toPos(param, 0.0f) : 0.5};
+    v.reserve(4 + 3 * pts.size());
+    for (const autom::Point &p : pts)
+        v.insert(v.end(), {static_cast<double>(p.frame), autom::toPos(param, p.value), p.value});
+    return v;
+}
+
+void Studio::automationNow(float *out) {
+    std::lock_guard<std::mutex> lk(mModel);
+    advanceTouchLocked(false);
+    std::fill(out, out + kAutoNowCount * kMaxTracks, 0.0f);
+    const int64_t pos = mMixer.position();
+    for (const TrackModel &t : mProject.tracks) {
+        if (t.slot < 0 || t.slot >= kMaxTracks) continue;
+        float *o = out + kAutoNowCount * t.slot;
+        int flags = 0;
+        for (int k = 0; k < autom::kParamCount; ++k) {
+            const bool touching = mTouch.active && mTouch.id == t.id && mTouch.param == k;
+            float v = staticValueLocked(t, k);
+            if (automatedLocked(t, k) && !touching) {
+                flags |= 1 << k;
+                v = autom::valueAt(k, t.autoPts[k].get(), pos, v);
+            }
+            if (touching && mTouch.writing && !mTouch.frozen) flags |= 4 << k;
+            o[1 + k] = v;
+        }
+        o[0] = static_cast<float>(flags);
+    }
+}
+
+int Studio::autoAdd(int id, int param, int64_t frame, float pos) {
+    std::lock_guard<std::mutex> lk(mModel);
+    TrackModel *t = findLocked(id);
+    if (!t || param < 0 || param >= autom::kParamCount || mAutoGesture.active) return -1;
+    if (mTouch.active && mTouch.id == id && mTouch.param == param) return -1;
+    std::vector<autom::Point> pts = t->autoPts[param].get();
+    const autom::Point p{std::max<int64_t>(0, frame), lanePosToValue(param, pos)};
+    auto it = std::lower_bound(pts.begin(), pts.end(), p.frame,
+                               [](const autom::Point &a, int64_t f) { return a.frame < f; });
+    if (it != pts.end() && it->frame == p.frame) {
+        *it = p;
+    } else {
+        if (static_cast<int>(pts.size()) >= autom::kMaxPoints) return -1;
+        it = pts.insert(it, p);
+    }
+    const int index = static_cast<int>(it - pts.begin());
+    if (t->autoMode == kAutoOff) {  // dibujar algo es para oírlo
+        t->autoMode = kAutoRead;
+        applyAutoLocked(*t, 1 - param);
+        bump(verParams(t->slot));
+    }
+    changeAutoLocked(*t, param, std::move(pts), true);
+    applyAutoLocked(*t, param);
+    return index;
+}
+
+bool Studio::autoRemove(int id, int param, int index) {
+    std::lock_guard<std::mutex> lk(mModel);
+    TrackModel *t = findLocked(id);
+    if (!t || param < 0 || param >= autom::kParamCount || mAutoGesture.active) return false;
+    if (mTouch.active && mTouch.id == id && mTouch.param == param) return false;
+    std::vector<autom::Point> pts = t->autoPts[param].get();
+    if (index < 0 || index >= static_cast<int>(pts.size())) return false;
+    pts.erase(pts.begin() + index);
+    changeAutoLocked(*t, param, std::move(pts), true);
+    return true;
+}
+
+void Studio::autoClear(int id, int param) {
+    std::lock_guard<std::mutex> lk(mModel);
+    TrackModel *t = findLocked(id);
+    if (!t || param < 0 || param >= autom::kParamCount || mAutoGesture.active) return;
+    if (mTouch.active && mTouch.id == id && mTouch.param == param) return;
+    changeAutoLocked(*t, param, {}, true);
+}
+
+bool Studio::autoBegin(int id, int param, int index) {
+    std::lock_guard<std::mutex> lk(mModel);
+    const TrackModel *t = findLocked(id);
+    if (!t || param < 0 || param >= autom::kParamCount || index < 0 ||
+        index >= static_cast<int>(t->autoPts[param].size()))
+        return false;
+    if (mTouch.active && mTouch.id == id && mTouch.param == param) return false;
+    mAutoGesture.active = true;
+    mAutoGesture.id = id;
+    mAutoGesture.param = param;
+    mAutoGesture.index = index;
+    mAutoGesture.base = t->autoPts[param].get()[index];
+    mAutoGesture.before = snapshotLocked();
+    mLastKey.clear();
+    return true;
+}
+
+void Studio::autoDrag(int64_t deltaFrames, float deltaPos) {
+    std::lock_guard<std::mutex> lk(mModel);
+    if (!mAutoGesture.active) return;
+    TrackModel *t = findLocked(mAutoGesture.id);
+    const int k = mAutoGesture.param, i = mAutoGesture.index;
+    if (!t || i >= static_cast<int>(t->autoPts[k].size())) return;
+    std::vector<autom::Point> pts = t->autoPts[k].get();
+    // Entre sus vecinos: el orden no cambia y el índice sigue siendo el mismo.
+    const int64_t lo = i > 0 ? pts[i - 1].frame + 1 : 0;
+    const int64_t hi = i + 1 < static_cast<int>(pts.size()) ? pts[i + 1].frame - 1 : INT64_MAX;
+    const autom::Point &b = mAutoGesture.base;
+    pts[i].frame = std::clamp(b.frame + deltaFrames, lo, std::max(lo, hi));
+    pts[i].value = lanePosToValue(k, autom::toPos(k, b.value) + (std::isfinite(deltaPos) ? deltaPos : 0.0f));
+    changeAutoLocked(*t, k, std::move(pts), false);
+}
+
+void Studio::autoEnd() {
+    std::lock_guard<std::mutex> lk(mModel);
+    if (!mAutoGesture.active) return;
+    mAutoGesture.active = false;
+    if (mAutoGesture.before != snapshotLocked()) pushUndoLocked(std::move(mAutoGesture.before));
+    mAutoGesture.before.clear();
+}
+
+void Studio::autoTouch(int id, int param, bool down) {
+    std::string msg;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        if (param < 0 || param >= autom::kParamCount) return;
+        if (!down) {
+            if (mTouch.active && mTouch.id == id && mTouch.param == param) msg = endTouchLocked();
+        } else {
+            if (mTouch.active) endTouchLocked();
+            TrackModel *t = findLocked(id);
+            if (!t) return;
+            // El deslizador arranca donde va la automatización: tocarlo no hace saltar el sonido.
+            if (automatedLocked(*t, param))
+                setStaticLocked(*t, param, autom::valueAt(param, t->autoPts[param].get(), mMixer.position(), 0.0f));
+            beginTouchLocked(*t, param, staticValueLocked(*t, param));
+        }
+    }
+    if (!msg.empty()) setMessage(msg);
+}
+
+void Studio::beginTouchLocked(TrackModel &t, int param, float base) {
+    mTouch = AutoTouch();
+    mTouch.active = true;
+    mTouch.id = t.id;
+    mTouch.param = param;
+    mTouch.base = mTouch.value = base;
+    mTouch.old = t.autoPts[param];
+    mTouch.before = snapshotLocked();
+    // Mientras el dedo está encima suena lo que marca (no la automatización).
+    mMixer.setAutomationHold(t.slot, param, true);
+    advanceTouchLocked(false);
+}
+
+void Studio::touchValueLocked(TrackModel &t, int param, float before, float value) {
+    if (mTouch.active && mTouch.id == t.id && mTouch.param == param) {
+        mTouch.value = value;
+        mTouch.changed = true;
+        advanceTouchLocked(true);
+        return;
+    }
+    // Sin el dedo encima (un toque suelto en el riel, el lector de pantalla): como tocar, mover y
+    // soltar. Solo importa al grabar movimientos.
+    if (t.autoMode != kAutoWrite || value == before) return;
+    if (mTouch.active) endTouchLocked();
+    beginTouchLocked(t, param, before);
+    mTouch.value = value;
+    mTouch.changed = true;
+    advanceTouchLocked(true);
+    endTouchLocked();
+}
+
+void Studio::advanceTouchLocked(bool moved) {
+    if (!mTouch.active || mTouch.frozen) return;
+    const TrackModel *t = findLocked(mTouch.id);
+    if (!t || t->autoMode != kAutoWrite) return;
+    const bool playing = mMixer.isPlaying();
+    const int64_t pos = mMixer.position();
+    std::vector<autom::Point> &w = mTouch.written;
+    if (!mTouch.writing) {
+        if (!playing) return;
+        // Empieza la toma desde lo que sonaba ahí (así lo de antes no cambia).
+        mTouch.writing = true;
+        w = {{pos, autom::valueAt(mTouch.param, mTouch.old.get(), pos, mTouch.base)}};
+        mTouch.last = pos;
+        mTouch.changedMs = nowMs();
+        moved = true;
+    } else if (!playing || pos < mTouch.last) {  // se detuvo, llegó al final o saltó atrás
+        mTouch.frozen = true;
+        return;
+    }
+    mTouch.last = std::max(mTouch.last, pos);
+    if (!moved || mTouch.value == w.back().value) return;
+    // El cursor avanza por pedazos (lo que pide la salida de audio cada vez): un cambio va en la
+    // posición donde se vio; varios en el mismo pedazo, gana el último.
+    const int64_t now = nowMs();
+    if (pos > w.back().frame) {
+        // El dedo estuvo quieto un rato: el valor se quedó hasta ahora (no una rampa larga). Se
+        // mide en tiempo, no en cuadros: hay salidas que avanzan a saltos grandes.
+        if (now - mTouch.changedMs >= kStillMs && pos - 1 > w.back().frame) w.push_back({pos - 1, w.back().value});
+        w.push_back({pos, mTouch.value});
+    } else if (w.size() == 1) {
+        w.push_back({pos + 1, mTouch.value});
+    } else {
+        w.back().value = mTouch.value;
+    }
+    mTouch.changedMs = now;
+}
+
+std::string Studio::endTouchLocked() {
+    advanceTouchLocked(false);
+    AutoTouch tc = std::move(mTouch);
+    mTouch = AutoTouch();
+    TrackModel *t = findLocked(tc.id);
+    if (!tc.active || !t) return "";
+    const int k = tc.param;
+    mMixer.setAutomationHold(t->slot, k, false);
+    const char *what = k == autom::kVolume ? "el volumen" : "el paneo";
+    if (t->autoMode != kAutoWrite) {
+        if (tc.changed && automatedLocked(*t, k))
+            return t->name + ": " + what + " sigue su automatización (para cambiarla, activa Grabar en A)";
+        return "";
+    }
+    const std::vector<autom::Point> &old = tc.old.get();
+    std::vector<autom::Point> lane;
+    if (tc.writing) {
+        if (tc.last > tc.written.back().frame) tc.written.push_back({tc.last, tc.written.back().value});
+        std::vector<autom::Point> w = autom::simplify(k, tc.written, kAutoTolerance);
+        const int64_t from = w.front().frame, to = w.back().frame;
+        for (const autom::Point &p : old)
+            if (p.frame < from) lane.push_back(p);
+        lane.insert(lane.end(), w.begin(), w.end());
+        // Lo que había después se respeta: el valor regresa a él poco a poco. Si el carril estaba
+        // vacío, lo último se queda.
+        if (!old.empty()) {
+            const int64_t back = to + kAutoGlide;
+            lane.push_back({back, autom::valueAt(k, old, back, tc.base)});
+            for (const autom::Point &p : old)
+                if (p.frame > back) lane.push_back(p);
+        }
+        for (float tol = kAutoTolerance * 2; static_cast<int>(lane.size()) > autom::kMaxPoints; tol *= 2)
+            lane = autom::simplify(k, lane, tol);
+    } else if (tc.changed && !old.empty()) {
+        // Detenido: cambia el punto del cursor (o pone uno ahí).
+        const int64_t at = mMixer.position();
+        lane = old;
+        auto near = std::find_if(lane.begin(), lane.end(),
+                                 [at](const autom::Point &p) { return std::llabs(p.frame - at) <= kCursorNear; });
+        if (near != lane.end()) near->value = tc.value;
+        else lane.push_back({at, tc.value});
+    } else {
+        return "";
+    }
+    autom::normalize(k, lane);
+    if (lane == old) return "";
+    pushUndoLocked(std::move(tc.before));
+    mLastKey.clear();
+    t->autoPts[k] = std::move(lane);
+    applyAutoLocked(*t, k);
+    markDirty();
+    return "";
 }

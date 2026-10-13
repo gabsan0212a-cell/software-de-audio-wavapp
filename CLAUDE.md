@@ -26,6 +26,9 @@
   micrófono y la lista de entradas/salidas de audio).
 - Grabación: `core/engine/LiveInput` (entrada → ganancia → se graba → EQ → escucha/análisis) y
   `android/AudioInput` (Oboe). El EQ de la entrada usa las funciones del EQ con `Studio::kInputId`.
+- Automatización: `core/engine/Automation` (curvas) + `Studio` (puntos, grabar movimientos con
+  `autoTouch`, deshacer) + `Mixer` (la sigue al sonar y al exportar). La pantalla solo dibuja lo
+  que da `autoLane` (posiciones 0..1 ya calculadas) y lee `automationNow` en cada cuadro.
 
 ## Cómo se trabaja
 - El dueño no tiene computadora: usa Android + GitHub. Todo se compila en GitHub Actions; el

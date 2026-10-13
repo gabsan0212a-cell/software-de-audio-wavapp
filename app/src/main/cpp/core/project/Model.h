@@ -32,6 +32,9 @@ struct TrackModel {
     std::vector<EqBandModel> bands;  // en el orden en que se agregaron
     std::vector<Region> regions;
     bool hasRegions = false;       // al leer la sesión: traía pedazos (si no, el archivo completo)
+    // Automatización: 0 apagada (suenan los valores fijos), 1 leer, 2 grabar movimientos.
+    int autoMode = 1;
+    autom::Lane autoPts[autom::kParamCount];  // volumen (dB) y paneo, por cuadro
     std::vector<float> peaks;      // forma de onda: [bloque][canal][min, max]
 };
 

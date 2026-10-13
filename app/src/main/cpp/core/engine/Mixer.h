@@ -9,6 +9,7 @@
 
 #include "dsp/Equalizer.h"
 #include "dsp/Limiter.h"
+#include "engine/Automation.h"
 #include "io/MappedAudio.h"
 
 class LiveInput;
@@ -38,7 +39,8 @@ constexpr int64_t kEdgeFade = 96;  // 2 ms
 // Mezcla las pistas como el prototipo web ("Mesa de Audio"):
 // pista: polaridad → EQ → auto-ganancia → volumen → paneo (StereoPannerNode) → mute/solo → suma
 // master: volumen → limitador → recorte suave → salida.
-// Los cambios de parámetros se suavizan igual que setTargetAtTime en Web Audio.
+// Los cambios de parámetros se suavizan igual que setTargetAtTime en Web Audio. El volumen y el
+// paneo pueden seguir una automatización (puntos en la línea de tiempo).
 class Mixer {
 public:
     explicit Mixer(int sampleRate);
@@ -62,6 +64,12 @@ public:
     void setTrackMute(int slot, bool on);
     void setTrackSolo(int slot, bool on);
     void setTrackInvert(int slot, bool on);
+    // Automatización (puntos en la escala del carril, ver Automation.h; vacío = no hay): mientras
+    // tiene puntos manda sobre el volumen o el paneo fijo, salvo en espera (la persona mueve el
+    // deslizador y suena lo que marca su dedo).
+    void setAutomation(int slot, int param, std::vector<autom::PosPoint> points);
+    void setAutomationHold(int slot, int param, bool hold);
+    std::vector<autom::PosPoint> automation(int slot, int param) const;
     // EQ de la pista (sus métodos de interfaz son seguros desde este hilo).
     Equalizer *trackEq(int slot) { return slot >= 0 && slot < kMaxTracks ? &mSlots[slot].eq : nullptr; }
     const Equalizer *trackEq(int slot) const { return slot >= 0 && slot < kMaxTracks ? &mSlots[slot].eq : nullptr; }
@@ -126,12 +134,18 @@ private:
         std::vector<Piece> pieces;
         int64_t end = 0;
     };
+    struct AutoSet {
+        std::vector<autom::PosPoint> lane[autom::kParamCount];
+    };
 
     struct Slot {
         std::atomic<const MappedAudio *> audio{nullptr};
         std::atomic<const PieceSet *> pieces{nullptr};
         std::unique_ptr<PieceSet> ownedPieces;  // solo hilo de la interfaz (con mMutex)
         std::unique_ptr<MappedAudio> owned;  // solo hilo de la interfaz (con mMutex)
+        std::atomic<const AutoSet *> autos{nullptr};
+        std::unique_ptr<AutoSet> ownedAutos;  // solo hilo de la interfaz (con mMutex)
+        std::atomic<bool> hold[autom::kParamCount] = {};
         std::atomic<uint32_t> gen{0};
         std::atomic<float> gain{1.0f}, pan{0.0f};
         std::atomic<bool> mute{false}, solo{false}, invert{false}, removing{false};
@@ -146,6 +160,7 @@ private:
     void readInput(const MappedAudio &a, const PieceSet &ps, int n);
     static std::unique_ptr<PieceSet> makePieces(std::vector<Region> regions, int64_t fileFrames);
     void publishPieces(Slot &s, std::unique_ptr<PieceSet> ps);  // con mMutex
+    void publishAutos(Slot &s, std::unique_ptr<AutoSet> as);    // con mMutex
     void applyNotch(int n);
     void updateLength();  // con mMutex
     bool waitForAudioThread();
@@ -153,6 +168,7 @@ private:
     const int mSampleRate;
     float mCoefGain, mCoefPan, mCoefOn, mCoefInv, mCoefMaster;
     float mTauPanFrames;
+    int64_t mLookAhead;  // cuadros: la automatización se lee adelantada lo que tarda el suavizado
 
     Slot mSlots[kMaxTracks];
     mutable std::mutex mMutex;

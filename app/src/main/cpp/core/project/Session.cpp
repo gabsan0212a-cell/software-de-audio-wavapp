@@ -44,6 +44,40 @@ void eqFromJson(const Json &eq, TrackModel &t) {
     }
 }
 
+const char *const kAutoKeys[autom::kParamCount] = {"vol", "pan"};
+
+// {"modo": 1, "vol": [[cuadro, dB], ...], "pan": [[cuadro, paneo], ...]}
+Json autoToJson(const TrackModel &t) {
+    Json a = Json::object();
+    a.set("modo", t.autoMode);
+    for (int k = 0; k < autom::kParamCount; ++k) {
+        Json pts = Json::array();
+        for (const autom::Point &p : t.autoPts[k].get()) {
+            Json jp = Json::array();
+            jp.push(p.frame).push(step(p.value, k == autom::kPan ? 1.0 : 0.1));
+            pts.push(std::move(jp));
+        }
+        a.set(kAutoKeys[k], std::move(pts));
+    }
+    return a;
+}
+
+void autoFromJson(const Json &a, TrackModel &t) {
+    const int mode = static_cast<int>(a["modo"].asInt(1));
+    t.autoMode = mode >= 0 && mode <= 2 ? mode : 1;
+    for (int k = 0; k < autom::kParamCount; ++k) {
+        const Json &pts = a[kAutoKeys[k]];
+        std::vector<autom::Point> v;
+        for (size_t i = 0; i < pts.size() && i < static_cast<size_t>(autom::kMaxPoints); ++i) {
+            const Json &jp = pts[i];
+            if (jp.size() < 2) continue;
+            v.push_back({jp[0].asInt(), static_cast<float>(jp[1].asDouble(0))});
+        }
+        autom::normalize(k, v);
+        t.autoPts[k] = std::move(v);
+    }
+}
+
 }  // namespace
 
 Json sessionToJson(const ProjectModel &p) {
@@ -70,6 +104,7 @@ Json sessionToJson(const ProjectModel &p) {
         jt.set("fase", t.phase);
         jt.set("eq", std::move(eq));
         jt.set("pedazos", std::move(regions));
+        jt.set("auto", autoToJson(t));
         tracks.push(std::move(jt));
     }
     Json master = Json::object();
@@ -133,6 +168,7 @@ bool sessionFromJson(const Json &j, ProjectModel &p) {
                 t.regions.push_back({a[0].asInt(), a[1].asInt(), a[2].asInt(), a[3].asInt(), a[4].asInt()});
             }
         }
+        autoFromJson(o["auto"], t);
         if (t.file.empty()) continue;
         p.nextId = std::max(p.nextId, t.id + 1);
         p.tracks.push_back(std::move(t));

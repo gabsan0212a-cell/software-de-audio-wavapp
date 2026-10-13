@@ -55,6 +55,34 @@ data class Pedazo(
     val fin: Long get() = inicio + largo
 }
 
+/**
+ * Un carril de automatización listo para dibujar (lo calcula el núcleo): las posiciones van de 0
+ * (abajo) a 1 (arriba) y entre dos puntos el valor va en línea recta.
+ */
+class CurvaAuto(
+    val cuadros: LongArray,
+    val pos: FloatArray,
+    val valores: FloatArray,
+    val posFija: Float,   // el valor fijo del deslizador (lo que suena sin puntos)
+    val valorFijo: Float,
+    val guia: Float,      // 0 dB o el centro
+) {
+    val n: Int get() = cuadros.size
+
+    companion object {
+        val VACIA = CurvaAuto(LongArray(0), FloatArray(0), FloatArray(0), 0.5f, 0f, 0.5f)
+
+        fun de(d: DoubleArray): CurvaAuto {
+            if (d.size < 4) return VACIA
+            val n = d[0].toInt().coerceIn(0, (d.size - 4) / 3)
+            return CurvaAuto(
+                LongArray(n) { d[4 + 3 * it].toLong() }, FloatArray(n) { d[5 + 3 * it].toFloat() },
+                FloatArray(n) { d[6 + 3 * it].toFloat() }, d[1].toFloat(), d[2].toFloat(), d[3].toFloat(),
+            )
+        }
+    }
+}
+
 /** Lo que la pantalla muestra de una pista. El dueño de los datos es el núcleo. */
 class Pista(
     val slot: Int,
@@ -75,6 +103,20 @@ class Pista(
     var autoGanancia by mutableStateOf(true)
     var eqVersion by mutableIntStateOf(0)  // cambia con cada ajuste: la curva se vuelve a dibujar
     var pedazos by mutableStateOf(listOf(Pedazo(0, 0, cuadros)))
+    // Automatización: modo, los dos carriles y lo que marcan ahora (cambia en cada cuadro al sonar).
+    var autoModo by mutableIntStateOf(Nucleo.AUTO_LEER)
+    var autoVol by mutableStateOf(CurvaAuto.VACIA)
+    var autoPan by mutableStateOf(CurvaAuto.VACIA)
+    var autoEstado by mutableIntStateOf(0)
+    var volAhora by mutableFloatStateOf(0f)
+    var panAhora by mutableFloatStateOf(0f)
+    fun curva(param: Int): CurvaAuto = if (param == Nucleo.AUTO_PANEO) autoPan else autoVol
+    /** El deslizador sigue la automatización (si no, muestra el valor fijo). */
+    fun sigue(param: Int): Boolean = (autoEstado and (1 shl param)) != 0
+    fun grabando(param: Int): Boolean = (autoEstado and (4 shl param)) != 0
+    val volMostrado: Float get() = if (sigue(Nucleo.AUTO_VOLUMEN)) volAhora else volDb
+    val panMostrado: Int get() = if (sigue(Nucleo.AUTO_PANEO)) Math.round(panAhora) else pan
+    val tieneAuto: Boolean get() = autoVol.n > 0 || autoPan.n > 0
     val eqActivo: Boolean get() = !eqBypass && bandas.any { it.on }
     val editada: Boolean get() = pedazos != listOf(Pedazo(0, 0, cuadros))
     val segundos: Double get() = cuadros / Mesa.RATE
@@ -86,6 +128,7 @@ class Pista(
     internal var vParams = -1
     internal var vEq = -1
     internal var vPedazos = -1
+    internal var vAuto = -1
 }
 
 /** La entrada en vivo (micrófono o interfaz), como la tiene el núcleo. */
@@ -187,7 +230,8 @@ object Mesa {
 
     private val versiones = IntArray(Nucleo.VERSIONES)
     private val vistas = IntArray(Nucleo.VER_FONDO + 1) { -1 }
-    private val bufParams = FloatArray(5)
+    private val bufParams = FloatArray(Nucleo.DATOS_PISTA)
+    private val bufAuto = FloatArray(Nucleo.DATOS_AUTO * Nucleo.MAX_PISTAS)
     private val bufMaster = FloatArray(6)
     private val bufEntrada = FloatArray(Nucleo.DATOS_ENTRADA)
     private val bufMedidores = FloatArray(Nucleo.MEDIDORES)
@@ -233,12 +277,17 @@ object Mesa {
         }
         for (p in pistas) {
             val vp = versiones[Nucleo.verParams(p.slot)]
+            val va = versiones[Nucleo.verAuto(p.slot)]
+            // Los carriles traen el valor fijo: también se leen si cambió el volumen o el paneo.
+            val releerAuto = va != p.vAuto || vp != p.vParams
             if (vp != p.vParams) { p.vParams = vp; leerParams(p) }
             val ve = versiones[Nucleo.verEq(p.slot)]
             if (ve != p.vEq) { p.vEq = ve; leerEq(p) }
             val vr = versiones[Nucleo.verPedazos(p.slot)]
             if (vr != p.vPedazos) { p.vPedazos = vr; leerPedazos(p) }
+            if (releerAuto) { p.vAuto = va; leerAuto(p) }
         }
+        if (pistas.isNotEmpty()) leerAutoAhora()
         reproduciendo = Nucleo.isPlaying()
         posicion = Nucleo.positionSeconds()
         duracion = Nucleo.durationSeconds()
@@ -271,6 +320,24 @@ object Mesa {
         p.mute = bufParams[2] != 0f
         p.solo = bufParams[3] != 0f
         p.fase = bufParams[4] != 0f
+        p.autoModo = bufParams[5].toInt()
+    }
+
+    private fun leerAuto(p: Pista) {
+        p.autoVol = CurvaAuto.de(Nucleo.autoLane(p.id, Nucleo.AUTO_VOLUMEN))
+        p.autoPan = CurvaAuto.de(Nucleo.autoLane(p.id, Nucleo.AUTO_PANEO))
+    }
+
+    /** Lo que marcan ahora los deslizadores con automatización (y lo que se está grabando). */
+    private fun leerAutoAhora() {
+        Nucleo.automationNow(bufAuto)
+        val k = Nucleo.DATOS_AUTO
+        for (p in pistas) {
+            val o = k * p.slot
+            p.autoEstado = bufAuto[o].toInt()
+            p.volAhora = bufAuto[o + 1]
+            p.panAhora = bufAuto[o + 2]
+        }
     }
 
     private fun leerEq(p: Pista) {
@@ -383,6 +450,26 @@ object Mesa {
     fun alternarMute(p: Pista) { Nucleo.setMute(p.id, !p.mute); sincronizar() }
     fun alternarSolo(p: Pista) { Nucleo.setSolo(p.id, !p.solo); sincronizar() }
     fun alternarFase(p: Pista) { Nucleo.setPhase(p.id, !p.fase); sincronizar() }
+
+    /** El dedo está (o ya no) sobre el deslizador de volumen o paneo: así se graban los movimientos. */
+    fun tocarDeslizador(p: Pista, param: Int, abajo: Boolean) { Nucleo.autoTouch(p.id, param, abajo); sincronizar() }
+
+    // ------------------------------------------------------------------ automatización
+
+    fun ponerModoAuto(p: Pista, modo: Int) { Nucleo.setAutoMode(p.id, modo); sincronizar() }
+
+    /** Un punto en [cuadro] a la altura [pos] del carril (0 abajo, 1 arriba). Devuelve su índice o -1. */
+    fun agregarPunto(p: Pista, param: Int, cuadro: Long, pos: Float): Int {
+        val i = Nucleo.autoAdd(p.id, param, cuadro, pos)
+        sincronizar()
+        return i
+    }
+
+    fun quitarPunto(p: Pista, param: Int, indice: Int) { Nucleo.autoRemove(p.id, param, indice); sincronizar() }
+    fun borrarAuto(p: Pista, param: Int) { Nucleo.autoClear(p.id, param); sincronizar() }
+    fun empezarPunto(p: Pista, param: Int, indice: Int): Boolean = Nucleo.autoBegin(p.id, param, indice)
+    fun arrastrarPunto(cuadros: Long, pos: Float) { Nucleo.autoDrag(cuadros, pos); sincronizar() }
+    fun terminarPunto() { Nucleo.autoEnd(); sincronizar() }
 
     /** ¿Suena esta pista con el mute/solo actual? (para atenuar su carril, como el prototipo) */
     fun suena(p: Pista): Boolean = !p.mute && (pistas.none { it.solo } || p.solo)

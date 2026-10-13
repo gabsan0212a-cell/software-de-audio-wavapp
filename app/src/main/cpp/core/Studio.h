@@ -22,7 +22,8 @@
 #include "engine/Mixer.h"
 #include "project/Model.h"
 
-// El corazón de la app. Todo lo técnico vive aquí: el proyecto (pistas, EQ, pedazos, master),
+// El corazón de la app. Todo lo técnico vive aquí: el proyecto (pistas, EQ, pedazos,
+// automatización, master),
 // la mezcla, importar y decodificar, exportar, la sesión, la edición con deshacer/rehacer,
 // los medidores y el análisis. La pantalla (Kotlin + Compose) solo dibuja lo que lee de aquí
 // y manda lo que la persona hace.
@@ -42,19 +43,31 @@ public:
     static constexpr int kMaxHistory = 100;
 
     enum Version { kVerTracks = 0, kVerMaster, kVerHistory, kVerStatus, kVerBackground, kVerFirstSlot };
+    // Por cada espacio del mezclador: parámetros, EQ, pedazos y automatización.
+    static constexpr int kVersPerSlot = 4;
     // Al final: la entrada en vivo (ganancia, escucha y su EQ).
-    static constexpr int kVerInput = kVerFirstSlot + 3 * kMaxTracks;
+    static constexpr int kVerInput = kVerFirstSlot + kVersPerSlot * kMaxTracks;
     static constexpr int kVersionCount = kVerInput + 1;
     // El EQ de la entrada en vivo se maneja con las mismas funciones del EQ, con este id.
     static constexpr int kInputId = 0;
     // inputState(): [abierta, canales, ganancia dB, escucha, volumen de escucha dB,
     // retraso de ida y vuelta (ms), grabando, segundos grabados]
     static constexpr int kInputStateCount = 8;
-    static constexpr int verParams(int slot) { return kVerFirstSlot + 3 * slot; }
-    static constexpr int verEq(int slot) { return kVerFirstSlot + 3 * slot + 1; }
-    static constexpr int verRegions(int slot) { return kVerFirstSlot + 3 * slot + 2; }
+    static constexpr int verParams(int slot) { return kVerFirstSlot + kVersPerSlot * slot; }
+    static constexpr int verEq(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 1; }
+    static constexpr int verRegions(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 2; }
+    static constexpr int verAuto(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 3; }
+    // trackParams(): volumen (dB), paneo, mute, solo, fase, modo de automatización.
+    static constexpr int kTrackParamCount = 6;
 
     enum EditMode { kEditMove = 1, kEditTrimStart, kEditTrimEnd, kEditFadeIn, kEditFadeOut };
+    // Automatización: apagada (suenan los valores fijos), leer, grabar movimientos (mientras
+    // suena, lo que se mueve en el deslizador queda grabado; detenido, cambia el punto del cursor).
+    enum AutoMode { kAutoOff = 0, kAutoRead = 1, kAutoWrite = 2 };
+    // automationNow(): por espacio [estado, volumen dB, paneo]. Estado: 1 = el volumen sigue la
+    // automatización, 2 = el paneo la sigue, 4 = se graba el volumen, 8 = se graba el paneo.
+    static constexpr int kAutoNowCount = 3;
+    static constexpr int64_t kAutoGlide = kRate / 4;  // al soltar, regresa a lo que había en 250 ms
 
     explicit Studio(DecodeFunction decoder = nullptr);
     ~Studio();
@@ -80,7 +93,7 @@ public:
     void versions(int32_t *out) const;  // kVersionCount valores
     // [{"id","slot","nombre","canales","cuadros","info"}, ...] en el orden de la pantalla.
     std::string tracksJson() const;
-    // volumen (dB), paneo, mute, solo, fase. false si la pista no existe.
+    // kTrackParamCount valores. false si la pista no existe.
     bool trackParams(int id, float *out) const;
     // [bypass, auto-ganancia, n, y por banda (en orden): tipo, frecuencia, ganancia, Q, activa].
     std::vector<float> eqState(int id) const;
@@ -189,14 +202,66 @@ public:
     bool undo();
     bool redo();
 
+    // ---------- Automatización de volumen y paneo (param: autom::kVolume o autom::kPan)
+    void setAutoMode(int id, int mode);
+    // Para dibujar el carril: [n, posición del valor fijo, valor fijo, posición guía (0 dB o el
+    // centro), y por punto: cuadro, posición (0 abajo .. 1 arriba), valor].
+    std::vector<double> autoLane(int id, int param) const;
+    // En cada cuadro de pantalla: avanza lo que se esté grabando y da kAutoNowCount valores por
+    // espacio del mezclador (lo que marcan los deslizadores ahora).
+    void automationNow(float *out);
+    // Desde el carril: agrega un punto (si la automatización estaba apagada, la prende). Devuelve
+    // su índice o -1.
+    int autoAdd(int id, int param, int64_t frame, float pos);
+    bool autoRemove(int id, int param, int index);
+    void autoClear(int id, int param);
+    // Arrastre de un punto: cuadros y posición desde que empezó. Todo el arrastre es un paso de
+    // deshacer. El punto no pasa a sus vecinos.
+    bool autoBegin(int id, int param, int index);
+    void autoDrag(int64_t deltaFrames, float deltaPos);
+    void autoEnd();
+    // El dedo está (o ya no) sobre el deslizador de volumen o paneo de la pista.
+    void autoTouch(int id, int param, bool down);
+
 private:
-    using Snapshot = std::vector<std::pair<int, std::vector<Region>>>;
+    // Lo que se guarda para deshacer: pedazos y automatización de cada pista.
+    struct TrackSnap {
+        int id = 0;
+        std::vector<Region> regions;
+        autom::Lane autos[autom::kParamCount];
+        bool operator==(const TrackSnap &o) const {
+            return id == o.id && regions == o.regions && autos[0] == o.autos[0] && autos[1] == o.autos[1];
+        }
+        bool operator!=(const TrackSnap &o) const { return !(*this == o); }
+    };
+    using Snapshot = std::vector<TrackSnap>;
 
     struct Gesture {
         bool active = false;
         int id = 0, index = 0, mode = 0;
         Region base;
         std::vector<int64_t> points;
+        Snapshot before;
+    };
+    struct AutoGesture {
+        bool active = false;
+        int id = 0, param = 0, index = 0;
+        autom::Point base;
+        Snapshot before;
+    };
+    // El dedo sobre un deslizador (para grabar movimientos).
+    struct AutoTouch {
+        bool active = false;
+        int id = 0, param = 0;
+        bool writing = false;  // grabando mientras suena
+        bool frozen = false;   // la canción se detuvo o volvió atrás: ya no avanza
+        bool changed = false;  // el deslizador se movió
+        float base = 0.0f;     // valor fijo al empezar (si el carril estaba vacío)
+        float value = 0.0f;    // lo que marca el dedo
+        int64_t last = 0;      // hasta dónde llegó el cursor
+        int64_t changedMs = 0;  // cuándo cambió el valor por última vez (reloj)
+        autom::Lane old;
+        std::vector<autom::Point> written;
         Snapshot before;
     };
 
@@ -212,6 +277,17 @@ private:
     void applyTrackLocked(TrackModel &t);
     void applyEqLocked(TrackModel &t);
     void applyRegionsLocked(TrackModel &t, const std::vector<Region> &list);
+    void applyAutoLocked(TrackModel &t, int param);
+    bool automatedLocked(const TrackModel &t, int param) const;
+    float staticValueLocked(const TrackModel &t, int param) const;
+    void setStaticLocked(TrackModel &t, int param, float value);
+    // Pone los puntos (ajustados). Con `undo`, es un paso de deshacer.
+    void changeAutoLocked(TrackModel &t, int param, std::vector<autom::Point> pts, bool undo);
+    float lanePosToValue(int param, float pos) const;
+    void beginTouchLocked(TrackModel &t, int param, float base);
+    void touchValueLocked(TrackModel &t, int param, float before, float value);
+    void advanceTouchLocked(bool moved);  // moved: llegó un valor nuevo del deslizador
+    std::string endTouchLocked();  // devuelve un aviso para mostrar (después de soltar mModel)
     void applyMasterLocked();
     Snapshot snapshotLocked() const;
     void restoreLocked(const Snapshot &s);
@@ -252,6 +328,8 @@ private:
     std::string mFilesDir, mAudioDir, mCacheDir, mSessionPath;
     std::deque<Snapshot> mUndo, mRedo;
     Gesture mGesture;
+    AutoGesture mAutoGesture;
+    AutoTouch mTouch;
     std::string mLastKey;
     int64_t mLastKeyMs = 0;
 

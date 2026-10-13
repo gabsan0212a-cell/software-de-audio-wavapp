@@ -70,6 +70,17 @@ fun main(args: Array<String>) {
             scene.sendPointerEvent(PointerEventType.Press, o)
             scene.sendPointerEvent(PointerEventType.Release, o)
         }
+        suspend fun arrastrar(x0: Float, y0: Float, x1: Float, y1: Float) {
+            val a = Offset(x0 * DENS, y0 * DENS)
+            scene.sendPointerEvent(PointerEventType.Press, a)
+            for (k in 1..12) {
+                val f = k / 12f
+                scene.sendPointerEvent(PointerEventType.Move, Offset((x0 + (x1 - x0) * f) * DENS, (y0 + (y1 - y0) * f) * DENS))
+                cuadro()
+                delay(16)
+            }
+            scene.sendPointerEvent(PointerEventType.Release, Offset(x1 * DENS, y1 * DENS))
+        }
         fun rueda(yDp: Float, pasos: Int) {
             repeat(kotlin.math.abs(pasos)) {
                 scene.sendPointerEvent(
@@ -138,6 +149,71 @@ fun main(args: Array<String>) {
             foto("8-edicion")
             Edicion.deshacer()
             Edicion.seleccion = null
+        }
+        if (quiere("automatizacion")) {
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            val p0 = Mesa.pistas.first()
+            Vista.pestana = Vista.EDITAR
+            Edicion.ajustarVista()
+            Edicion.verAuto(Nucleo.AUTO_VOLUMEN)
+            esperar(400)
+            // Toques de verdad en el carril de la pista 1: poner un punto y arrastrarlo.
+            val anchoDp = ANCHO / DENS
+            tocar(anchoDp * 0.25f, 228f)
+            esperar(500)
+            println("toque en el carril -> puntos de volumen: ${p0.autoVol.n}")
+            val x0 = anchoDp * 0.25f
+            arrastrar(x0, 228f, x0 + 40f, 210f)
+            esperar(300)
+            println("arrastre -> punto en ${p0.autoVol.cuadros.firstOrNull()} (${p0.autoVol.valores.firstOrNull()} dB)")
+            Mesa.agregarPunto(p0, Nucleo.AUTO_VOLUMEN, 48000L * 6, 0.35f)
+            Mesa.agregarPunto(p0, Nucleo.AUTO_VOLUMEN, 48000L * 9, 0.75f)
+            val p1 = Mesa.pistas[1]
+            Mesa.agregarPunto(p1, Nucleo.AUTO_VOLUMEN, 48000L * 2, 0.5f)
+            Mesa.agregarPunto(p1, Nucleo.AUTO_VOLUMEN, 48000L * 4, 0.69f)
+            Mesa.saltar(5.0)
+            esperar(400)
+            foto("20-auto-volumen")
+            Edicion.verAuto(Nucleo.AUTO_PANEO)
+            val p2 = Mesa.pistas[2]
+            for ((t, pos) in listOf(0.0 to 0.5f, 3.0 to 0.9f, 6.0 to 0.1f, 9.0 to 0.9f, 12.0 to 0.5f))
+                Mesa.agregarPunto(p2, Nucleo.AUTO_PANEO, (t * 48000).toLong(), pos)
+            esperar(400)
+            foto("21-auto-paneo", ambos = false)
+            // Grabar movimientos: el volumen de la pista 2 mientras suena.
+            Vista.pestana = Vista.MEZCLA
+            Mesa.ponerModoAuto(p1, Nucleo.AUTO_GRABAR)
+            Mesa.saltar(0.0)
+            Mesa.reproducirPausar()
+            esperar(500)
+            Mesa.tocarDeslizador(p1, Nucleo.AUTO_VOLUMEN, true)
+            // Como un dedo: un valor cada 16 ms (dibujar aquí es lento: solo de vez en cuando).
+            val fin = System.currentTimeMillis() + 1500
+            var k = 0
+            while (System.currentTimeMillis() < fin) {
+                val x = 1f - (fin - System.currentTimeMillis()) / 1500f
+                Mesa.ponerVolumen(p1, -18f * x)
+                if (++k % 8 == 0) cuadro() else Mesa.sincronizar()
+                delay(16)
+            }
+            foto("22-grabando-movimientos", ambos = false)
+            Mesa.tocarDeslizador(p1, Nucleo.AUTO_VOLUMEN, false)
+            println("grabado -> puntos de volumen de la pista 2: ${p1.autoVol.n} (vueltas: $k)")
+            esperar(500)
+            foto("23-siguiendo", ambos = false)
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            Vista.automatizacion = p1
+            esperar(600)
+            foto("24-hoja-auto")
+            Vista.automatizacion = null
+            esperar(400)
+            Vista.pestana = Vista.EDITAR
+            Edicion.verAuto(Nucleo.AUTO_VOLUMEN)
+            esperar(400)
+            foto("25-auto-grabada", ambos = false)
+            Edicion.vista = Edicion.PEDAZOS
+            Vista.pestana = Vista.MEZCLA
+            esperar(300)
         }
         if (quiere("exportar")) {
             Vista.pestana = Vista.MEZCLA

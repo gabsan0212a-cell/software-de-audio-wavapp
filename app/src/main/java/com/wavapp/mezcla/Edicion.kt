@@ -2,17 +2,27 @@ package com.wavapp.mezcla
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlin.math.max
 
 /**
- * Lo que la pantalla de edición necesita recordar: qué pedazo está elegido, el zoom y el
- * desplazamiento, si el imán está prendido y el último mensaje. Las operaciones (mover,
- * recortar, fundidos, cortar, borrar, deshacer/rehacer) las hace el núcleo.
+ * Lo que la pantalla de edición necesita recordar: qué se edita (pedazos o automatización), qué
+ * pedazo o punto está elegido, el zoom y el desplazamiento, si el imán está prendido y el último
+ * mensaje. Las operaciones (mover, recortar, fundidos, cortar, borrar, puntos, deshacer/rehacer)
+ * las hace el núcleo.
  */
 object Edicion {
     data class Seleccion(val pistaId: Int, val indice: Int)
+    data class PuntoSel(val pistaId: Int, val param: Int, val indice: Int)
+
+    // Qué se ve en los carriles.
+    const val PEDAZOS = 0
+    const val VOLUMEN = 1  // = Nucleo.AUTO_VOLUMEN + 1
+    const val PANEO = 2    // = Nucleo.AUTO_PANEO + 1
+    var vista by mutableIntStateOf(PEDAZOS)
+    var punto by mutableStateOf<PuntoSel?>(null)
 
     var abierta by mutableStateOf(false)
     var seleccion by mutableStateOf<Seleccion?>(null)
@@ -28,6 +38,29 @@ object Edicion {
 
     val puedeDeshacer: Boolean get() = Mesa.puedeDeshacer
     val puedeRehacer: Boolean get() = Mesa.puedeRehacer
+
+    /** El punto elegido en el carril que se ve (pista e índice), si sigue existiendo. */
+    fun puntoSeleccionado(): Pair<Pista, Int>? {
+        val s = punto ?: return null
+        if (s.param != vista - 1) return null
+        val p = Mesa.pistas.firstOrNull { it.id == s.pistaId } ?: return null
+        return if (s.indice in 0 until p.curva(s.param).n) p to s.indice else null
+    }
+
+    /** Abre la automatización de [param] de la pista (desde el botón A de Mezcla). */
+    fun verAuto(param: Int) {
+        vista = param + 1
+        punto = null
+        seleccion = null
+        mensaje = ""
+    }
+
+    fun borrarPunto() {
+        val (p, i) = puntoSeleccionado() ?: return
+        Mesa.quitarPunto(p, vista - 1, i)
+        punto = null
+        mensaje = "Punto quitado (Deshacer lo regresa)."
+    }
 
     fun seleccionado(): Pair<Pista, Int>? {
         val s = seleccion ?: return null
@@ -113,6 +146,7 @@ object Edicion {
 
     private fun validarSeleccion() {
         if (seleccionado() == null) seleccion = null
+        if (puntoSeleccionado() == null) punto = null
     }
 
     internal fun alCambiarPistas() = validarSeleccion()

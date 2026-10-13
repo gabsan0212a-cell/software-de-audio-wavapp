@@ -8,9 +8,14 @@ import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.doubleClick
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -167,8 +172,78 @@ class PantallaTest {
         regla.onNodeWithContentDescription("Deshacer").performClick()
         regla.waitUntil(2_000) { p0.pedazos == original }
         assertEquals(12.0, Mesa.duracion, 0.001)
+
+        // Automatización dibujada: tocar el carril pone un punto, arrastrarlo lo mueve, dos toques
+        // lo quitan, y todo se puede deshacer.
+        regla.onAllNodesWithText("Volumen").onFirst().performClick()
+        regla.waitUntil(2_000) { Edicion.vista == Edicion.VOLUMEN }
+        val carril = regla.onNodeWithTag("auto-${p0.id}")
+        carril.performTouchInput { click(Offset(width * 0.25f, height * 0.5f)) }
+        regla.waitUntil(2_000) { p0.autoVol.n == 1 }
+        val antes = p0.autoVol.cuadros[0]
+        carril.performTouchInput { swipe(Offset(width * 0.25f, height * 0.5f), Offset(width * 0.4f, height * 0.25f), 400) }
+        regla.waitUntil(2_000) { p0.autoVol.cuadros[0] > antes }
+        assertTrue(p0.autoVol.valores[0] > -6f)
+        carril.performTouchInput { click(Offset(width * 0.75f, height * 0.7f)) }
+        regla.waitUntil(2_000) { p0.autoVol.n == 2 }
+        regla.waitForIdle()
+        captura("17-automatizacion")
+        carril.performTouchInput { doubleClick(Offset(width * 0.75f, height * 0.7f)) }
+        regla.waitUntil(2_000) { p0.autoVol.n == 1 }
+        regla.onNodeWithContentDescription("Deshacer").performClick()
+        regla.waitUntil(2_000) { p0.autoVol.n == 2 }
+        regla.onNodeWithContentDescription("Deshacer").performClick()
+        regla.onNodeWithContentDescription("Deshacer").performClick()
+        regla.waitUntil(2_000) { p0.autoVol.n == 1 && p0.autoVol.cuadros[0] == antes }
+        regla.onNodeWithContentDescription("Deshacer").performClick()
+        regla.waitUntil(2_000) { p0.autoVol.n == 0 }
+        regla.onAllNodesWithText("Pedazos").onFirst().performClick()
+        regla.waitUntil(2_000) { Edicion.vista == Edicion.PEDAZOS }
         regla.onNodeWithTag("pestana-0").performClick()
         regla.waitUntil(2_000) { !Edicion.abierta }
+
+        // Grabar movimientos: botón A → Grabar, y mover el volumen mientras suena.
+        regla.onNodeWithContentDescription("Automatización pista $id").performClick()
+        regla.waitUntil(2_000) { Vista.automatizacion != null }
+        regla.onNode(hasText("Grabar") and hasAnyAncestor(hasTestTag("modoAuto"))).performClick()
+        regla.waitUntil(2_000) { p0.autoModo == Nucleo.AUTO_GRABAR }
+        regla.waitForIdle()
+        captura("18-hoja-automatizacion")
+        regla.onNodeWithText("Listo").performClick()
+        regla.waitUntil(2_000) { Vista.automatizacion == null }
+        regla.runOnUiThread {
+            Mesa.saltar(1.0)
+            if (!Mesa.reproduciendo) Mesa.reproducirPausar()
+        }
+        regla.waitUntil(5_000) { Mesa.reproduciendo }
+        val vol = regla.onNodeWithContentDescription("Volumen pista $id")
+        vol.performTouchInput { down(Offset(width * 0.85f, height / 2f)) }
+        for (k in 1..30) {
+            vol.performTouchInput { moveTo(Offset(width * (0.85f - 0.015f * k), height / 2f)) }
+            regla.runOnUiThread { Mesa.tick(System.currentTimeMillis()) }
+            Thread.sleep(40)
+        }
+        assertTrue("no se estaba grabando el volumen", p0.grabando(Nucleo.AUTO_VOLUMEN))
+        captura("19-grabando-movimientos")
+        vol.performTouchInput { up() }
+        regla.waitUntil(2_000) { p0.autoVol.n >= 2 }
+        avanzarHasta(3_000, { "el volumen no sigue lo grabado" }) { p0.sigue(Nucleo.AUTO_VOLUMEN) }
+        avanzarMedidores()
+        captura("20-movimientos-grabados")
+        regla.runOnUiThread {
+            Mesa.ponerModoAuto(p0, Nucleo.AUTO_LEER)
+            Edicion.verAuto(Nucleo.AUTO_VOLUMEN)
+            Vista.pestana = Vista.EDITAR
+        }
+        regla.waitUntil(2_000) { Edicion.abierta }
+        regla.waitForIdle()
+        captura("21-automatizacion-grabada")
+        regla.runOnUiThread {
+            Mesa.borrarAuto(p0, Nucleo.AUTO_VOLUMEN)
+            Edicion.vista = Edicion.PEDAZOS
+            Vista.pestana = Vista.MEZCLA
+        }
+        regla.waitUntil(2_000) { p0.autoVol.n == 0 && !Edicion.abierta }
 
         // Hoja de exportar (sin abrir el selector de archivos del sistema).
         regla.onNodeWithContentDescription("Exportar").performClick()

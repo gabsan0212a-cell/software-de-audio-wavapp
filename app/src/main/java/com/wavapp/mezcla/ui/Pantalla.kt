@@ -60,6 +60,7 @@ object Vista {
     var agregar by mutableStateOf(false)
     var opciones by mutableStateOf<Pista?>(null)
     var aQuitar by mutableStateOf<Pista?>(null)
+    var automatizacion by mutableStateOf<Pista?>(null)
 
     // Grabar: qué entrada (0 = la primera de la lista), en estéreo o no, y la última toma.
     var entradaId by mutableIntStateOf(0)
@@ -134,6 +135,9 @@ fun PantallaMesa() {
 
         Reproductor(Vista.reproductor, alCerrar = { Vista.reproductor = false }, alExportar = { Vista.exportar = true })
         HojaEq(Mesa.eqAbierta, alCerrar = { Mesa.eqAbierta = null })
+        HojaAutomatizacion(
+            Vista.automatizacion?.takeIf { it in Mesa.pistas }, alCerrar = { Vista.automatizacion = null },
+        )
         HojaExportar(
             Vista.exportar, alCerrar = { Vista.exportar = false },
             alGuardar = {
@@ -167,6 +171,7 @@ private fun OpcionesPista() {
     val pista = Vista.opciones
     val acciones = if (pista == null) emptyList() else buildList {
         add(Accion("Ecualizador") { Mesa.eqAbierta = pista })
+        add(Accion("Automatización") { Vista.automatizacion = pista })
         add(Accion("Editar pedazos") {
             Edicion.seleccion = Edicion.Seleccion(pista.id, 0)
             Vista.pestana = Vista.EDITAR

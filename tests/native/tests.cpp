@@ -25,6 +25,7 @@
 #include "dsp/Equalizer.h"
 #include "dsp/Limiter.h"
 #include "dsp/Resampler.h"
+#include "engine/Automation.h"
 #include "engine/Exporter.h"
 #include "engine/Importer.h"
 #include "engine/LiveInput.h"
@@ -1512,8 +1513,8 @@ TEST(estudioPrimeraVez) {
         CHECK(p[i]["cuadros"].asInt() == 12 * 48000 && p[i]["canales"].asInt() == 1);
         CHECK(p[i]["info"].asString() == "prueba · mono · 12 s");
     }
-    float v[5];
-    CHECK(s.trackParams(idDe(s, 2), v) && v[0] == -2.0f && v[1] == 60.0f);
+    float v[Studio::kTrackParamCount];
+    CHECK(s.trackParams(idDe(s, 2), v) && v[0] == -2.0f && v[1] == 60.0f && v[5] == Studio::kAutoRead);
     CHECK_NEAR(s.duration(), 12.0, 1e-9);
     const Json st = estado(s);
     CHECK(!st["ocupada"].asBool(true));
@@ -1547,7 +1548,7 @@ TEST(estudioSesionIdaYVuelta) {
     s1.setLimiter(false);
     s1.setNotch(50);
     s1.setExportFormat(16, 44100);
-    float p1[5], m1[6];
+    float p1[Studio::kTrackParamCount], m1[6];
     CHECK(s1.trackParams(id, p1));
     CHECK(p1[0] == 3.5f && p1[1] == -33.0f && p1[2] == 1.0f && p1[3] == 0.0f && p1[4] == 1.0f);
     const std::vector<float> eq1 = s1.eqState(id);
@@ -1562,9 +1563,9 @@ TEST(estudioSesionIdaYVuelta) {
     s2.open(dir, dir);
     CHECK(s2.waitIdle(30000));
     CHECK(s2.tracksJson() == s1.tracksJson());
-    float p2[5], m2[6];
+    float p2[Studio::kTrackParamCount], m2[6];
     CHECK(s2.trackParams(id, p2));
-    CHECK(std::equal(p1, p1 + 5, p2));
+    CHECK(std::equal(p1, p1 + Studio::kTrackParamCount, p2));
     CHECK(s2.eqState(id) == eq1);
     CHECK(s2.regions(id) == s1.regions(id));
     CHECK(s2.regions(id).size() == 2 && s2.regions(id)[1].fadeOut == 4800);
@@ -2241,7 +2242,16 @@ TEST(concurrenciaEstudio) {
     for (int it = 0; it < 300; ++it) {
         const int n = s.trackCount();
         const int id = n > 0 ? idDe(s, static_cast<int>(rng() % n)) : -1;
-        switch (rng() % 16) {
+        switch (rng() % 20) {
+            case 16: s.autoAdd(id, rng() % 2, rng() % 600000, (rng() % 100) / 100.0f); break;
+            case 17:
+                if (s.autoBegin(id, rng() % 2, 0)) {
+                    s.autoDrag(static_cast<int64_t>(rng() % 20000) - 10000, ((rng() % 100) - 50) / 100.0f);
+                    s.autoEnd();
+                }
+                break;
+            case 18: s.setAutoMode(id, rng() % 3); s.autoTouch(id, 0, true); s.setVolume(id, -(rng() % 30) * 1.0f); break;
+            case 19: { float a[Studio::kAutoNowCount * kMaxTracks]; s.automationNow(a); s.autoTouch(id, 0, false); s.autoLane(id, 0); } break;
             case 0: s.setVolume(id, (rng() % 66) - 60.0f); break;
             case 1: s.setPan(id, (rng() % 200) - 100.0f); break;
             case 2: s.setMute(id, rng() % 2); s.setSolo(id, rng() % 3 == 0); break;
@@ -2315,6 +2325,307 @@ TEST(concurrenciaEntrada) {
     entrada.join();
     s.inputClosed();
     CHECK(!s.recording());
+}
+
+// ---------------------------------------------------------------- automatización
+TEST(automatizacionCurvas) {
+    using namespace autom;
+    // Escala del carril: extremos, 0 dB y paneo.
+    CHECK_NEAR(toPos(kVolume, 6.0f), 1.0, 1e-6);
+    CHECK_NEAR(toPos(kVolume, -60.0f), 0.0, 1e-6);
+    CHECK_NEAR(toPos(kVolume, 0.0f), 1.0 - std::sqrt(6.0 / 66.0), 1e-6);
+    CHECK_NEAR(toPos(kPan, -100.0f), 1.0, 1e-6);  // arriba = izquierda
+    CHECK_NEAR(toPos(kPan, 0.0f), 0.5, 1e-6);
+    for (float v : {-60.0f, -24.5f, -6.0f, 0.0f, 3.5f, 6.0f}) CHECK_NEAR(fromPos(kVolume, toPos(kVolume, v)), v, 1e-4);
+    for (float v : {-100.0f, -30.0f, 0.0f, 55.0f, 100.0f}) CHECK_NEAR(fromPos(kPan, toPos(kPan, v)), v, 1e-3);
+    CHECK(gainFromPos(0.0f) == 0.0f);  // −60 dB es silencio
+    CHECK_NEAR(gainFromPos(toPos(kVolume, -6.0f)), std::pow(10.0, -6.0 / 20), 1e-5);
+    CHECK_NEAR(panFromPos(1.0f), -1.0, 1e-6);
+    CHECK_NEAR(panFromPos(0.25f), 0.5, 1e-6);
+    CHECK(clampValue(kVolume, -3.04f) == -3.0f && clampValue(kVolume, 9.0f) == 6.0f && clampValue(kPan, 33.6f) == 34.0f);
+    CHECK(clampValue(kVolume, NAN) == 0.0f);
+
+    // Valor entre puntos: recta en la escala del carril; antes y después se queda.
+    const std::vector<Point> pts = {{1000, -6.0f}, {3000, 0.0f}};
+    CHECK(valueAt(kVolume, {}, 500, -2.5f) == -2.5f);
+    CHECK(valueAt(kVolume, pts, 0, 0) == -6.0f && valueAt(kVolume, pts, 9999, 0) == 0.0f);
+    const float mid = (toPos(kVolume, -6.0f) + toPos(kVolume, 0.0f)) / 2;
+    CHECK_NEAR(valueAt(kVolume, pts, 2000, 0), fromPos(kVolume, mid), 1e-4);
+    const std::vector<PosPoint> pp = toPosPoints(kVolume, pts);
+    CHECK_NEAR(posAt(pp, 2000), mid, 1e-6);
+    CHECK_NEAR(posAt(pp, 0), pp[0].pos, 1e-6);
+
+    // Ordenar, quitar repetidos (gana el último) y negativos.
+    std::vector<Point> v = {{500, 3.33f}, {-20, 1.0f}, {100, 200.0f}, {500, -1.0f}};
+    normalize(kVolume, v);
+    CHECK(v.size() == 3 && v[0].frame == 0 && v[1].frame == 100 && v[1].value == 6.0f && v[2].value == -1.0f);
+
+    // Simplificar: una recta queda en sus dos puntas; una esquina se queda.
+    std::vector<Point> recta, esquina;
+    for (int i = 0; i <= 100; ++i) recta.push_back({i * 480, 100.0f - 2.0f * i});
+    CHECK(simplify(kPan, recta, 0.004f).size() == 2);
+    for (int i = 0; i <= 100; ++i) esquina.push_back({i * 480, i < 50 ? 0.0f : -80.0f});
+    const std::vector<Point> e = simplify(kPan, esquina, 0.004f);
+    CHECK(e.size() == 4 && e.front().frame == 0 && e.back().frame == 48000);
+    CHECK(valueAt(kPan, e, 49 * 480, 1) == 0.0f && valueAt(kPan, e, 50 * 480, 1) == -80.0f);
+    // Lane: copiar comparte la lista.
+    Lane a(recta), b = a;
+    CHECK(a == b && &a.get() == &b.get() && a.size() == 101 && Lane().empty());
+}
+
+TEST(automatizacionEnElMezclador) {
+    using namespace autom;
+    Mixer m(48000);
+    m.setLimiter(false);
+    m.setTrack(0, constTrack("auto1.wav", 2, 48000, 0.25f, 0.25f));
+    m.setTrack(1, constTrack("auto2.wav", 1, 48000, 0.5f, 0.5f));
+    // Pista 1: −6 dB hasta 0.5 s y de golpe −20 dB. Pista 2: paneo de izquierda a derecha.
+    m.setAutomation(0, kVolume, toPosPoints(kVolume, {{0, -6.0f}, {24000, -6.0f}, {24001, -20.0f}}));
+    m.setAutomation(1, kPan, toPosPoints(kPan, {{0, -100.0f}, {48000, 100.0f}}));
+    m.setTrackGain(1, 0.0f);  // la 2 se calla salvo para medir su paneo abajo
+    CHECK(m.automation(0, kVolume).size() == 3 && m.automation(0, kPan).empty());
+    std::vector<float> out = referencia(m);
+    CHECK_NEAR(out[2 * 10000], 0.25 * std::pow(10.0, -6.0 / 20), 1e-5);
+    CHECK_NEAR(out[2 * 10000 + 1], 0.25 * std::pow(10.0, -6.0 / 20), 1e-5);
+    CHECK_NEAR(out[2 * 40000], 0.25 * std::pow(10.0, -20.0 / 20), 1e-5);
+    // El escalón se suaviza (sin clic): a 1 ms del cambio va en camino.
+    CHECK(out[2 * 24100] < 0.25 * std::pow(10.0, -6.0 / 20) && out[2 * 24100] > 0.25 * std::pow(10.0, -20.0 / 20));
+
+    // Paneo automatizado (mono): empieza a la izquierda y termina a la derecha.
+    m.setTrackGain(0, 0.0f);
+    m.setAutomation(0, kVolume, {});
+    m.setTrackGain(1, 1.0f);
+    out = referencia(m);
+    CHECK_NEAR(out[2 * 200], 0.5, 1e-3);
+    CHECK_NEAR(out[2 * 200 + 1], 0.0, 1e-2);
+    CHECK_NEAR(out[2 * 24000], 0.5 * std::cos(M_PI / 4), 5e-3);  // centro
+    CHECK_NEAR(out[2 * 47900 + 1], 0.5, 1e-3);
+    CHECK_NEAR(out[2 * 47900], 0.0, 1e-2);
+
+    // En vivo: al empezar a sonar desde un salto, el volumen ya está donde marca la
+    // automatización (no sube desde el anterior).
+    m.setTrackGain(1, 0.0f);
+    m.setAutomation(1, kPan, {});
+    m.setTrackGain(0, 1.0f);
+    m.setAutomation(0, kVolume, toPosPoints(kVolume, {{0, 0.0f}, {24000, 0.0f}, {24001, -40.0f}}));
+    m.seek(26000);
+    m.play();
+    std::vector<float> blk(512 * 2);
+    m.process(blk.data(), 512, 2);
+    CHECK_NEAR(blk[2 * 400], 0.25 * 0.01, 1e-4);
+    // En espera (el dedo en el deslizador) suena el valor fijo.
+    m.setAutomationHold(0, kVolume, true);
+    run(m, 7200);
+    m.process(blk.data(), 512, 2);
+    CHECK_NEAR(blk[2 * 400], 0.25, 1e-4);
+    m.setAutomationHold(0, kVolume, false);
+    run(m, 7200);
+    m.process(blk.data(), 512, 2);
+    CHECK_NEAR(blk[2 * 400], 0.25 * 0.01, 1e-4);
+    // Quitar la pista borra su automatización.
+    m.takeTrack(0);
+    m.setTrack(0, constTrack("auto3.wav", 2, 4800, 0.25f, 0.25f));
+    CHECK(m.automation(0, kVolume).empty());
+}
+
+static std::vector<autom::Point> carril(const Studio &s, int id, int param) {
+    const std::vector<double> v = s.autoLane(id, param);
+    std::vector<autom::Point> r;
+    for (size_t i = 4; i + 2 < v.size(); i += 3) r.push_back({static_cast<int64_t>(v[i]), static_cast<float>(v[i + 2])});
+    return r;
+}
+
+TEST(estudioAutomatizacionPuntos) {
+    using namespace autom;
+    const std::string dir = nuevaCarpeta("auto1");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    const int id = idDe(s, 0), slot = static_cast<int>(pistas(s)[0]["slot"].asInt());
+    std::vector<double> lane = s.autoLane(id, kVolume);
+    CHECK(lane.size() == 4 && lane[0] == 0 && lane[2] == 0.0 && std::fabs(lane[3] - toPos(kVolume, 0)) < 1e-6);
+    CHECK(s.autoLane(id, 7).empty() && s.autoLane(999, 0).empty());
+    int32_t v0[Studio::kVersionCount], v1[Studio::kVersionCount];
+    s.versions(v0);
+    // Agregar en orden, con un poco de imán en 0 dB.
+    CHECK(s.autoAdd(id, kVolume, 96000, toPos(kVolume, -12.0f)) == 0);
+    CHECK(s.autoAdd(id, kVolume, 48000, toPos(kVolume, 0.2f)) == 0);
+    CHECK(s.autoAdd(id, kVolume, 144000, toPos(kVolume, -60.0f)) == 2);
+    s.versions(v1);
+    CHECK(v1[Studio::verAuto(slot)] != v0[Studio::verAuto(slot)] && v1[Studio::kVerHistory] != v0[Studio::kVerHistory]);
+    std::vector<Point> c = carril(s, id, kVolume);
+    CHECK(c.size() == 3 && c[0].frame == 48000 && c[0].value == 0.0f && c[1].value == -12.0f && c[2].value == -60.0f);
+    CHECK(s.mixer().automation(slot, kVolume).size() == 3);
+    // Lo que marca el deslizador ahora (cursor a 1.5 s: entre 0 y −12 dB, en la escala del carril).
+    float now[Studio::kAutoNowCount * kMaxTracks];
+    s.seek(1.5);
+    s.automationNow(now);
+    CHECK(now[Studio::kAutoNowCount * slot] == 1.0f);
+    CHECK_NEAR(now[Studio::kAutoNowCount * slot + 1], valueAt(kVolume, c, 72000, 0), 1e-4);
+    CHECK(now[Studio::kAutoNowCount * slot + 2] == 0.0f);  // el paneo no está automatizado
+    // Arrastrar un punto: no pasa a sus vecinos y todo el arrastre es un paso.
+    CHECK(s.autoBegin(id, kVolume, 1));
+    s.autoDrag(1000, 0.0f);
+    s.autoDrag(200000, 0.05f);
+    s.autoEnd();
+    c = carril(s, id, kVolume);
+    CHECK(c[1].frame == 143999 && c[1].value == clampValue(kVolume, fromPos(kVolume, toPos(kVolume, -12.0f) + 0.05f)));
+    CHECK(!s.autoBegin(id, kVolume, 3));
+    CHECK(s.undo() && carril(s, id, kVolume)[1].frame == 96000);
+    CHECK(s.redo() && carril(s, id, kVolume)[1].frame == 143999);
+    // Quitar y borrar todo, con deshacer.
+    CHECK(s.autoRemove(id, kVolume, 0) && carril(s, id, kVolume).size() == 2);
+    CHECK(!s.autoRemove(id, kVolume, 5));
+    s.autoClear(id, kVolume);
+    CHECK(carril(s, id, kVolume).empty() && s.mixer().automation(slot, kVolume).empty());
+    CHECK(s.undo() && carril(s, id, kVolume).size() == 2);
+    CHECK(s.undo() && carril(s, id, kVolume).size() == 3);
+    // Apagada: los puntos se quedan pero suenan los valores fijos.
+    s.setAutoMode(id, Studio::kAutoOff);
+    float p[Studio::kTrackParamCount];
+    CHECK(s.trackParams(id, p) && p[5] == Studio::kAutoOff);
+    CHECK(s.mixer().automation(slot, kVolume).empty() && carril(s, id, kVolume).size() == 3);
+    s.automationNow(now);
+    CHECK(now[Studio::kAutoNowCount * slot] == 0.0f && now[Studio::kAutoNowCount * slot + 1] == 0.0f);
+    // Dibujar con la automatización apagada la prende.
+    CHECK(s.autoAdd(id, kPan, 0, 1.0f) == 0);
+    CHECK(s.trackParams(id, p) && p[5] == Studio::kAutoRead);
+    CHECK(carril(s, id, kPan)[0].value == -100.0f && s.mixer().automation(slot, kVolume).size() == 3);
+    // Un cuadro que ya tiene punto se reemplaza; el paneo pega al centro.
+    CHECK(s.autoAdd(id, kPan, 0, 0.51f) == 0 && carril(s, id, kPan).size() == 1 && carril(s, id, kPan)[0].value == 0.0f);
+
+    // La sesión la guarda.
+    CHECK(s.saveNow());
+    Studio s2;
+    s2.open(dir, dir);
+    CHECK(s2.waitIdle(30000));
+    CHECK(carril(s2, id, kVolume) == carril(s, id, kVolume) && carril(s2, id, kPan) == carril(s, id, kPan));
+    CHECK(s2.trackParams(id, p) && p[5] == Studio::kAutoRead);
+    CHECK(s2.mixer().automation(slot, kVolume).size() == 3);
+    // Y la exportación suena con ella (el mezclador de exportar la copia).
+    Mixer copia(48000);
+    std::string err;
+    CHECK(s2.mixer().cloneInto(copia, err) && copia.automation(slot, kVolume).size() == 3);
+}
+
+// Hace sonar el estudio `segundos` en pedazos de 480 cuadros; `cada` se llama en cada pedazo
+// (lo que haría la pantalla en cada cuadro).
+static void sonar(Studio &s, double segundos, const std::function<void(double)> &cada = nullptr) {
+    std::vector<float> out(480 * 2);
+    float now[Studio::kAutoNowCount * kMaxTracks];
+    const int n = static_cast<int>(segundos * 100);
+    for (int i = 0; i < n; ++i) {
+        if (cada) cada(static_cast<double>(i) / n);
+        s.mixer().process(out.data(), 480, 2);
+        s.automationNow(now);
+    }
+}
+
+TEST(estudioGrabarMovimientos) {
+    using namespace autom;
+    const std::string dir = nuevaCarpeta("auto2");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    const int id = idDe(s, 0), id2 = idDe(s, 1);
+    const int slot = static_cast<int>(pistas(s)[0]["slot"].asInt());
+    float now[Studio::kAutoNowCount * kMaxTracks];
+    s.setAutoMode(id, Studio::kAutoWrite);
+    s.play();
+    sonar(s, 1.0);
+    // Primera pasada: de 0 a −20 dB en un segundo, con el carril vacío.
+    s.autoTouch(id, kVolume, true);
+    s.automationNow(now);
+    CHECK(now[Studio::kAutoNowCount * slot] == 4.0f);  // se graba el volumen (y no lo sigue)
+    sonar(s, 1.0, [&](double x) { s.setVolume(id, static_cast<float>(-20.0 * x)); });
+    s.setVolume(id, -20.0f);
+    sonar(s, 0.05);
+    s.autoTouch(id, kVolume, false);
+    std::vector<Point> c = carril(s, id, kVolume);
+    CHECK(c.size() >= 3 && c.size() <= 10);
+    CHECK(c.front().value == 0.0f && c.front().frame == 48000);
+    CHECK(c.back().value == -20.0f && c.back().frame == 98400);
+    // Sigue lo que hizo el dedo (de 0 a −20 dB parejo en 1 s), sin escalones y con pocos puntos.
+    for (int64_t f = 48000; f <= 96000; f += 4800) CHECK_NEAR(valueAt(kVolume, c, f, 0), -20.0 * (f - 48000) / 48000.0, 0.8);
+    for (size_t i = 1; i < c.size(); ++i) CHECK(c[i].value <= c[i - 1].value);  // va bajando
+    CHECK(s.canUndo());
+    s.automationNow(now);
+    CHECK(now[Studio::kAutoNowCount * slot] == 1.0f);  // ahora la sigue
+    CHECK_NEAR(now[Studio::kAutoNowCount * slot + 1], -20.0, 1e-4);  // lo último se queda
+
+    // Segunda pasada, de 1.5 s a 1.7 s con el dedo quieto: luego regresa a lo que había.
+    s.seek(1.4);
+    sonar(s, 0.1);
+    const std::vector<Point> antes = c;
+    s.autoTouch(id, kVolume, true);
+    const float tocado = s.trackParams(id, now) ? now[0] : 99;  // el deslizador tomó el valor de la automatización
+    CHECK_NEAR(tocado, valueAt(kVolume, antes, 72000, 0), 0.26);
+    s.setVolume(id, -6.0f);
+    sonar(s, 0.2);
+    s.autoTouch(id, kVolume, false);
+    c = carril(s, id, kVolume);
+    CHECK_NEAR(valueAt(kVolume, c, 76800, 0), -6.0, 1e-4);  // 1.6 s
+    CHECK_NEAR(valueAt(kVolume, c, 120000, 0), valueAt(kVolume, antes, 120000, 0), 1e-4);  // 2.5 s: como antes
+    CHECK_NEAR(valueAt(kVolume, c, 24000, 0), valueAt(kVolume, antes, 24000, 0), 1e-4);    // 0.5 s: como antes
+    CHECK(s.undo() && carril(s, id, kVolume) == antes);
+    CHECK(s.redo() && carril(s, id, kVolume) == c);
+
+    // Dedo quieto un rato y luego un cambio: el valor se quedó (no una rampa larga); moverlo
+    // seguido, en cambio, es una rampa aunque el cursor avance a saltos grandes.
+    s.setAutoMode(id2, Studio::kAutoWrite);
+    s.seek(3.0);
+    sonar(s, 0.05);
+    s.autoTouch(id2, kVolume, true);
+    s.setVolume(id2, -3.0f);
+    sonar(s, 1.0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    s.setVolume(id2, -12.0f);
+    sonar(s, 0.1);
+    s.autoTouch(id2, kVolume, false);
+    std::vector<Point> q = carril(s, id2, kVolume);
+    CHECK(q.size() >= 3);
+    CHECK_NEAR(valueAt(kVolume, q, 4 * 48000 - 960, 0), -3.0, 1e-4);
+    CHECK_NEAR(valueAt(kVolume, q, 4 * 48000 + 2400, 0), -12.0, 1e-4);
+    s.autoClear(id2, kVolume);
+    s.setAutoMode(id2, Studio::kAutoRead);
+
+    // Detenido: con puntos, mover el deslizador cambia el punto del cursor.
+    s.pause();
+    sonar(s, 0.05);
+    s.seek(0.5);
+    s.autoTouch(id, kVolume, true);
+    s.setVolume(id, -3.0f);
+    s.autoTouch(id, kVolume, false);
+    const std::vector<Point> d = carril(s, id, kVolume);
+    CHECK(d.size() == c.size() + 1 && d[0].frame == 24000 && d[0].value == -3.0f);
+
+    // Leer: mover el deslizador se oye mientras está el dedo, pero no se graba.
+    s.setAutoMode(id, Studio::kAutoRead);
+    s.play();
+    s.autoTouch(id, kVolume, true);
+    s.automationNow(now);
+    CHECK(now[Studio::kAutoNowCount * slot] == 0.0f);
+    s.setVolume(id, -40.0f);
+    sonar(s, 0.2);
+    s.autoTouch(id, kVolume, false);
+    CHECK(carril(s, id, kVolume) == d);
+    CHECK(estado(s)["mensaje"].asString().find("sigue su automatización") != std::string::npos);
+
+    // Un toque suelto (sin dedo encima) al grabar: un escalón en el cursor; antes, lo de siempre.
+    s.setAutoMode(id2, Studio::kAutoWrite);
+    s.setPan(id2, 50.0f);
+    const std::vector<Point> e = carril(s, id2, kPan);
+    CHECK(e.size() == 2 && e[0].value == 0.0f && e[1].value == 50.0f && e[1].frame == e[0].frame + 1);
+    // Detenido y con el carril vacío: solo cambia el valor fijo.
+    s.pause();
+    sonar(s, 0.05);
+    s.setVolume(id2, -5.0f);
+    CHECK(carril(s, id2, kVolume).empty());
+    // Mientras se toca no se puede deshacer; quitar la pista termina el toque.
+    s.autoTouch(id2, kPan, true);
+    CHECK(!s.undo());
+    CHECK(s.removeTrack(id2));
+    CHECK(s.undo());
 }
 
 // ---------------------------------------------------------------- main

@@ -42,13 +42,18 @@ El APK solo se publica si pasan todas las pruebas.
       con ganancia, medidor, escucha en vivo con EQ en tiempo real y análisis del micrófono.
       Graba desde el cursor con la mezcla sonando; la toma queda alineada (se compensa el
       retraso del audio) como pista nueva, sin efecto y con el EQ que se escuchó
-- [ ] 7. Guardar/abrir proyectos (por ahora la mezcla actual se guarda sola)
+- [x] 7. Automatización de volumen y paneo por pista: puntos dibujados en Editar (tocar pone,
+      arrastrar mueve, dos toques quitan, con deshacer) y movimientos de los deslizadores
+      grabados mientras suena (botón **A** → Grabar; al soltar regresa a lo que había). Se oye
+      igual al exportar
+- [ ] 8. Guardar/abrir proyectos (por ahora la mezcla actual se guarda sola)
 
 Sin plugins VST en Android.
 
 ## Cómo está hecho
 - `app/src/main/cpp/core/`: **el núcleo**, C++17 sin nada de Android (se prueba en Linux).
-  - `Studio`: la fachada de todo. Es dueño del proyecto (pistas, EQ, pedazos, master), hace
+  - `Studio`: la fachada de todo. Es dueño del proyecto (pistas, EQ, pedazos, automatización,
+    master), hace
     los trabajos largos en su propio hilo (importar, exportar, abrir la sesión), guarda la
     sesión poco después de cada cambio, lleva el historial de deshacer/rehacer y da a la
     pantalla lo que dibuja (versiones de cada cosa, medidores, análisis, onda).
@@ -58,7 +63,8 @@ Sin plugins VST en Android.
     como Web Audio), `Limiter`, `Analyzer` (FFT, espectro, fase, zumbido, espectrograma) y
     `AnalysisView` (lo que muestra el panel: veredicto, goniómetro, espectro por columnas).
   - `engine/`: `Mixer` (la mezcla en tiempo real; cada pista es una lista de pedazos con
-    fundidos), `LiveInput` (la entrada en vivo: ganancia, EQ, escucha, medidores y el grabador), `Importer` (WAV o decodificado → formato interno), `Exporter`, `Meters`
+    fundidos y su volumen y paneo pueden seguir una automatización), `Automation` (curvas de
+    automatización: escala del carril, valor en cada momento, simplificar lo grabado), `LiveInput` (la entrada en vivo: ganancia, EQ, escucha, medidores y el grabador), `Importer` (WAV o decodificado → formato interno), `Exporter`, `Meters`
     (caídas y picos de los medidores) y `Decoder.h` (lo que debe dar la plataforma).
   - `project/`: `Model` (el proyecto), `Session` (sesion.json) y `Edit` (mover, recortar,
     fundidos, cortar, imán).
@@ -71,7 +77,8 @@ Sin plugins VST en Android.
     `Componentes.kt` (botones, píldoras, interruptor, segmentado, deslizadores, tarjetas) y
     `Superpuestos.kt` (hojas, menús de acciones, alertas, barra de arriba).
   - `Pantalla.kt` (pestañas y mini reproductor), `MezclaTab.kt`, `Reproductor.kt`,
-    `Ecualizador.kt`, `AnalisisPanel.kt`, `EdicionPanel.kt` y `Exportar.kt`.
+    `Ecualizador.kt`, `AnalisisPanel.kt`, `EdicionPanel.kt` (pedazos y carriles de
+    automatización), `Automatizacion.kt` (la hoja del botón A), `GrabarTab.kt` y `Exportar.kt`.
   - `Plataforma.kt`: lo único que obliga Android en la pantalla (atrás, pantalla encendida,
     selector de archivos, barra de estado).
 

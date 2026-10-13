@@ -12,7 +12,7 @@ cpp = (root / "app/src/main/cpp/android/jni_bridge.cpp").read_text(encoding="utf
 
 TIPOS = {
     "Int": "jint", "Long": "jlong", "Float": "jfloat", "Double": "jdouble", "Boolean": "jboolean",
-    "String": "jstring", "IntArray": "jintArray", "LongArray": "jlongArray", "FloatArray": "jfloatArray",
+    "String": "jstring", "IntArray": "jintArray", "LongArray": "jlongArray", "FloatArray": "jfloatArray", "DoubleArray": "jdoubleArray",
     "ByteArray": "jbyteArray", "Array<String>": "jobjectArray", "Unit": "void",
 }
 

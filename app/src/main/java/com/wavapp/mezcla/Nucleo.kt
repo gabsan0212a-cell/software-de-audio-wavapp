@@ -2,8 +2,8 @@ package com.wavapp.mezcla
 
 /**
  * Puente con el núcleo en C++ (el corazón de la app). Todo lo técnico vive allá: el proyecto,
- * la mezcla, importar y decodificar, exportar, la sesión, la edición con deshacer, los
- * medidores y el análisis. Kotlin solo dibuja la pantalla y manda lo que la persona hace.
+ * la mezcla, importar y decodificar, exportar, la sesión, la edición con deshacer, la
+ * automatización, los medidores y el análisis. Kotlin solo dibuja la pantalla y manda lo que la persona hace.
  *
  * Las pistas se nombran por su id. Cada cosa que puede cambiar tiene una versión
  * ([versions]): la pantalla las compara para saber qué volver a leer.
@@ -27,6 +27,11 @@ object Nucleo {
     val DATOS_ENTRADA = c[10]
     /** El EQ de la entrada en vivo usa las funciones del EQ con este id. */
     val ID_ENTRADA = c[11]
+    private val VER_PRIMERA = c[12]
+    private val VER_POR_ESPACIO = c[13]
+    /** Valores de [automationNow] por espacio: estado, volumen (dB), paneo. */
+    val DATOS_AUTO = c[14]
+    val DATOS_PISTA = c[15]
 
     // Lugares en el arreglo de versions().
     const val VER_PISTAS = 0
@@ -34,9 +39,10 @@ object Nucleo {
     const val VER_HISTORIAL = 2
     const val VER_ESTADO = 3
     const val VER_FONDO = 4
-    fun verParams(espacio: Int) = 5 + 3 * espacio
-    fun verEq(espacio: Int) = 6 + 3 * espacio
-    fun verPedazos(espacio: Int) = 7 + 3 * espacio
+    fun verParams(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio
+    fun verEq(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 1
+    fun verPedazos(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 2
+    fun verAuto(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 3
 
     // Lugares en el arreglo de meters(): [2*espacio] L, [2*espacio+1] R de cada pista, y luego:
     fun medMasterL() = 2 * MAX_PISTAS
@@ -50,6 +56,13 @@ object Nucleo {
     const val RECORTAR_FIN = 3
     const val FADE_IN = 4
     const val FADE_OUT = 5
+
+    // Automatización: parámetros y modos (iguales a autom::Param y Studio::AutoMode).
+    const val AUTO_VOLUMEN = 0
+    const val AUTO_PANEO = 1
+    const val AUTO_APAGADA = 0
+    const val AUTO_LEER = 1
+    const val AUTO_GRABAR = 2
 
     // ---------- Ciclo de vida
     /** Abre el proyecto de esa carpeta (la primera vez carga las pistas de prueba). */
@@ -68,7 +81,7 @@ object Nucleo {
     external fun versions(out: IntArray)
     /** [{"id","slot","nombre","canales","cuadros","info"}, ...] en el orden de la pantalla. */
     external fun tracksJson(): String
-    /** volumen (dB), paneo, mute, solo, fase. false si la pista ya no existe. */
+    /** volumen (dB), paneo, mute, solo, fase, modo de automatización. false si la pista ya no existe. */
     external fun trackParams(id: Int, out: FloatArray): Boolean
     /** [bypass, auto-ganancia, n, y por banda: tipo, frecuencia, ganancia, Q, activa]. */
     external fun eqState(id: Int): FloatArray
@@ -176,4 +189,28 @@ object Nucleo {
     external fun restoreRegions(id: Int)
     external fun undo(): Boolean
     external fun redo(): Boolean
+
+    // ---------- Automatización de volumen y paneo (param: AUTO_VOLUMEN o AUTO_PANEO)
+    /** AUTO_APAGADA (suenan los valores fijos), AUTO_LEER o AUTO_GRABAR (mover los deslizadores graba). */
+    external fun setAutoMode(id: Int, mode: Int)
+    /**
+     * Para dibujar el carril: [n, posición del valor fijo, valor fijo, posición guía (0 dB o el
+     * centro), y por punto: cuadro, posición (0 abajo .. 1 arriba), valor].
+     */
+    external fun autoLane(id: Int, param: Int): DoubleArray
+    /**
+     * En cada cuadro: avanza lo que se esté grabando y da por espacio [estado, volumen dB, paneo].
+     * Estado: 1 = el volumen sigue la automatización, 2 = el paneo, 4 = se graba el volumen, 8 = el paneo.
+     */
+    external fun automationNow(out: FloatArray)
+    /** Un punto desde el carril (pos 0..1). Devuelve su índice o -1. */
+    external fun autoAdd(id: Int, param: Int, frame: Long, pos: Float): Int
+    external fun autoRemove(id: Int, param: Int, index: Int): Boolean
+    external fun autoClear(id: Int, param: Int)
+    /** Arrastre de un punto: cuadros y posición desde que empezó (un paso de deshacer). */
+    external fun autoBegin(id: Int, param: Int, index: Int): Boolean
+    external fun autoDrag(deltaFrames: Long, deltaPos: Float)
+    external fun autoEnd()
+    /** El dedo está (o ya no) sobre el deslizador de volumen o paneo. */
+    external fun autoTouch(id: Int, param: Int, down: Boolean)
 }

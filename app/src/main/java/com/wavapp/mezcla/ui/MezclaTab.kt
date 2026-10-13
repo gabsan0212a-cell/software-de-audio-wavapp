@@ -36,6 +36,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.wavapp.mezcla.Mesa
+import com.wavapp.mezcla.Nucleo
 import com.wavapp.mezcla.Pista
 import java.util.Locale
 
@@ -157,24 +158,72 @@ private fun TarjetaPista(pista: Pista, modifier: Modifier) {
                 "EQ", pista.eqActivo, { Mesa.eqAbierta = pista }, colorActivo = p.acento, colorInactivo = p.texto2,
                 descripcion = "EQ pista ${pista.id}",
             )
+            Spacer(Modifier.width(6.dp))
+            ChipAuto(pista)
             MedidorPista(pista.medidor, Modifier.weight(1f).padding(start = 14.dp).height(10.dp))
         }
         Column(Modifier.padding(start = 12.dp, end = 14.dp, top = 8.dp)) {
-            FilaDeslizador("Vol", textoDb(pista.volDb, Mesa.VOL_MIN + 0.1f), { Mesa.ponerVolumen(pista, 0f) }) { mod ->
-                Deslizador(
-                    pista.volDb, Mesa.VOL_MIN, Mesa.VOL_MAX, { Mesa.ponerVolumen(pista, it) }, mod,
-                    alReiniciar = { Mesa.ponerVolumen(pista, 0f) }, color = color, descripcion = "Volumen pista ${pista.id}",
-                )
-            }
-            FilaDeslizador("Pan", textoPan(pista.pan), { Mesa.ponerPan(pista, 0f) }) { mod ->
-                Deslizador(
-                    pista.pan.toFloat(), -100f, 100f, { Mesa.ponerPan(pista, it) }, mod,
-                    alReiniciar = { Mesa.ponerPan(pista, 0f) }, desde = 0f, color = color,
-                    descripcion = "Paneo pista ${pista.id}",
-                )
-            }
+            FilaVolumen(pista, color)
+            FilaPaneo(pista, color)
         }
         OndaPista(pista, color, Modifier.padding(top = 10.dp).fillMaxWidth().height(64.dp))
+    }
+}
+
+/**
+ * "A": automatización. Roja si mover los deslizadores graba; verde si los deslizadores siguen
+ * puntos ya puestos.
+ */
+@Composable
+private fun ChipAuto(pista: Pista) {
+    val p = LocalPaleta.current
+    val graba = pista.autoModo == Nucleo.AUTO_GRABAR
+    val activa = graba || (pista.autoModo == Nucleo.AUTO_LEER && pista.tieneAuto)
+    Chip(
+        "A", activa, { Vista.automatizacion = pista }, colorActivo = if (graba) p.rojo else p.verde,
+        colorInactivo = p.texto2, descripcion = "Automatización pista ${pista.id}",
+    )
+}
+
+/** Color del valor de un deslizador: rojo mientras se graba, verde si sigue la automatización. */
+@Composable
+private fun colorValor(pista: Pista, param: Int): Color {
+    val p = LocalPaleta.current
+    return when {
+        pista.grabando(param) -> p.rojo
+        pista.sigue(param) -> p.verde
+        else -> p.texto
+    }
+}
+
+// Lo que marcan cambia en cada cuadro si hay automatización: cada fila se recompone sola.
+@Composable
+private fun FilaVolumen(pista: Pista, color: Color) {
+    val v = pista.volMostrado
+    FilaDeslizador(
+        "Vol", textoDb(v, Mesa.VOL_MIN + 0.1f), { Mesa.ponerVolumen(pista, 0f) },
+        colorValor = colorValor(pista, Nucleo.AUTO_VOLUMEN),
+    ) { mod ->
+        Deslizador(
+            v, Mesa.VOL_MIN, Mesa.VOL_MAX, { Mesa.ponerVolumen(pista, it) }, mod,
+            alReiniciar = { Mesa.ponerVolumen(pista, 0f) }, color = color, descripcion = "Volumen pista ${pista.id}",
+            alTocar = { Mesa.tocarDeslizador(pista, Nucleo.AUTO_VOLUMEN, it) },
+        )
+    }
+}
+
+@Composable
+private fun FilaPaneo(pista: Pista, color: Color) {
+    val v = pista.panMostrado
+    FilaDeslizador(
+        "Pan", textoPan(v), { Mesa.ponerPan(pista, 0f) }, colorValor = colorValor(pista, Nucleo.AUTO_PANEO),
+    ) { mod ->
+        Deslizador(
+            v.toFloat(), -100f, 100f, { Mesa.ponerPan(pista, it) }, mod,
+            alReiniciar = { Mesa.ponerPan(pista, 0f) }, desde = 0f, color = color,
+            descripcion = "Paneo pista ${pista.id}",
+            alTocar = { Mesa.tocarDeslizador(pista, Nucleo.AUTO_PANEO, it) },
+        )
     }
 }
 

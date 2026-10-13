@@ -5,6 +5,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -51,6 +53,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -334,6 +337,7 @@ fun Segmentado(opciones: List<String>, elegido: Int, alElegir: (Int) -> Unit, mo
 /**
  * Deslizador de iOS: riel delgado y perilla blanca. Tocar o arrastrar pone el valor; doble toque
  * lo regresa a su inicio. [desde]: de dónde sale el relleno (p. ej. el centro en el paneo).
+ * [alTocar]: el dedo se apoyó (true) o se levantó (false), p. ej. para grabar movimientos.
  */
 @Composable
 fun Deslizador(
@@ -348,11 +352,30 @@ fun Deslizador(
     riel: Color = LocalPaleta.current.relleno,
     descripcion: String = "",
     habilitado: Boolean = true,
+    alTocar: ((Boolean) -> Unit)? = null,
 ) {
     val cambiar by rememberUpdatedState(alCambiar)
     val reiniciar by rememberUpdatedState(alReiniciar)
+    val tocar by rememberUpdatedState(alTocar)
     val sombra = Color.Black.copy(alpha = if (LocalPaleta.current.oscuro) 0.35f else 0.16f)
     val gestos = if (!habilitado) Modifier else Modifier
+        .then(
+            if (alTocar == null) Modifier else Modifier.pointerInput(Unit) {
+                // Se ve antes que el toque y el arrastre (y su final, después): así lo que cambia
+                // mientras tanto queda "con el dedo encima".
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    tocar?.invoke(true)
+                    try {
+                        do {
+                            val e = awaitPointerEvent(PointerEventPass.Final)
+                        } while (e.changes.any { it.pressed })
+                    } finally {
+                        tocar?.invoke(false)
+                    }
+                }
+            },
+        )
         .pointerInput(minimo, maximo, alReiniciar != null) {
             val r = 13.dp.toPx()
             fun valorEn(x: Float) = minimo + ((x - r) / max(1f, size.width - 2 * r)).coerceIn(0f, 1f) * (maximo - minimo)
@@ -554,6 +577,7 @@ fun FilaDeslizador(
     modifier: Modifier = Modifier,
     anchoEtiqueta: Dp = 38.dp,
     anchoValor: Dp = 70.dp,
+    colorValor: Color = LocalPaleta.current.texto,
     control: @Composable RowScope.(Modifier) -> Unit,
 ) {
     val p = LocalPaleta.current
@@ -561,7 +585,7 @@ fun FilaDeslizador(
         Texto(etiqueta, Tipo.nota, p.texto2, Modifier.width(anchoEtiqueta).dobleToque(alReiniciar), lineas = 1)
         control(Modifier.weight(1f))
         Texto(
-            valor, Tipo.nota.numeros, p.texto, Modifier.width(anchoValor).dobleToque(alReiniciar), lineas = 1,
+            valor, Tipo.nota.numeros, colorValor, Modifier.width(anchoValor).dobleToque(alReiniciar), lineas = 1,
             alineacion = TextAlign.End,
         )
     }

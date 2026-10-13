@@ -67,11 +67,14 @@ JNI(jintArray, outputInfo)(JNIEnv *env, jobject) {
 }
 // [pistas máx., bandas máx., medidores, datos de análisis, versiones, columnas y filas del
 //  espectrograma, frecuencia del proyecto, pedazos máx., versión de la entrada, datos de la
-//  entrada, id del EQ de la entrada]
+//  entrada, id del EQ de la entrada, primera versión por espacio, versiones por espacio, datos de
+//  automationNow por espacio, datos de trackParams]
 JNI(jintArray, constants)(JNIEnv *env, jobject) {
     const int32_t v[] = {kMaxTracks, kMaxBands, MeterBallistics::kCount, AnalysisView::kStatCount,
                          Studio::kVersionCount, Studio::kSpectrogramCols, Studio::kSpectrogramRows, Studio::kRate,
-                         kMaxRegions, Studio::kVerInput, Studio::kInputStateCount, Studio::kInputId};
+                         kMaxRegions, Studio::kVerInput, Studio::kInputStateCount, Studio::kInputId,
+                         Studio::kVerFirstSlot, Studio::kVersPerSlot, Studio::kAutoNowCount,
+                         Studio::kTrackParamCount};
     const jsize n = static_cast<jsize>(sizeof v / sizeof v[0]);
     jintArray a = env->NewIntArray(n);
     env->SetIntArrayRegion(a, 0, n, v);
@@ -87,9 +90,9 @@ JNI(void, versions)(JNIEnv *env, jobject, jintArray out) {
 }
 JNI(jstring, tracksJson)(JNIEnv *env, jobject) { return jstr(env, gStudio.tracksJson()); }
 JNI(jboolean, trackParams)(JNIEnv *env, jobject, jint id, jfloatArray out) {
-    float v[5];
+    float v[Studio::kTrackParamCount];
     if (!gStudio.trackParams(id, v)) return JNI_FALSE;
-    env->SetFloatArrayRegion(out, 0, std::min<jsize>(5, env->GetArrayLength(out)), v);
+    env->SetFloatArrayRegion(out, 0, std::min<jsize>(Studio::kTrackParamCount, env->GetArrayLength(out)), v);
     return JNI_TRUE;
 }
 JNI(jfloatArray, eqState)(JNIEnv *env, jobject, jint id) { return floats(env, gStudio.eqState(id)); }
@@ -285,3 +288,31 @@ JNI(void, setRegionFade)(JNIEnv *, jobject, jint id, jint index, jboolean fadeIn
 JNI(void, restoreRegions)(JNIEnv *, jobject, jint id) { gStudio.restoreRegions(id); }
 JNI(jboolean, undo)(JNIEnv *, jobject) { return gStudio.undo() ? JNI_TRUE : JNI_FALSE; }
 JNI(jboolean, redo)(JNIEnv *, jobject) { return gStudio.redo() ? JNI_TRUE : JNI_FALSE; }
+
+// ---------- Automatización (param 0 = volumen, 1 = paneo)
+JNI(void, setAutoMode)(JNIEnv *, jobject, jint id, jint mode) { gStudio.setAutoMode(id, mode); }
+JNI(jdoubleArray, autoLane)(JNIEnv *env, jobject, jint id, jint param) {
+    const std::vector<double> v = gStudio.autoLane(id, param);
+    jdoubleArray a = env->NewDoubleArray(static_cast<jsize>(v.size()));
+    if (a && !v.empty()) env->SetDoubleArrayRegion(a, 0, static_cast<jsize>(v.size()), v.data());
+    return a;
+}
+JNI(void, automationNow)(JNIEnv *env, jobject, jfloatArray out) {
+    float v[Studio::kAutoNowCount * kMaxTracks];
+    gStudio.automationNow(v);
+    const jsize n = std::min<jsize>(env->GetArrayLength(out), Studio::kAutoNowCount * kMaxTracks);
+    env->SetFloatArrayRegion(out, 0, n, v);
+}
+JNI(jint, autoAdd)(JNIEnv *, jobject, jint id, jint param, jlong frame, jfloat pos) {
+    return gStudio.autoAdd(id, param, frame, pos);
+}
+JNI(jboolean, autoRemove)(JNIEnv *, jobject, jint id, jint param, jint index) {
+    return gStudio.autoRemove(id, param, index) ? JNI_TRUE : JNI_FALSE;
+}
+JNI(void, autoClear)(JNIEnv *, jobject, jint id, jint param) { gStudio.autoClear(id, param); }
+JNI(jboolean, autoBegin)(JNIEnv *, jobject, jint id, jint param, jint index) {
+    return gStudio.autoBegin(id, param, index) ? JNI_TRUE : JNI_FALSE;
+}
+JNI(void, autoDrag)(JNIEnv *, jobject, jlong deltaFrames, jfloat deltaPos) { gStudio.autoDrag(deltaFrames, deltaPos); }
+JNI(void, autoEnd)(JNIEnv *, jobject) { gStudio.autoEnd(); }
+JNI(void, autoTouch)(JNIEnv *, jobject, jint id, jint param, jboolean down) { gStudio.autoTouch(id, param, down); }

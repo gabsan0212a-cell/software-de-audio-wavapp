@@ -55,6 +55,7 @@ Mixer::Mixer(int sampleRate) : mSampleRate(sampleRate) {
     mCoefInv = smoothCoef(0.005f, sampleRate);
     mCoefMaster = smoothCoef(0.020f, sampleRate);
     mTauPanFrames = 0.015f * sampleRate;
+    mLookAhead = static_cast<int64_t>(std::lround(0.015 * sampleRate));
     mLimiter.setup(sampleRate);
     for (Slot &s : mSlots) s.eq.setSampleRate(sampleRate);
     mTapL.reset(new std::atomic<float>[kTapSize]());
@@ -89,6 +90,9 @@ bool Mixer::setTrack(int slot, std::unique_ptr<MappedAudio> audio) {
     s.invert.store(false);
     s.eq.clear();
     s.removing.store(false);
+    for (auto &h : s.hold) h.store(false);
+    s.autos.store(nullptr);
+    s.ownedAutos.reset();
     s.peakL.store(0.0f);
     s.peakR.store(0.0f);
     // Nadie lee los pedazos de un espacio vacío: se cambian sin esperar.
@@ -112,12 +116,15 @@ std::unique_ptr<MappedAudio> Mixer::takeTrack(int slot) {
     if (mRolling.load()) std::this_thread::sleep_for(std::chrono::milliseconds(40));
     s.audio.store(nullptr);
     s.pieces.store(nullptr);
+    s.autos.store(nullptr);
     std::unique_ptr<MappedAudio> a = std::move(s.owned);
     std::unique_ptr<PieceSet> ps = std::move(s.ownedPieces);
+    std::unique_ptr<AutoSet> as = std::move(s.ownedAutos);
     if (!waitForAudioThread()) {
         // El hilo de audio no respondió: no liberamos para no arriesgar un cierre.
         a.release();
         ps.release();
+        as.release();
     }
     s.removing.store(false);
     updateLength();
@@ -196,6 +203,36 @@ bool Mixer::setRegions(int slot, const std::vector<Region> &regions) {
     publishPieces(s, makePieces(regions, s.owned->frames()));
     updateLength();
     return true;
+}
+
+void Mixer::publishAutos(Slot &s, std::unique_ptr<AutoSet> as) {
+    std::unique_ptr<AutoSet> old = std::move(s.ownedAutos);
+    s.ownedAutos = std::move(as);
+    s.autos.store(s.ownedAutos.get(), std::memory_order_release);
+    if (!waitForAudioThread()) old.release();
+}
+
+void Mixer::setAutomation(int slot, int param, std::vector<autom::PosPoint> points) {
+    if (slot < 0 || slot >= kMaxTracks || param < 0 || param >= autom::kParamCount) return;
+    std::lock_guard<std::mutex> lk(mMutex);
+    Slot &s = mSlots[slot];
+    if (!s.owned) return;
+    auto as = std::make_unique<AutoSet>();
+    if (s.ownedAutos) *as = *s.ownedAutos;
+    as->lane[param] = std::move(points);
+    const bool empty = std::all_of(std::begin(as->lane), std::end(as->lane), [](const auto &l) { return l.empty(); });
+    publishAutos(s, empty ? nullptr : std::move(as));
+}
+
+void Mixer::setAutomationHold(int slot, int param, bool hold) {
+    if (slot >= 0 && slot < kMaxTracks && param >= 0 && param < autom::kParamCount) mSlots[slot].hold[param].store(hold);
+}
+
+std::vector<autom::PosPoint> Mixer::automation(int slot, int param) const {
+    if (slot < 0 || slot >= kMaxTracks || param < 0 || param >= autom::kParamCount) return {};
+    std::lock_guard<std::mutex> lk(mMutex);
+    const Slot &s = mSlots[slot];
+    return s.owned && s.ownedAutos ? s.ownedAutos->lane[param] : std::vector<autom::PosPoint>();
 }
 
 std::vector<Region> Mixer::regions(int slot) const {
@@ -345,6 +382,10 @@ void Mixer::renderBlock(int n) {
         return;
     }
 
+    // Arranca desde silencio (play o un salto): los valores suavizados pueden ir directo a su
+    // objetivo, así una automatización suena bien desde la primera muestra.
+    const bool fresh = mTransport == 0.0f;
+
     // Rampa del transporte: ~5 ms de 0 a 1.
     constexpr float kStep = 1.0f / 256.0f;
     for (int i = 0; i < n; ++i) {
@@ -370,21 +411,41 @@ void Mixer::renderBlock(int n) {
         const PieceSet *ps = s.pieces.load(std::memory_order_acquire);
         if (!a || !ps) continue;
         const bool tap = si == tapSource;
-        const float gainT = s.gain.load(std::memory_order_relaxed);
-        const float panT = s.pan.load(std::memory_order_relaxed);
+        float gainT = s.gain.load(std::memory_order_relaxed);
+        float panT = s.pan.load(std::memory_order_relaxed);
+        const uint32_t gen = s.gen.load(std::memory_order_relaxed);
+        const bool snap = fresh || gen != s.seenGen;  // los valores suavizados empiezan donde van
+        float gainNow = gainT, panNow = panT;
+        if (const AutoSet *as = s.autos.load(std::memory_order_acquire)) {
+            // El suavizado va ~15 ms atrás de su objetivo: la automatización se lee esos 15 ms
+            // adelante, así lo que suena cae justo en la curva (y un escalón queda centrado).
+            const int64_t at = mPos + n / 2 + mLookAhead;
+            const std::vector<autom::PosPoint> &vol = as->lane[autom::kVolume], &pan = as->lane[autom::kPan];
+            if (!vol.empty() && !s.hold[autom::kVolume].load(std::memory_order_relaxed)) {
+                gainT = autom::gainFromPos(autom::posAt(vol, at));
+                gainNow = snap ? autom::gainFromPos(autom::posAt(vol, mPos)) : gainT;
+            }
+            if (!pan.empty() && !s.hold[autom::kPan].load(std::memory_order_relaxed)) {
+                panT = autom::panFromPos(autom::posAt(pan, at));
+                panNow = snap ? autom::panFromPos(autom::posAt(pan, mPos)) : panT;
+            }
+        }
         const float invT = s.invert.load(std::memory_order_relaxed) ? -1.0f : 1.0f;
         const bool on = !s.mute.load(std::memory_order_relaxed) &&
                         (!anySolo || s.solo.load(std::memory_order_relaxed)) &&
                         !s.removing.load(std::memory_order_relaxed);
         const float onT = on ? 1.0f : 0.0f;
-        const uint32_t gen = s.gen.load(std::memory_order_relaxed);
         if (gen != s.seenGen) {  // pista nueva en este espacio: entra con fundido
             s.seenGen = gen;
-            s.gainS = gainT;
-            s.panS = panT;
+            s.gainS = gainNow;
+            s.panS = panNow;
             s.invS = invT;
-            s.onS = mOffline ? onT : 0.0f;  // al exportar no hay fundido de entrada
+            s.onS = mOffline || fresh ? onT : 0.0f;  // al exportar no hay fundido de entrada
             s.eq.resetState();
+        } else if (fresh) {
+            s.gainS = gainNow;
+            s.panS = panNow;
+            s.onS = onT;
         }
 
         // El paneo se suaviza por bloque y la matriz se interpola dentro del bloque.
@@ -581,6 +642,10 @@ bool Mixer::cloneInto(Mixer &dst, std::string &error) const {
         }
         if (s.ownedPieces) dst.setRegions(i, s.ownedPieces->regions);
         Slot &d = dst.mSlots[i];
+        if (s.ownedAutos) {
+            std::lock_guard<std::mutex> dl(dst.mMutex);
+            dst.publishAutos(d, std::make_unique<AutoSet>(*s.ownedAutos));
+        }
         d.gain.store(s.gain.load());
         d.pan.store(s.pan.load());
         d.mute.store(s.mute.load());

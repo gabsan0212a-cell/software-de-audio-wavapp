@@ -76,6 +76,8 @@ Sin plugins VST en Android.
 - `tests/native/run.sh`: pruebas del núcleo en Linux con ASan, UBSan y TSan (incluye el
   Studio completo: sesión, importar, editar, deshacer, exportar, varios hilos a la vez).
 - `tests/check_jni.py`: que Kotlin y C++ coincidan en el puente (nombres y tipos).
+- `tests/previa/previa.sh`: vista previa de la pantalla en Linux (Compose de escritorio con
+  el núcleo real): capturas en claro y oscuro sin esperar al emulador. Solo para desarrollar.
 - `app/src/androidTest/`: pruebas en un emulador Android (audio real, importación, pantalla en
   claro y oscuro, con capturas en Releases → `capturas`). Al final se instala el APK
   optimizado (el que se publica) y se revisa que arranque.

@@ -1,0 +1,20 @@
+#pragma once
+// Salida de audio de escritorio (vista previa): pide la mezcla a ritmo real y la descarta.
+#include <atomic>
+#include <cstdint>
+#include <mutex>
+#include <thread>
+class Mixer;
+class AudioOutput {
+public:
+    explicit AudioOutput(Mixer &mixer) : mMixer(mixer) {}
+    ~AudioOutput() { stop(); }
+    bool start();
+    void stop();
+    void info(int32_t out[6]);
+private:
+    Mixer &mMixer;
+    std::thread mThread;
+    std::atomic<bool> mRunning{false};
+    std::mutex mMutex;
+};

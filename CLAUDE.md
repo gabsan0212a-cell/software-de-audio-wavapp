@@ -30,7 +30,9 @@
 - Etapas pequeñas: diseño, código, pruebas, corregir y volver a probar.
 - Comunicarse en español. Informar solo cuando algo esté listo o cuando haga falta que el
   dueño intervenga.
-- Antes de subir: `bash tests/native/run.sh` y `python3 tests/check_jni.py`. El CI corre
+- Antes de subir: `bash tests/native/run.sh` y `python3 tests/check_jni.py`. Si cambia la
+  pantalla: `bash tests/previa/previa.sh --compilar` (compila contra Compose 1.7) y
+  `bash tests/previa/previa.sh` (capturas en `tests/previa/capturas`, revisarlas). El CI corre
   además la compilación del APK y las pruebas en emulador (con capturas en Releases →
   `capturas`), y solo publica si todo pasa.
 - Subir la versión (`versionCode`/`versionName` en `app/build.gradle.kts`) con cada entrega.

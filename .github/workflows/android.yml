@@ -2,6 +2,8 @@ name: Compilar APK
 
 on:
   push:
+    paths-ignore:
+      - 'tests/previa/**'  # la vista previa de escritorio no cambia el APK
   workflow_dispatch:
 
 permissions:

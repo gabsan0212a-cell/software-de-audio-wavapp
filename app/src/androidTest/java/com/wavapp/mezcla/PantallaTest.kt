@@ -5,6 +5,7 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.click
@@ -23,6 +24,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -281,8 +283,12 @@ class PantallaTest {
             "Medir otra vez"
         }
         regla.onNodeWithTag("panelAnalisis").performScrollToNode(hasText(boton))
-        regla.onNodeWithText(boton).performClick()
-        avanzarHasta(60_000, { "no midió la canción: ${Mesa.volumen.cancion}" }) { Mesa.volumen.cancion == 2 }
+        // Al desplazarse, el botón puede quedar abajo, detrás del mini reproductor: se toca por su
+        // acción (como lo haría el lector de pantalla), no por la posición del dedo.
+        regla.onNodeWithText(boton).performSemanticsAction(SemanticsActions.OnClick)
+        avanzarHasta(60_000, {
+            "no midió la canción: ${Mesa.volumen.cancion}, ocupada=${Mesa.ocupada}, estado=${Mesa.estado}"
+        }) { Mesa.volumen.cancion == 2 }
         assertTrue(Mesa.volumen.cancionIntegrado > -60f && Mesa.volumen.curva.isNotEmpty())
         avanzarMedidores()
         captura("24-lufs-cancion")

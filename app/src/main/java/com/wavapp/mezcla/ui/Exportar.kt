@@ -44,8 +44,19 @@ fun HojaExportar(visible: Boolean, alCerrar: () -> Unit, alGuardar: () -> Unit) 
         )
         val mb = Mesa.tamanoExportacion() / 1048576.0
         PieGrupo(
-            "Se exporta la canción completa tal como suena: volumen, paneo, mute/solo, EQ, notch y master con " +
-                "limitador. Tamaño ≈ " + String.format(Locale.US, "%.1f", mb) + " MB.",
+            "Se exporta la canción completa tal como suena: volumen, paneo, automatización, mute/solo, EQ, " +
+                "efectos, notch y master con limitador. Tamaño ≈ " + String.format(Locale.US, "%.1f", mb) + " MB.",
+        )
+        EncabezadoGrupo("Volumen (LUFS)")
+        AjusteLufsExportar()
+        PieGrupo(
+            if (Mesa.ajustarAlExportar) {
+                "Primero se mide la canción completa y luego se sube o se baja el master para que quede en " +
+                    "${textoObjetivo(Mesa.objetivoLufs)} LUFS. Tarda un poco más. Si hay que subir, el limitador evita " +
+                    "que se recorte."
+            } else {
+                "Apagado: se exporta con el volumen que tiene. Lo ves en Análisis → Volumen percibido."
+            },
         )
         BotonRelleno(
             "Elegir dónde guardar…", alGuardar, Modifier.padding(top = 22.dp).fillMaxWidth(), icono = Iconos.compartir,

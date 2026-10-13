@@ -32,6 +32,7 @@ struct TrackModel {
     std::vector<EqBandModel> bands;  // en el orden en que se agregaron
     std::vector<Region> regions;
     bool hasRegions = false;       // al leer la sesión: traía pedazos (si no, el archivo completo)
+    fx::Values fx = fx::defaults();  // compresor, delay y reverb (engine/Effects.h)
     // Automatización: 0 apagada (suenan los valores fijos), 1 leer, 2 grabar movimientos.
     int autoMode = 1;
     autom::Lane autoPts[autom::kParamCount];  // volumen (dB) y paneo, por cuadro
@@ -45,6 +46,8 @@ struct MasterModel {
     int notch = 0;       // 0, 50 o 60 Hz
     int exportBits = 24; // 16, 24 o 32 (float)
     int exportRate = 48000;
+    int loudTarget = -14;        // LUFS de referencia: −14 (Spotify, YouTube), −16 (Apple) o −23 (TV)
+    bool exportNormalize = false;  // al exportar, ajustar el volumen a ese objetivo
 };
 
 struct ProjectModel {

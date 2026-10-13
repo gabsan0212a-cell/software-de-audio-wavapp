@@ -46,7 +46,12 @@ El APK solo se publica si pasan todas las pruebas.
       arrastrar mueve, dos toques quitan, con deshacer) y movimientos de los deslizadores
       grabados mientras suena (botón **A** → Grabar; al soltar regresa a lo que había). Se oye
       igual al exportar
-- [ ] 8. Guardar/abrir proyectos (por ahora la mezcla actual se guarda sola)
+- [x] 8. Medidor de volumen percibido (LUFS, como Spotify o YouTube): momentáneo, corto plazo,
+      integrado, rango y pico real, en vivo y de la canción completa; al exportar se puede ajustar
+      a −14, −16 o −23 LUFS
+- [x] 9. Efectos por pista: compresor, delay (eco, con ping-pong) y reverb, con presets ("Voz",
+      "Voz con eco", "Batería", "Bajo", "Guitarra"...). Suenan igual al exportar
+- [ ] 10. Guardar/abrir proyectos (por ahora la mezcla actual se guarda sola)
 
 Sin plugins VST en Android.
 
@@ -60,11 +65,15 @@ Sin plugins VST en Android.
   - `io/`: `WavReader` / `WavWriter` (cualquier WAV por partes; el formato interno),
     `MappedAudio` (las pistas, mapeadas en memoria: no llenan la RAM), `Json` (la sesión).
   - `dsp/`: `Resampler` (a 48 kHz al importar, ~120 dB de precisión), `Equalizer` (biquads
-    como Web Audio), `Limiter`, `Analyzer` (FFT, espectro, fase, zumbido, espectrograma) y
-    `AnalysisView` (lo que muestra el panel: veredicto, goniómetro, espectro por columnas).
+    como Web Audio), `Limiter`, `Analyzer` (FFT, espectro, fase, zumbido, espectrograma),
+    `AnalysisView` (lo que muestra el panel: veredicto, goniómetro, espectro por columnas),
+    `Loudness` (LUFS según ITU-R BS.1770 / EBU R128: ponderación K, compuertas, rango y pico
+    real ×4), `Dynamics` (compresor), `Delay` y `Reverb` (red de retardos de 8 líneas).
   - `engine/`: `Mixer` (la mezcla en tiempo real; cada pista es una lista de pedazos con
     fundidos y su volumen y paneo pueden seguir una automatización), `Automation` (curvas de
-    automatización: escala del carril, valor en cada momento, simplificar lo grabado), `LiveInput` (la entrada en vivo: ganancia, EQ, escucha, medidores y el grabador), `Importer` (WAV o decodificado → formato interno), `Exporter`, `Meters`
+    automatización: escala del carril, valor en cada momento, simplificar lo grabado), `Effects`
+    (los efectos de una pista: ajustes, presets; el compresor va en la señal y el delay y la reverb
+    son envíos que se suman después del volumen y el paneo), `LiveInput` (la entrada en vivo: ganancia, EQ, escucha, medidores y el grabador), `Importer` (WAV o decodificado → formato interno), `Exporter`, `Meters`
     (caídas y picos de los medidores) y `Decoder.h` (lo que debe dar la plataforma).
   - `project/`: `Model` (el proyecto), `Session` (sesion.json) y `Edit` (mover, recortar,
     fundidos, cortar, imán).
@@ -77,8 +86,9 @@ Sin plugins VST en Android.
     `Componentes.kt` (botones, píldoras, interruptor, segmentado, deslizadores, tarjetas) y
     `Superpuestos.kt` (hojas, menús de acciones, alertas, barra de arriba).
   - `Pantalla.kt` (pestañas y mini reproductor), `MezclaTab.kt`, `Reproductor.kt`,
-    `Ecualizador.kt`, `AnalisisPanel.kt`, `EdicionPanel.kt` (pedazos y carriles de
-    automatización), `Automatizacion.kt` (la hoja del botón A), `GrabarTab.kt` y `Exportar.kt`.
+    `Ecualizador.kt`, `Efectos.kt` (la hoja del botón FX), `AnalisisPanel.kt`, `Volumen.kt`
+    (LUFS), `EdicionPanel.kt` (pedazos y carriles de automatización), `Automatizacion.kt` (la hoja
+    del botón A), `GrabarTab.kt` y `Exportar.kt`.
   - `Plataforma.kt`: lo único que obliga Android en la pantalla (atrás, pantalla encendida,
     selector de archivos, barra de estado).
 

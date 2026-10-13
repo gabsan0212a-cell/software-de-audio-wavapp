@@ -15,8 +15,8 @@ android {
         applicationId = "com.wavapp.mezcla"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.9.0"
+        versionCode = 14
+        versionName = "0.10.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {

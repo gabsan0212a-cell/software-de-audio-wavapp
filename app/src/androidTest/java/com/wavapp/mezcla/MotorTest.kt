@@ -127,6 +127,61 @@ class MotorTest {
     }
 
     @Test
+    fun efectosYVolumenPercibido() {
+        cargarPrueba()
+        val p = pistas()
+        val id = p.getJSONObject(1).getInt("id")
+        val espacio = p.getJSONObject(1).getInt("slot")
+        // Preset "Voz al frente": compresor fuerte y un poco de reverb.
+        val nombres = JSONArray(Nucleo.fxPresetsJson())
+        val indice = (0 until nombres.length()).first { nombres.getString(it) == "Voz al frente" }
+        assertTrue(Nucleo.applyFxPreset(id, indice))
+        val fx = Nucleo.fxState(id)
+        assertEquals(Nucleo.FX_PARAMS, fx.size)
+        assertEquals(1f, fx[Nucleo.FX_COMP])
+        assertEquals(1f, fx[Nucleo.FX_REVERB])
+        Nucleo.setFx(id, Nucleo.FX_DELAY, 1f)
+        Nucleo.setFx(id, Nucleo.FX_DELAY_TIEMPO, 250f)
+        assertEquals(250f, Nucleo.fxState(id)[Nucleo.FX_DELAY_TIEMPO])
+        // Suena: el compresor trabaja y el volumen percibido se mide.
+        Nucleo.seek(0.0)
+        Nucleo.play()
+        Thread.sleep(2500)
+        val m = FloatArray(Nucleo.MEDIDORES)
+        Nucleo.meters(SystemClock.uptimeMillis(), m)
+        assertTrue("el compresor baja (${m[Nucleo.medCompresor(espacio)]} dB)", m[Nucleo.medCompresor(espacio)] > 0.5f)
+        val v = FloatArray(Nucleo.DATOS_LUFS)
+        Nucleo.loudness(v)
+        assertTrue("mide el momentáneo (${v[0]})", v[0] > -60f)
+        assertTrue("mide los segundos (${v[7]})", v[7] > 1.5f)
+        Nucleo.pause()
+        // La canción completa, fuera de tiempo real.
+        assertTrue(Nucleo.measureSong())
+        assertTrue(Nucleo.waitIdle(120_000))
+        val c = FloatArray(Nucleo.DATOS_LUFS_CANCION)
+        Nucleo.songLoudness(c)
+        assertEquals(2f, c[0])
+        assertTrue("integrado de la canción (${c[1]})", c[1] > -40f && c[1] < -5f)
+        assertEquals(100, Nucleo.songLoudnessCurve(100).size)
+        // Exportar ajustado a −16 LUFS.
+        Nucleo.setLoudnessTarget(-16)
+        Nucleo.setExportNormalize(true)
+        val salida = File(archivos, "ajustada.wav")
+        val modo = ParcelFileDescriptor.MODE_WRITE_ONLY or ParcelFileDescriptor.MODE_CREATE or
+            ParcelFileDescriptor.MODE_TRUNCATE
+        assertTrue(Nucleo.exportMix(ParcelFileDescriptor.open(salida, modo).detachFd(), "ajustada.wav"))
+        assertTrue(Nucleo.waitIdle(180_000))
+        val st = estado()
+        assertTrue(st.toString(), st.getBoolean("ultimaOk"))
+        val lufs = Regex("""([−-]?\d+\.\d) LUFS""").find(st.getString("mensaje"))?.groupValues?.get(1)
+            ?.replace('−', '-')?.toFloat()
+        assertNotNull(st.getString("mensaje"), lufs)
+        assertEquals(-16f, lufs!!, 0.6f)
+        Nucleo.setExportNormalize(false)
+        Nucleo.setLoudnessTarget(-14)
+    }
+
+    @Test
     fun analisisEnVivo() {
         cargarPrueba()
         Nucleo.setAnalysisSource(-1)

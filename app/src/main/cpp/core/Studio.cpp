@@ -61,6 +61,13 @@ std::string describe(const ImportInfo &i, const std::string &codec) {
     return rate + " · " + bits + " · " + ch;
 }
 
+// Número con su signo tipográfico ("−14.0"), como los muestra la pantalla.
+std::string signed1(double v) {
+    std::string t = fmt("%.1f", v);
+    if (!t.empty() && t[0] == '-') t = "\u2212" + t.substr(1);
+    return t;
+}
+
 std::string formatText(int bits, int rate) {
     return (bits == 32 ? std::string("32 bits float") : std::to_string(bits) + " bits") + " · " +
            std::to_string(rate) + " Hz";
@@ -150,6 +157,12 @@ void Studio::open(const std::string &filesDir, const std::string &cacheDir) {
         std::lock_guard<std::mutex> lk(mSgMutex);
         mSgCache.clear();
     }
+    {
+        std::lock_guard<std::mutex> lk(mLoudMutex);
+        mSongState = 0;
+        mSongReport = LoudnessReport();
+    }
+    resetLoudness();
     mDirty.store(false);
     bumpAll();
     std::string session;
@@ -179,12 +192,18 @@ void Studio::stopBackground() {
 void Studio::housekeeping() {
     while (mBgRun.load()) {
         mMixer.prefetch();
+        {
+            // El volumen percibido se sigue midiendo aunque la pantalla no esté mirando.
+            std::lock_guard<std::mutex> lk(mLoudMutex);
+            pumpLoudnessLocked();
+        }
         if (mDirty.load() && !mRestoring.load() && nowMs() - mDirtyMs.load() >= 400) save();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }
 
 void Studio::markDirty() {
+    mChanges.fetch_add(1, std::memory_order_relaxed);
     if (mRestoring.load()) return;
     mDirtyMs.store(nowMs());
     mDirty.store(true);
@@ -315,6 +334,8 @@ void Studio::masterState(float *out) const {
     out[3] = static_cast<float>(m.notch);
     out[4] = static_cast<float>(m.exportBits);
     out[5] = static_cast<float>(m.exportRate);
+    out[6] = static_cast<float>(m.loudTarget);
+    out[7] = m.exportNormalize ? 1.0f : 0.0f;
 }
 
 std::string Studio::statusJson() const {
@@ -423,7 +444,15 @@ void Studio::applyTrackLocked(TrackModel &t) {
     mMixer.setTrackSolo(t.slot, t.solo);
     mMixer.setTrackInvert(t.slot, t.phase);
     applyEqLocked(t);
+    applyFxLocked(t);
     for (int k = 0; k < autom::kParamCount; ++k) applyAutoLocked(t, k);
+}
+
+void Studio::applyFxLocked(TrackModel &t) {
+    // Los efectos se crean (y reservan memoria) solo cuando alguno se prende.
+    TrackFx *f = mMixer.trackFx(t.slot, fx::anyOn(t.fx));
+    if (!f) return;
+    for (int k = 0; k < fx::kCount; ++k) f->set(k, t.fx[static_cast<size_t>(k)]);
 }
 
 TrackModel *Studio::eqTargetLocked(int id) { return id == kInputId ? &mProject.input : findLocked(id); }
@@ -485,6 +514,7 @@ std::string Studio::addTrackLocked(TrackModel t, std::unique_ptr<MappedAudio> au
     t.volDb = std::clamp(roundTo(t.volDb, 0.5f), kVolMin, kVolMax);
     t.pan = std::clamp(t.pan, -100, 100);
     if (t.autoMode < kAutoOff || t.autoMode > kAutoWrite) t.autoMode = kAutoRead;
+    for (int k = 0; k < fx::kCount; ++k) t.fx[static_cast<size_t>(k)] = fx::clampValue(k, t.fx[static_cast<size_t>(k)]);
     for (int p = 0; p < autom::kParamCount; ++p) {
         std::vector<autom::Point> pts = t.autoPts[p].get();
         autom::normalize(p, pts);
@@ -503,6 +533,7 @@ std::string Studio::addTrackLocked(TrackModel t, std::unique_ptr<MappedAudio> au
     bump(verParams(slot));
     bump(verEq(slot));
     bump(verAuto(slot));
+    bump(verFx(slot));
     mProject.nextId = std::max(mProject.nextId, t.id + 1);
     mProject.tracks.push_back(std::move(t));
     bump(kVerTracks);
@@ -516,6 +547,7 @@ void Studio::removeAllLocked(bool deleteFiles) {
         bump(verEq(t.slot));
         bump(verRegions(t.slot));
         bump(verAuto(t.slot));
+        bump(verFx(t.slot));
         if (deleteFiles) std::remove((mAudioDir + "/" + t.file).c_str());
     }
     mProject.tracks.clear();
@@ -805,6 +837,7 @@ bool Studio::removeTrack(int id) {
         bump(verEq(slot));
         bump(verRegions(slot));
         bump(verAuto(slot));
+        bump(verFx(slot));
     }
     std::remove(file.c_str());
     {
@@ -977,6 +1010,51 @@ void Studio::eqResponse(int id, int pos, const float *freqs, float *outDb, int n
     eq->response(pos < 0 ? -1 : t->bands[pos].slot, freqs, outDb, n);
 }
 
+// ---------------------------------------------------------------- efectos
+
+void Studio::setFx(int id, int param, float value) {
+    std::lock_guard<std::mutex> lk(mModel);
+    TrackModel *t = findLocked(id);
+    if (!t || param < 0 || param >= fx::kCount) return;
+    t->fx[static_cast<size_t>(param)] = fx::clampValue(param, value);
+    applyFxLocked(*t);
+    bump(verFx(t->slot));
+    markDirty();
+}
+
+std::vector<float> Studio::fxState(int id) const {
+    std::lock_guard<std::mutex> lk(mModel);
+    const TrackModel *t = findLocked(id);
+    return t ? std::vector<float>(t->fx.begin(), t->fx.end()) : std::vector<float>();
+}
+
+std::vector<float> Studio::fxInfo() {
+    std::vector<float> v;
+    for (int k = 0; k < fx::kCount; ++k) {
+        const fx::Info &i = fx::info(k);
+        v.insert(v.end(), {i.min, i.max, i.def, i.log ? 1.0f : 0.0f});
+    }
+    return v;
+}
+
+std::string Studio::fxPresetsJson() {
+    Json a = Json::array();
+    for (int i = 0; i < fx::presetCount(); ++i) a.push(std::string(fx::preset(i).name));
+    return a.dump();
+}
+
+bool Studio::applyFxPreset(int id, int index) {
+    if (index < 0 || index >= fx::presetCount()) return false;
+    std::lock_guard<std::mutex> lk(mModel);
+    TrackModel *t = findLocked(id);
+    if (!t) return false;
+    t->fx = fx::preset(index).values;
+    applyFxLocked(*t);
+    bump(verFx(t->slot));
+    markDirty();
+    return true;
+}
+
 // ---------------------------------------------------------------- master y exportar
 
 void Studio::setMasterDb(float db) {
@@ -1043,7 +1121,9 @@ bool Studio::exportMix(int fd, const std::string &name) {
         f.bits = mProject.master.exportBits;
         f.isFloat = f.bits == 32;
         f.sampleRate = mProject.master.exportRate;
+        if (mProject.master.exportNormalize) f.targetLufs = static_cast<float>(mProject.master.loudTarget);
     }
+    if (f.targetLufs < 0.0f) setJobText("Midiendo y exportando la mezcla…");
     mJobs.post([this, fd, name, f] {
         const ExportResult r = ::exportMix(mMixer, fd, f, &mProgress, &mCancelExport);
         const bool ok = r.error.empty();
@@ -1051,9 +1131,12 @@ bool Studio::exportMix(int fd, const std::string &name) {
         if (ok) {
             const long long s = r.frames / f.sampleRate;
             char buf[160];
-            std::snprintf(buf, sizeof buf, " (%s · %lld:%02lld · %.1f MB)", formatText(f.bits, f.sampleRate).c_str(),
+            std::snprintf(buf, sizeof buf, " (%s · %lld:%02lld · %.1f MB", formatText(f.bits, f.sampleRate).c_str(),
                           s / 60, s % 60, static_cast<double>(r.bytes) / 1048576.0);
             msg = "Mezcla exportada: " + name + buf;
+            if (r.lufs > kLoudnessNone) msg += " · " + signed1(r.lufs) + " LUFS";
+            if (r.truePeak > kLoudnessNone) msg += " · pico real " + signed1(r.truePeak) + " dBTP";
+            msg += ")";
         } else {
             msg = "No se exportó: " + r.error;
         }
@@ -1070,7 +1153,10 @@ bool Studio::exportMix(int fd, const std::string &name) {
 // ---------------------------------------------------------------- transporte
 
 void Studio::play() {
-    if (trackCount() > 0) mMixer.play();
+    if (trackCount() == 0) return;
+    // Desde el inicio de la canción: medición nueva del volumen percibido.
+    if (!mMixer.isPlaying() && mMixer.position() == 0) resetLoudness();
+    mMixer.play();
 }
 
 void Studio::pause() { mMixer.pause(); }
@@ -1907,4 +1993,139 @@ std::string Studio::endTouchLocked() {
     applyAutoLocked(*t, k);
     markDirty();
     return "";
+}
+
+// ---------------------------------------------------------------- volumen percibido (LUFS)
+
+void Studio::pumpLoudnessLocked() {
+    LoudnessBlock b[64];
+    for (;;) {
+        const int n = mMixer.readLoudness(b, 64);
+        for (int i = 0; i < n; ++i)
+            if (b[i].gen == mLoudGen) mLoud.add(b[i]);
+        if (n < 64) break;
+    }
+}
+
+void Studio::loudVerdict(float lufs, int target, float *out) {
+    if (lufs <= kLoudnessNone) {
+        out[0] = kLoudNoData;
+        out[1] = 0.0f;
+        return;
+    }
+    const float diff = lufs - static_cast<float>(target);
+    out[0] = diff > 1.0f ? kLoudHigh : diff < -1.0f ? kLoudLow : kLoudOk;
+    out[1] = diff;
+}
+
+void Studio::loudness(float *out) {
+    int target;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        target = mProject.master.loudTarget;
+    }
+    std::lock_guard<std::mutex> lk(mLoudMutex);
+    pumpLoudnessLocked();
+    out[0] = mLoud.momentary();
+    out[1] = mLoud.shortTerm();
+    out[2] = mLoud.integrated();
+    out[3] = mLoud.range();
+    out[4] = mLoud.truePeakDb();
+    out[5] = mLoud.maxMomentary();
+    out[6] = mLoud.maxShortTerm();
+    out[7] = static_cast<float>(mLoud.seconds());
+    out[8] = static_cast<float>(target);
+    loudVerdict(out[2], target, out + 9);
+}
+
+void Studio::loudnessHistory(float *momentary, float *shortTerm, int n) {
+    std::lock_guard<std::mutex> lk(mLoudMutex);
+    pumpLoudnessLocked();
+    mLoud.history(momentary, shortTerm, n);
+}
+
+void Studio::resetLoudness() {
+    std::lock_guard<std::mutex> lk(mLoudMutex);
+    mLoudGen = mMixer.requestLoudnessReset();
+    mLoud.reset();
+}
+
+void Studio::setLoudnessTarget(int lufs) {
+    std::lock_guard<std::mutex> lk(mModel);
+    mProject.master.loudTarget = lufs == -16 || lufs == -23 ? lufs : -14;
+    bump(kVerMaster);
+    markDirty();
+}
+
+void Studio::setExportNormalize(bool on) {
+    std::lock_guard<std::mutex> lk(mModel);
+    mProject.master.exportNormalize = on;
+    bump(kVerMaster);
+    markDirty();
+}
+
+bool Studio::measureSong() {
+    if (trackCount() == 0 || !beginJob("Midiendo el volumen de la canción…")) return false;
+    mProgress.store(0.0f);
+    mCancelExport.store(false);
+    const int64_t changes = mChanges.load();
+    {
+        std::lock_guard<std::mutex> lk(mLoudMutex);
+        mSongState = 1;
+    }
+    mJobs.post([this, changes] {
+        LoudnessReport r = measureMix(mMixer, 0.0f, false, &mProgress, 0.0f, 1.0f, &mCancelExport);
+        const bool ok = r.error.empty();
+        std::string msg;
+        if (ok && r.integrated > kLoudnessNone) {
+            msg = "Canción completa: " + signed1(r.integrated) + " LUFS integrado";
+            if (r.range > kLoudnessNone) msg += " · rango " + fmt("%.1f", r.range) + " LU";
+            if (r.truePeak > kLoudnessNone) msg += " · pico real " + signed1(r.truePeak) + " dBTP";
+        } else {
+            msg = ok ? "La canción está en silencio" : "No se midió: " + r.error;
+        }
+        {
+            std::lock_guard<std::mutex> lk(mLoudMutex);
+            mSongReport = std::move(r);
+            mSongState = ok ? 2 : 0;
+            mSongChanges = changes;
+        }
+        bump(kVerBackground);
+        endJob(msg);
+    });
+    return true;
+}
+
+void Studio::songLoudness(float *out) const {
+    int target;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        target = mProject.master.loudTarget;
+    }
+    std::lock_guard<std::mutex> lk(mLoudMutex);
+    const LoudnessReport &r = mSongReport;
+    const bool ready = mSongState == 2;
+    out[0] = static_cast<float>(ready && mSongChanges != mChanges.load() ? 3 : mSongState);
+    out[1] = ready ? r.integrated : kLoudnessNone;
+    out[2] = ready ? r.range : kLoudnessNone;
+    out[3] = ready ? r.truePeak : kLoudnessNone;
+    out[4] = ready ? r.maxMomentary : kLoudnessNone;
+    out[5] = ready ? r.maxShortTerm : kLoudnessNone;
+    out[6] = ready ? static_cast<float>(r.seconds) : 0.0f;
+    loudVerdict(out[1], target, out + 7);
+}
+
+std::vector<float> Studio::songLoudnessCurve(int cols) const {
+    std::lock_guard<std::mutex> lk(mLoudMutex);
+    const std::vector<float> &v = mSongReport.shortTerm;
+    if (mSongState != 2 || v.empty() || cols <= 0) return {};
+    std::vector<float> out(static_cast<size_t>(cols), kLoudnessNone);
+    const size_t n = v.size();
+    for (int c = 0; c < cols; ++c) {
+        size_t a = n * static_cast<size_t>(c) / static_cast<size_t>(cols);
+        size_t b = n * static_cast<size_t>(c + 1) / static_cast<size_t>(cols);
+        if (b <= a) b = std::min(n, a + 1);
+        for (size_t i = a; i < b; ++i) out[static_cast<size_t>(c)] = std::max(out[static_cast<size_t>(c)], v[i]);
+    }
+    return out;
 }

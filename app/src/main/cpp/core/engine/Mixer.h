@@ -9,15 +9,18 @@
 
 #include "dsp/Equalizer.h"
 #include "dsp/Limiter.h"
+#include "dsp/Loudness.h"
 #include "engine/Automation.h"
+#include "engine/Effects.h"
 #include "io/MappedAudio.h"
 
 class LiveInput;
 
 constexpr int kMaxTracks = 12;
 // Medidores: [0] pico master L, [1] pico master R, [2] reducción del limitador (dB, ≥ 0),
-// luego pico L/R de cada pista: [3 + 2*slot], [4 + 2*slot]. Los picos son lineales.
-constexpr int kMeterCount = 3 + 2 * kMaxTracks;
+// luego pico L/R de cada pista: [3 + 2*slot], [4 + 2*slot] (lineales), y la reducción del
+// compresor de cada pista: [3 + 2*kMaxTracks + slot] (dB, ≥ 0).
+constexpr int kMeterCount = 3 + 3 * kMaxTracks;
 
 // Edición: una pista suena como una lista de pedazos (regiones) de su archivo, cada uno en
 // su lugar de la línea de tiempo. Todo en cuadros a la frecuencia del proyecto.
@@ -37,7 +40,8 @@ constexpr int kMaxRegions = 256;
 constexpr int64_t kEdgeFade = 96;  // 2 ms
 
 // Mezcla las pistas como el prototipo web ("Mesa de Audio"):
-// pista: polaridad → EQ → auto-ganancia → volumen → paneo (StereoPannerNode) → mute/solo → suma
+// pista: polaridad → EQ → auto-ganancia → compresor → volumen → paneo (StereoPannerNode) → mute/solo → suma
+//        └ envíos de delay y reverb (estéreo) → volumen → paneo ┘
 // master: volumen → limitador → recorte suave → salida.
 // Los cambios de parámetros se suavizan igual que setTargetAtTime en Web Audio. El volumen y el
 // paneo pueden seguir una automatización (puntos en la línea de tiempo).
@@ -70,11 +74,16 @@ public:
     void setAutomation(int slot, int param, std::vector<autom::PosPoint> points);
     void setAutomationHold(int slot, int param, bool hold);
     std::vector<autom::PosPoint> automation(int slot, int param) const;
+    // Efectos de la pista. Se crean la primera vez que se piden con `create` (reservan memoria);
+    // sus ajustes se cambian desde este hilo.
+    TrackFx *trackFx(int slot, bool create);
     // EQ de la pista (sus métodos de interfaz son seguros desde este hilo).
     Equalizer *trackEq(int slot) { return slot >= 0 && slot < kMaxTracks ? &mSlots[slot].eq : nullptr; }
     const Equalizer *trackEq(int slot) const { return slot >= 0 && slot < kMaxTracks ? &mSlots[slot].eq : nullptr; }
     void setMasterGain(float gain);  // lineal (0 = mute)
+    float masterGain() const { return mMasterGain.load(); }
     void setLimiter(bool on);
+    bool limiter() const { return mLimiterOn.load(); }
     // Filtro anti-zumbido en el bus (fundamental y 3 armónicos, Q 30): 0 = apagado, 50 o 60 Hz.
     void setNotch(int hz) { mNotchHz.store(hz == 50 || hz == 60 ? hz : 0); }
     int notch() const { return mNotchHz.load(); }
@@ -89,6 +98,12 @@ public:
     // Copia los últimos `n` cuadros (n <= kTapSize) y devuelve cuántos cuadros se han escrito
     // en total (sirve para saber si llegó audio nuevo).
     uint64_t readTap(float *l, float *r, int n) const;
+
+    // Volumen percibido (LUFS) de lo que sale, después del master: bloques de 100 ms que lee un
+    // solo hilo. requestLoudnessReset() empieza una medición nueva y devuelve su número; cada
+    // bloque trae el número de la medición a la que pertenece (los de antes se descartan).
+    uint32_t requestLoudnessReset() { return mLoudGenReq.fetch_add(1) + 1; }
+    int readLoudness(LoudnessBlock *out, int max);
 
     // Exportación: copia pistas y ajustes a otro mezclador, que renderiza fuera de tiempo real.
     bool cloneInto(Mixer &dst, std::string &error) const;
@@ -145,6 +160,8 @@ private:
         std::unique_ptr<MappedAudio> owned;  // solo hilo de la interfaz (con mMutex)
         std::atomic<const AutoSet *> autos{nullptr};
         std::unique_ptr<AutoSet> ownedAutos;  // solo hilo de la interfaz (con mMutex)
+        std::atomic<TrackFx *> fx{nullptr};
+        std::unique_ptr<TrackFx> ownedFx;     // solo hilo de la interfaz (con mMutex)
         std::atomic<bool> hold[autom::kParamCount] = {};
         std::atomic<uint32_t> gen{0};
         std::atomic<float> gain{1.0f}, pan{0.0f};
@@ -162,6 +179,7 @@ private:
     void publishPieces(Slot &s, std::unique_ptr<PieceSet> ps);  // con mMutex
     void publishAutos(Slot &s, std::unique_ptr<AutoSet> as);    // con mMutex
     void applyNotch(int n);
+    void feedLoudness(int n);
     void updateLength();  // con mMutex
     bool waitForAudioThread();
 
@@ -188,6 +206,10 @@ private:
     std::atomic<bool> mFreeRun{false};
     std::unique_ptr<std::atomic<float>[]> mTapL, mTapR;
     std::atomic<uint64_t> mTapWrite{0};
+    static constexpr int kLoudRing = 512;  // 51 s de bloques
+    LoudnessBlock mLoudRing[kLoudRing];
+    std::atomic<uint64_t> mLoudWrite{0}, mLoudRead{0};
+    std::atomic<uint32_t> mLoudGenReq{0};
 
     // Estado del hilo de audio
     int64_t mPos = 0;
@@ -197,7 +219,10 @@ private:
     Limiter mLimiter;
     float mMixL[kBlock], mMixR[kBlock], mRamp[kBlock], mInL[kBlock], mInR[kBlock];
     float mBlkTapL[kBlock], mBlkTapR[kBlock];
+    float mWetL[kBlock], mWetR[kBlock];
     bool mOffline = false;
+    LoudnessFrontEnd mLoudFe;
+    uint32_t mLoudGen = 0;
     int mNotchSeen = 0;
     Biquad mNotchC[4];
     bool mNotchOn[4] = {false, false, false, false};

@@ -2,6 +2,7 @@ package com.wavapp.mezcla.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -135,10 +137,15 @@ private fun TarjetaPista(pista: Pista, modifier: Modifier) {
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Texto(pista.nombre, Tipo.encabezado, p.texto, lineas = 1)
                 Texto(pista.info, Tipo.nota, p.texto2, lineas = 1)
+                MedidorPista(pista.medidor, Modifier.padding(top = 6.dp).fillMaxWidth().height(8.dp))
             }
             BotonIcono(Iconos.masOpciones, "Opciones pista ${pista.id}", { Vista.opciones = pista }, tamano = 22.dp)
         }
-        Row(Modifier.padding(start = 12.dp, end = 14.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.padding(top = 12.dp).fillMaxWidth().horizontalScroll(rememberScrollState())
+                .padding(start = 12.dp, end = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Chip(
                 "M", pista.mute, { Mesa.alternarMute(pista) }, colorActivo = p.azul, colorInactivo = p.texto2,
                 descripcion = "Mute pista ${pista.id}",
@@ -159,8 +166,12 @@ private fun TarjetaPista(pista: Pista, modifier: Modifier) {
                 descripcion = "EQ pista ${pista.id}",
             )
             Spacer(Modifier.width(6.dp))
+            Chip(
+                "FX", pista.fxActivo, { Vista.efectos = pista }, colorActivo = p.acento, colorInactivo = p.texto2,
+                descripcion = "Efectos pista ${pista.id}",
+            )
+            Spacer(Modifier.width(6.dp))
             ChipAuto(pista)
-            MedidorPista(pista.medidor, Modifier.weight(1f).padding(start = 14.dp).height(10.dp))
         }
         Column(Modifier.padding(start = 12.dp, end = 14.dp, top = 8.dp)) {
             FilaVolumen(pista, color)
@@ -292,6 +303,8 @@ private fun TarjetaMaster() {
         }
         TextoPicos()
         Separador(Modifier.padding(top = 10.dp))
+        FilaLufs { Vista.pestana = Vista.ANALISIS }
+        Separador()
         FilaInterruptor("Limitador", Mesa.limitador, { Mesa.alternarLimitador() }) { TextoReduccion() }
         Separador()
         FilaInterruptor("Silenciar salida", Mesa.masterMute, { Mesa.alternarMasterMute() })

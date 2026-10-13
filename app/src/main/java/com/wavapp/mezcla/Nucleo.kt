@@ -32,6 +32,14 @@ object Nucleo {
     /** Valores de [automationNow] por espacio: estado, volumen (dB), paneo. */
     val DATOS_AUTO = c[14]
     val DATOS_PISTA = c[15]
+    val DATOS_MASTER = c[16]
+    val DATOS_LUFS = c[17]
+    val DATOS_LUFS_CANCION = c[18]
+    /** Cuántos ajustes tienen los efectos de una pista (ver los FX_ de abajo). */
+    val FX_PARAMS = c[19]
+    private val MED_COMPRESOR = c[20]
+    /** "Sin dato" en los valores de LUFS. */
+    const val SIN_DATO = -200f
 
     // Lugares en el arreglo de versions().
     const val VER_PISTAS = 0
@@ -43,12 +51,15 @@ object Nucleo {
     fun verEq(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 1
     fun verPedazos(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 2
     fun verAuto(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 3
+    fun verFx(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 4
 
     // Lugares en el arreglo de meters(): [2*espacio] L, [2*espacio+1] R de cada pista, y luego:
     fun medMasterL() = 2 * MAX_PISTAS
     // master R +1, marca L +2, marca R +3, pico máx. L +4, pico máx. R +5, clip L +6, clip R +7,
     // reducción del limitador +8, algo se mueve +9, entrada L +10, entrada R +11, la entrada saturó +12
     fun medEntradaL() = 2 * MAX_PISTAS + 10
+    /** Reducción del compresor de la pista (dB, ≥ 0). */
+    fun medCompresor(espacio: Int) = MED_COMPRESOR + espacio
 
     // Modos de edición (iguales a Studio::EditMode).
     const val MOVER = 1
@@ -63,6 +74,25 @@ object Nucleo {
     const val AUTO_APAGADA = 0
     const val AUTO_LEER = 1
     const val AUTO_GRABAR = 2
+
+    // Ajustes de los efectos de una pista (iguales a fx::Param del núcleo).
+    const val FX_COMP = 0
+    const val FX_COMP_UMBRAL = 1
+    const val FX_COMP_PROPORCION = 2
+    const val FX_COMP_ATAQUE = 3
+    const val FX_COMP_LIBERACION = 4
+    const val FX_COMP_GANANCIA = 5
+    const val FX_DELAY = 6
+    const val FX_DELAY_TIEMPO = 7
+    const val FX_DELAY_REPETICIONES = 8
+    const val FX_DELAY_CANTIDAD = 9
+    const val FX_DELAY_BRILLO = 10
+    const val FX_DELAY_PINGPONG = 11
+    const val FX_REVERB = 12
+    const val FX_REVERB_CANTIDAD = 13
+    const val FX_REVERB_DURACION = 14
+    const val FX_REVERB_BRILLO = 15
+    const val FX_REVERB_PREDELAY = 16
 
     // ---------- Ciclo de vida
     /** Abre el proyecto de esa carpeta (la primera vez carga las pistas de prueba). */
@@ -87,7 +117,7 @@ object Nucleo {
     external fun eqState(id: Int): FloatArray
     /** 5 números por pedazo: inicio, origen en el archivo, largo, fade in, fade out (cuadros). */
     external fun regions(id: Int): LongArray
-    /** volumen master (dB), mute, limitador, notch, bits y frecuencia de exportación. */
+    /** volumen master (dB), mute, limitador, notch, bits y frecuencia de exportación, objetivo de LUFS, ajustar al exportar. */
     external fun masterState(out: FloatArray)
     /** {"mensaje","ocupada","texto","exportando","exportaciones","ultimaOk"} */
     external fun statusJson(): String
@@ -213,4 +243,35 @@ object Nucleo {
     external fun autoEnd()
     /** El dedo está (o ya no) sobre el deslizador de volumen o paneo. */
     external fun autoTouch(id: Int, param: Int, down: Boolean)
+
+    // ---------- Volumen percibido (LUFS) de lo que sale
+    /**
+     * momentáneo, corto plazo, integrado (LUFS), rango (LU), pico real (dBTP), máx. momentáneo, máx.
+     * corto plazo, segundos medidos, objetivo, veredicto (0 sin dato, 1 bajo, 2 bien, 3 fuerte),
+     * diferencia con el objetivo (dB). Sin dato: [SIN_DATO].
+     */
+    external fun loudness(out: FloatArray)
+    /** Los últimos valores (10 por segundo) del momentáneo y del corto plazo. */
+    external fun loudnessHistory(momentary: FloatArray, shortTerm: FloatArray)
+    external fun resetLoudness()
+    external fun setLoudnessTarget(lufs: Int)
+    external fun setExportNormalize(on: Boolean)
+    /** Mide la canción completa en segundo plano. false si hay otro trabajo. */
+    external fun measureSong(): Boolean
+    /**
+     * estado (0 nada, 1 midiendo, 2 lista, 3 la mezcla cambió después), integrado, rango, pico real,
+     * máx. momentáneo, máx. corto plazo, segundos, veredicto, diferencia.
+     */
+    external fun songLoudness(out: FloatArray)
+    /** Corto plazo a lo largo de la canción en [cols] columnas (vacío si no se ha medido). */
+    external fun songLoudnessCurve(cols: Int): FloatArray
+
+    // ---------- Efectos de la pista: compresor, delay y reverb
+    external fun setFx(id: Int, param: Int, value: Float)
+    external fun fxState(id: Int): FloatArray
+    /** Por ajuste: mínimo, máximo, valor inicial, escala logarítmica (0/1). */
+    external fun fxInfo(): FloatArray
+    /** ["Voz", "Voz con eco", ...] */
+    external fun fxPresetsJson(): String
+    external fun applyFxPreset(id: Int, index: Int): Boolean
 }

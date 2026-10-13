@@ -117,6 +117,11 @@ class Pista(
     val volMostrado: Float get() = if (sigue(Nucleo.AUTO_VOLUMEN)) volAhora else volDb
     val panMostrado: Int get() = if (sigue(Nucleo.AUTO_PANEO)) Math.round(panAhora) else pan
     val tieneAuto: Boolean get() = autoVol.n > 0 || autoPan.n > 0
+    /** Efectos: los ajustes (ver Nucleo.FX_...) y cuánto está bajando el compresor ahora (dB). */
+    var fx by mutableStateOf(FloatArray(0))
+    var compresion by mutableFloatStateOf(0f)
+    fun fxOn(param: Int): Boolean = fx.getOrElse(param) { 0f } > 0.5f
+    val fxActivo: Boolean get() = fxOn(Nucleo.FX_COMP) || fxOn(Nucleo.FX_DELAY) || fxOn(Nucleo.FX_REVERB)
     val eqActivo: Boolean get() = !eqBypass && bandas.any { it.on }
     val editada: Boolean get() = pedazos != listOf(Pedazo(0, 0, cuadros))
     val segundos: Double get() = cuadros / Mesa.RATE
@@ -129,6 +134,30 @@ class Pista(
     internal var vEq = -1
     internal var vPedazos = -1
     internal var vAuto = -1
+    internal var vFx = -1
+}
+
+/** Volumen percibido (LUFS) de lo que sale, como lo calcula el núcleo. */
+class Volumen {
+    var momentaneo by mutableFloatStateOf(Nucleo.SIN_DATO)
+    var corto by mutableFloatStateOf(Nucleo.SIN_DATO)
+    var integrado by mutableFloatStateOf(Nucleo.SIN_DATO)
+    var rango by mutableFloatStateOf(Nucleo.SIN_DATO)
+    var picoReal by mutableFloatStateOf(Nucleo.SIN_DATO)
+    var maxCorto by mutableFloatStateOf(Nucleo.SIN_DATO)
+    var segundos by mutableFloatStateOf(0f)
+    var veredicto by mutableIntStateOf(0)  // 0 sin dato, 1 bajo, 2 en el objetivo, 3 fuerte
+    var diferencia by mutableFloatStateOf(0f)
+
+    // La canción completa (medida aparte, fuera de tiempo real).
+    var cancion by mutableIntStateOf(0)  // 0 nada, 1 midiendo, 2 lista, 3 la mezcla cambió
+    var cancionIntegrado by mutableFloatStateOf(Nucleo.SIN_DATO)
+    var cancionRango by mutableFloatStateOf(Nucleo.SIN_DATO)
+    var cancionPico by mutableFloatStateOf(Nucleo.SIN_DATO)
+    var cancionVeredicto by mutableIntStateOf(0)
+    var cancionDiferencia by mutableFloatStateOf(0f)
+    /** Corto plazo a lo largo de la canción (para dibujar). */
+    var curva by mutableStateOf(FloatArray(0))
 }
 
 /** La entrada en vivo (micrófono o interfaz), como la tiene el núcleo. */
@@ -218,6 +247,18 @@ object Mesa {
 
     val master = MedidorMaster()
     val entrada = Entrada()
+    val volumen = Volumen()
+    /** LUFS de referencia: −14 (Spotify, YouTube), −16 (Apple Music) o −23 (radio y TV). */
+    var objetivoLufs by mutableIntStateOf(-14)
+        private set
+    var ajustarAlExportar by mutableStateOf(false)
+        private set
+    /** Nombres de los presets de efectos y rangos de cada ajuste (vienen del núcleo). */
+    val presetsFx: List<String> by lazy {
+        val a = JSONArray(Nucleo.fxPresetsJson())
+        List(a.length()) { a.getString(it) }
+    }
+    val infoFx: FloatArray by lazy { Nucleo.fxInfo() }
     private var moviendo = false
 
     /** Diagnóstico de la salida de audio (frecuencia, búfer, cortes), una vez por segundo. */
@@ -232,7 +273,9 @@ object Mesa {
     private val vistas = IntArray(Nucleo.VER_FONDO + 1) { -1 }
     private val bufParams = FloatArray(Nucleo.DATOS_PISTA)
     private val bufAuto = FloatArray(Nucleo.DATOS_AUTO * Nucleo.MAX_PISTAS)
-    private val bufMaster = FloatArray(6)
+    private val bufMaster = FloatArray(Nucleo.DATOS_MASTER)
+    private val bufLufs = FloatArray(Nucleo.DATOS_LUFS)
+    private val bufCancion = FloatArray(Nucleo.DATOS_LUFS_CANCION)
     private val bufEntrada = FloatArray(Nucleo.DATOS_ENTRADA)
     private val bufMedidores = FloatArray(Nucleo.MEDIDORES)
 
@@ -280,6 +323,8 @@ object Mesa {
             val va = versiones[Nucleo.verAuto(p.slot)]
             // Los carriles traen el valor fijo: también se leen si cambió el volumen o el paneo.
             val releerAuto = va != p.vAuto || vp != p.vParams
+            val vf = versiones[Nucleo.verFx(p.slot)]
+            if (vf != p.vFx) { p.vFx = vf; p.fx = Nucleo.fxState(p.id) }
             if (vp != p.vParams) { p.vParams = vp; leerParams(p) }
             val ve = versiones[Nucleo.verEq(p.slot)]
             if (ve != p.vEq) { p.vEq = ve; leerEq(p) }
@@ -288,6 +333,7 @@ object Mesa {
             if (releerAuto) { p.vAuto = va; leerAuto(p) }
         }
         if (pistas.isNotEmpty()) leerAutoAhora()
+        leerVolumen()
         reproduciendo = Nucleo.isPlaying()
         posicion = Nucleo.positionSeconds()
         duracion = Nucleo.durationSeconds()
@@ -376,6 +422,34 @@ object Mesa {
         notch = bufMaster[3].toInt()
         exportBits = bufMaster[4].toInt()
         exportRate = bufMaster[5].toInt()
+        objetivoLufs = bufMaster[6].toInt()
+        ajustarAlExportar = bufMaster[7] != 0f
+    }
+
+    /** LUFS en vivo y de la canción completa (baratos: el núcleo ya tiene las cuentas). */
+    private fun leerVolumen() {
+        Nucleo.loudness(bufLufs)
+        val v = volumen
+        v.momentaneo = bufLufs[0]
+        v.corto = bufLufs[1]
+        v.integrado = bufLufs[2]
+        v.rango = bufLufs[3]
+        v.picoReal = bufLufs[4]
+        v.maxCorto = bufLufs[6]
+        v.segundos = bufLufs[7]
+        v.veredicto = bufLufs[9].toInt()
+        v.diferencia = bufLufs[10]
+        Nucleo.songLoudness(bufCancion)
+        val estado = bufCancion[0].toInt()
+        // La curva se lee una vez, cuando termina de medir.
+        if (estado == 2 && (v.cancion < 2 || v.curva.isEmpty())) v.curva = Nucleo.songLoudnessCurve(240)
+        if (estado == 0) v.curva = FloatArray(0)
+        v.cancion = estado
+        v.cancionIntegrado = bufCancion[1]
+        v.cancionRango = bufCancion[2]
+        v.cancionPico = bufCancion[3]
+        v.cancionVeredicto = bufCancion[7].toInt()
+        v.cancionDiferencia = bufCancion[8]
     }
 
     private fun leerEntrada() {
@@ -453,6 +527,23 @@ object Mesa {
 
     /** El dedo está (o ya no) sobre el deslizador de volumen o paneo: así se graban los movimientos. */
     fun tocarDeslizador(p: Pista, param: Int, abajo: Boolean) { Nucleo.autoTouch(p.id, param, abajo); sincronizar() }
+
+    // ------------------------------------------------------------------ efectos
+
+    fun ponerFx(p: Pista, param: Int, valor: Float) { Nucleo.setFx(p.id, param, valor); sincronizar() }
+    fun alternarFx(p: Pista, param: Int) = ponerFx(p, param, if (p.fxOn(param)) 0f else 1f)
+    fun aplicarPresetFx(p: Pista, indice: Int) { Nucleo.applyFxPreset(p.id, indice); sincronizar() }
+
+    // ------------------------------------------------------------------ volumen percibido (LUFS)
+
+    fun ponerObjetivoLufs(lufs: Int) { Nucleo.setLoudnessTarget(lufs); sincronizar() }
+    fun ponerAjusteAlExportar(on: Boolean) { Nucleo.setExportNormalize(on); sincronizar() }
+    fun reiniciarLufs() { Nucleo.resetLoudness(); sincronizar() }
+    fun medirCancion() {
+        if (ocupada || pistas.isEmpty()) return
+        Nucleo.measureSong()
+        sincronizar()
+    }
 
     // ------------------------------------------------------------------ automatización
 
@@ -553,6 +644,7 @@ object Mesa {
         for (p in pistas) {
             p.medidor.l = bufMedidores[2 * p.slot]
             p.medidor.r = bufMedidores[2 * p.slot + 1]
+            p.compresion = bufMedidores[Nucleo.medCompresor(p.slot)]
         }
         val b = Nucleo.medMasterL()
         val m = master

@@ -22,10 +22,15 @@
 #include "Studio.h"
 #include "dsp/AnalysisView.h"
 #include "dsp/Analyzer.h"
+#include "dsp/Delay.h"
+#include "dsp/Dynamics.h"
 #include "dsp/Equalizer.h"
 #include "dsp/Limiter.h"
+#include "dsp/Loudness.h"
 #include "dsp/Resampler.h"
+#include "dsp/Reverb.h"
 #include "engine/Automation.h"
+#include "engine/Effects.h"
 #include "engine/Exporter.h"
 #include "engine/Importer.h"
 #include "engine/LiveInput.h"
@@ -1548,7 +1553,7 @@ TEST(estudioSesionIdaYVuelta) {
     s1.setLimiter(false);
     s1.setNotch(50);
     s1.setExportFormat(16, 44100);
-    float p1[Studio::kTrackParamCount], m1[6];
+    float p1[Studio::kTrackParamCount], m1[Studio::kMasterStateCount];
     CHECK(s1.trackParams(id, p1));
     CHECK(p1[0] == 3.5f && p1[1] == -33.0f && p1[2] == 1.0f && p1[3] == 0.0f && p1[4] == 1.0f);
     const std::vector<float> eq1 = s1.eqState(id);
@@ -1563,7 +1568,7 @@ TEST(estudioSesionIdaYVuelta) {
     s2.open(dir, dir);
     CHECK(s2.waitIdle(30000));
     CHECK(s2.tracksJson() == s1.tracksJson());
-    float p2[Studio::kTrackParamCount], m2[6];
+    float p2[Studio::kTrackParamCount], m2[Studio::kMasterStateCount];
     CHECK(s2.trackParams(id, p2));
     CHECK(std::equal(p1, p1 + Studio::kTrackParamCount, p2));
     CHECK(s2.eqState(id) == eq1);
@@ -1605,7 +1610,7 @@ TEST(estudioLeeSesionVieja) {
     CHECK(s.regions(7).size() == 1 && s.regions(7)[0].length == 12 * 48000);  // sin "pedazos": completa
     const std::vector<float> eq = s.eqState(3);
     CHECK(eq.size() == 8 && eq[0] == 1.0f && std::fabs(eq[6] - 1.4f) < 1e-6f && eq[5] == 3.5f);
-    float m[6];
+    float m[Studio::kMasterStateCount];
     s.masterState(m);
     CHECK(m[0] == -1.5f && m[1] == 1.0f && m[3] == 60.0f && m[4] == 32.0f);
     CHECK_NEAR(s.duration(), 12.0, 1e-9);  // la pista "Dos" completa es la más larga
@@ -2242,7 +2247,7 @@ TEST(concurrenciaEstudio) {
     for (int it = 0; it < 300; ++it) {
         const int n = s.trackCount();
         const int id = n > 0 ? idDe(s, static_cast<int>(rng() % n)) : -1;
-        switch (rng() % 20) {
+        switch (rng() % 23) {
             case 16: s.autoAdd(id, rng() % 2, rng() % 600000, (rng() % 100) / 100.0f); break;
             case 17:
                 if (s.autoBegin(id, rng() % 2, 0)) {
@@ -2252,6 +2257,9 @@ TEST(concurrenciaEstudio) {
                 break;
             case 18: s.setAutoMode(id, rng() % 3); s.autoTouch(id, 0, true); s.setVolume(id, -(rng() % 30) * 1.0f); break;
             case 19: { float a[Studio::kAutoNowCount * kMaxTracks]; s.automationNow(a); s.autoTouch(id, 0, false); s.autoLane(id, 0); } break;
+            case 20: s.applyFxPreset(id, static_cast<int>(rng() % fx::presetCount())); break;
+            case 21: s.setFx(id, static_cast<int>(rng() % fx::kCount), (rng() % 100) / 10.0f); s.fxState(id); break;
+            case 22: { float l[Studio::kLoudCount]; s.loudness(l); s.loudnessHistory(nullptr, nullptr, 0); if (rng() % 9 == 0) s.resetLoudness(); } break;
             case 0: s.setVolume(id, (rng() % 66) - 60.0f); break;
             case 1: s.setPan(id, (rng() % 200) - 100.0f); break;
             case 2: s.setMute(id, rng() % 2); s.setSolo(id, rng() % 3 == 0); break;
@@ -2626,6 +2634,525 @@ TEST(estudioGrabarMovimientos) {
     CHECK(!s.undo());
     CHECK(s.removeTrack(id2));
     CHECK(s.undo());
+}
+
+// ---------------------------------------------------------------- volumen percibido (LUFS)
+// Mide una señal estéreo (generada por partes) con el front-end y el medidor.
+static void medir(LoudnessMeter &m, LoudnessFrontEnd &fe, double seconds,
+                  const std::function<std::pair<float, float>(int64_t)> &gen, int64_t &frame) {
+    const int64_t n = static_cast<int64_t>(seconds * 48000 + 0.5);
+    std::vector<float> l(512), r(512);
+    LoudnessBlock b[2];
+    for (int64_t done = 0; done < n;) {
+        const int k = static_cast<int>(std::min<int64_t>(512, n - done));
+        for (int i = 0; i < k; ++i) {
+            const auto s = gen(frame++);
+            l[i] = s.first;
+            r[i] = s.second;
+        }
+        const int made = fe.process(l.data(), r.data(), k, b, 2);
+        for (int i = 0; i < made; ++i) m.add(b[i]);
+        done += k;
+    }
+}
+
+static std::function<std::pair<float, float>(int64_t)> senoDb(double hz, double dbfs) {
+    const double a = std::pow(10.0, dbfs / 20);
+    return [=](int64_t f) {
+        const float x = static_cast<float>(a * std::sin(2 * M_PI * hz * f / 48000.0));
+        return std::make_pair(x, x);
+    };
+}
+
+TEST(lufsComoLaNorma) {
+    // EBU Tech 3341: seno de 1 kHz a −23 dBFS en los dos canales = −23.0 LUFS.
+    LoudnessFrontEnd fe;
+    LoudnessMeter m;
+    CHECK(m.momentary() == kLoudnessNone && m.integrated() == kLoudnessNone && m.range() == kLoudnessNone);
+    int64_t f = 0;
+    medir(m, fe, 20, senoDb(1000, -23), f);
+    CHECK_NEAR(m.integrated(), -23.0, 0.1);
+    CHECK_NEAR(m.momentary(), -23.0, 0.1);
+    CHECK_NEAR(m.shortTerm(), -23.0, 0.1);
+    CHECK_NEAR(m.maxMomentary(), -23.0, 0.1);
+    CHECK_NEAR(m.seconds(), 20.0, 1e-9);
+    CHECK(m.range() >= 0.0f && m.range() < 0.2f);
+    CHECK_NEAR(m.truePeakDb(), -23.0, 0.1);
+    float hm[3], hs[3];
+    m.history(hm, hs, 3);
+    CHECK_NEAR(hm[2], m.momentary(), 1e-4);
+    CHECK_NEAR(hs[2], m.shortTerm(), 1e-4);
+
+    // Caso 3: −36, −23, −36 dBFS (10, 60, 10 s): la compuerta relativa deja fuera lo bajo.
+    fe.reset();
+    m.reset();
+    f = 0;
+    medir(m, fe, 10, senoDb(1000, -36), f);
+    medir(m, fe, 60, senoDb(1000, -23), f);
+    medir(m, fe, 10, senoDb(1000, -36), f);
+    CHECK_NEAR(m.integrated(), -23.0, 0.1);
+    // Caso 5: −26, −20, −26 dBFS (20, 20.1, 20 s) = −23.0.
+    fe.reset();
+    m.reset();
+    f = 0;
+    medir(m, fe, 20, senoDb(1000, -26), f);
+    medir(m, fe, 20.1, senoDb(1000, -20), f);
+    medir(m, fe, 20, senoDb(1000, -26), f);
+    CHECK_NEAR(m.integrated(), -23.0, 0.1);
+    CHECK_NEAR(m.maxShortTerm(), -20.0, 0.1);
+    // Silencio: debajo de la compuerta absoluta no cuenta.
+    fe.reset();
+    m.reset();
+    medir(m, fe, 5, [](int64_t) { return std::make_pair(0.0f, 0.0f); }, f);
+    CHECK(m.integrated() == kLoudnessNone && m.momentary() == kLoudnessNone && m.truePeakDb() == kLoudnessNone);
+}
+
+TEST(lufsPonderacionK) {
+    // Los agudos pesan más y los graves menos: la curva K de la norma (a 48 kHz, respecto a 1 kHz:
+    // +3.34 dB a 10 kHz, −1.83 dB a 100 Hz, −11.1 dB a 25 Hz).
+    auto nivel = [](double hz) {
+        LoudnessFrontEnd fe;
+        LoudnessMeter m;
+        int64_t f = 0;
+        medir(m, fe, 3, senoDb(hz, -20), f);
+        return m.integrated();
+    };
+    const float k1 = nivel(1000), k10 = nivel(10000), k100 = nivel(100), k25 = nivel(25);
+    CHECK_NEAR(k1, -20.0, 0.1);
+    CHECK_NEAR(k10 - k1, 3.34, 0.05);
+    CHECK_NEAR(k100 - k1, -1.83, 0.05);
+    CHECK_NEAR(k25 - k1, -11.09, 0.15);
+}
+
+TEST(lufsRangoDeVolumen) {
+    // EBU Tech 3342: 20 s a un nivel y 20 s a otro.
+    auto rango = [](double a, double b) {
+        LoudnessFrontEnd fe;
+        LoudnessMeter m;
+        int64_t f = 0;
+        medir(m, fe, 20, senoDb(1000, a), f);
+        medir(m, fe, 20, senoDb(1000, b), f);
+        return m.range();
+    };
+    CHECK_NEAR(rango(-20, -30), 10.0, 1.0);
+    CHECK_NEAR(rango(-20, -15), 5.0, 1.0);
+    CHECK_NEAR(rango(-40, -20), 20.0, 1.0);
+}
+
+TEST(lufsPicoReal) {
+    // A un cuarto de la frecuencia de muestreo con fase de 45°, las muestras se quedan en 0.707:
+    // el pico real (entre muestras) es 1.0 = 0 dBTP.
+    LoudnessFrontEnd fe;
+    LoudnessMeter m;
+    int64_t f = 0;
+    medir(m, fe, 1, [](int64_t k) {
+        const float x = static_cast<float>(std::sin(2 * M_PI * 12000.0 * k / 48000.0 + M_PI / 4));
+        return std::make_pair(x, -x);
+    }, f);
+    CHECK_NEAR(m.truePeakDb(), 0.0, 0.25);
+    // Un seno lento: el pico real es el de las muestras.
+    fe.reset();
+    m.reset();
+    medir(m, fe, 1, senoDb(997, -6), f);
+    CHECK_NEAR(m.truePeakDb(), -6.0, 0.05);
+}
+
+// Lee un WAV exportado y lo mide.
+static LoudnessMeter medirArchivo(const std::string &path) {
+    Clip c;
+    LoudnessMeter m;
+    if (!readWav(std::fopen(path.c_str(), "rb"), c).empty() || c.channels != 2) return m;
+    LoudnessFrontEnd fe(c.sampleRate);
+    std::vector<float> l(4096), r(4096);
+    LoudnessBlock b[2];
+    for (int64_t f = 0; f < c.frames;) {
+        const int n = static_cast<int>(std::min<int64_t>(4096, c.frames - f));
+        for (int i = 0; i < n; ++i) {
+            l[i] = c.data[2 * (f + i)];
+            r[i] = c.data[2 * (f + i) + 1];
+        }
+        const int made = fe.process(l.data(), r.data(), n, b, 2);
+        for (int i = 0; i < made; ++i) m.add(b[i]);
+        f += n;
+    }
+    return m;
+}
+
+TEST(exportarAjustaLufs) {
+    std::unique_ptr<Mixer> live(mezclaDePrueba());
+    const LoudnessReport antes = measureMix(*live, 0.0f, false, nullptr, 0, 1, nullptr);
+    CHECK(antes.error.empty() && antes.integrated > -40.0f && antes.integrated < -5.0f);
+    CHECK(antes.shortTerm.size() == 10);  // 1 s: un valor cada 100 ms
+    // Más bajo que como suena: exacto. Más alto: el limitador cuida los picos.
+    for (float objetivo : {-23.0f, -16.0f, -9.0f}) {
+        const std::string p = tmpPath("lufs.wav");
+        ExportFormat f;
+        f.bits = 32;
+        f.isFloat = true;
+        f.targetLufs = objetivo;
+        std::atomic<float> prog{0};
+        const ExportResult r = exportMix(*live, crear(p), f, &prog, nullptr);
+        CHECK(r.error.empty());
+        CHECK_NEAR(prog.load(), 1.0, 1e-6);
+        const LoudnessMeter m = medirArchivo(p);
+        std::printf("  objetivo %.0f: %.2f LUFS (ajuste %+.1f dB, pico real %.2f dBTP)\n", objetivo, m.integrated(),
+                    r.gainDb, r.truePeak);
+        CHECK_NEAR(m.integrated(), objetivo, objetivo < antes.integrated ? 0.1 : 0.5);
+        CHECK_NEAR(r.lufs, m.integrated(), 0.05);
+        CHECK_NEAR(r.gainDb, objetivo - antes.integrated, 3.0);
+    }
+    // Sin objetivo: tal como suena (y lo informa).
+    const std::string p = tmpPath("lufs0.wav");
+    ExportFormat f;
+    f.bits = 32;
+    const ExportResult r = exportMix(*live, crear(p), f, nullptr, nullptr);
+    CHECK(r.error.empty() && r.gainDb == 0.0f);
+    CHECK_NEAR(r.lufs, antes.integrated, 0.01);
+    CHECK_NEAR(r.truePeak, antes.truePeak, 0.01);
+}
+
+TEST(estudioLufsEnVivo) {
+    const std::string dir = nuevaCarpeta("lufs1");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    float v[Studio::kLoudCount];
+    s.loudness(v);
+    CHECK(v[0] == kLoudnessNone && v[2] == kLoudnessNone && v[7] == 0.0f && v[8] == -14.0f && v[9] == Studio::kLoudNoData);
+    // Toda la canción de principio a fin (se detiene sola al final).
+    s.play();
+    std::vector<float> out(480 * 2);
+    for (int i = 0; i < 2000 && s.isPlaying(); ++i) s.mixer().process(out.data(), 480, 2);
+    CHECK(!s.isPlaying());
+    s.loudness(v);
+    CHECK_NEAR(v[7], 12.0, 0.15);
+    CHECK(v[0] > -60.0f && v[1] > -60.0f && v[2] > -40.0f && v[2] < -5.0f);
+    CHECK(v[3] >= 0.0f && v[4] > -20.0f && v[4] < 1.0f && v[5] >= v[1] - 0.01f);
+    CHECK(v[9] != Studio::kLoudNoData && std::fabs(v[10] - (v[2] + 14.0f)) < 1e-4f);
+    float hm[10], hs[10];
+    s.loudnessHistory(hm, hs, 10);
+    CHECK_NEAR(hs[9], v[1], 1e-4);
+    // Lo mismo que mide la canción completa fuera de tiempo real.
+    CHECK(s.measureSong());
+    float song[Studio::kSongLoudCount];
+    s.songLoudness(song);
+    CHECK(song[0] == 1.0f || song[0] == 2.0f);
+    CHECK(s.waitIdle(30000));
+    s.songLoudness(song);
+    CHECK(song[0] == 2.0f);
+    std::printf("  en vivo %.2f LUFS, canción completa %.2f LUFS\n", v[2], song[1]);
+    CHECK_NEAR(song[1], v[2], 0.2);
+    CHECK_NEAR(song[6], 12.0, 1e-3);
+    CHECK_NEAR(song[3], v[4], 0.3);
+    const std::vector<float> curva = s.songLoudnessCurve(60);
+    CHECK(curva.size() == 60 && curva[30] > -60.0f);
+    CHECK(estado(s)["mensaje"].asString().rfind("Canción completa: ", 0) == 0);
+    // Cambiar la mezcla deja la medición vieja.
+    s.setVolume(idDe(s, 0), -6.0f);
+    s.songLoudness(song);
+    CHECK(song[0] == 3.0f);
+    // Reproducir desde el inicio empieza una medición nueva; desde la mitad, sigue.
+    s.seek(6.0);
+    s.play();
+    for (int i = 0; i < 100; ++i) s.mixer().process(out.data(), 480, 2);
+    s.loudness(v);
+    CHECK_NEAR(v[7], 13.0, 0.15);
+    s.stop();
+    s.mixer().process(out.data(), 480, 2);
+    s.play();
+    for (int i = 0; i < 100; ++i) s.mixer().process(out.data(), 480, 2);
+    s.loudness(v);
+    CHECK_NEAR(v[7], 1.0, 0.15);
+    s.resetLoudness();
+    s.loudness(v);
+    CHECK(v[7] == 0.0f && v[2] == kLoudnessNone);
+    // Objetivo y ajuste al exportar: se guardan.
+    s.setLoudnessTarget(-16);
+    s.setExportNormalize(true);
+    float m[Studio::kMasterStateCount];
+    s.masterState(m);
+    CHECK(m[6] == -16.0f && m[7] == 1.0f);
+    s.setLoudnessTarget(-5);
+    s.masterState(m);
+    CHECK(m[6] == -14.0f);
+    s.setLoudnessTarget(-23);
+    CHECK(s.saveNow());
+    Studio s2;
+    s2.open(dir, dir);
+    CHECK(s2.waitIdle(30000));
+    s2.masterState(m);
+    CHECK(m[6] == -23.0f && m[7] == 1.0f);
+    s2.songLoudness(song);
+    CHECK(song[0] == 0.0f);
+}
+
+// ---------------------------------------------------------------- efectos
+static double rmsDe(const std::vector<float> &x, size_t from, size_t to) {
+    double s = 0;
+    to = std::min(to, x.size());
+    if (to <= from) return 0;
+    for (size_t i = from; i < to; ++i) s += static_cast<double>(x[i]) * x[i];
+    return std::sqrt(s / static_cast<double>(to - from));
+}
+
+TEST(efectosCompresor) {
+    // Curva: debajo del umbral no toca; arriba, baja según la proporción; la rodilla es suave.
+    CHECK(Compressor::gainComputer(-40, -20, 4) == 0.0f);
+    CHECK_NEAR(Compressor::gainComputer(-8, -20, 4), -9.0, 1e-5);
+    CHECK(Compressor::gainComputer(-20, -20, 4) < 0.0f && Compressor::gainComputer(-20, -20, 4) > -1.0f);
+    CHECK(Compressor::gainComputer(0, -20, 1) == 0.0f);  // 1:1 no comprime
+    Compressor c;
+    c.setup(48000);
+    CompSettings s;
+    s.thresholdDb = -20;
+    s.ratio = 4;
+    s.attackMs = 1;
+    s.releaseMs = 50;
+    s.makeupDb = 0;
+    // Un seno a −6 dBFS: queda unos 10.5 dB más bajo (−16.5 dBFS de pico).
+    std::vector<float> l(48000), r(48000);
+    for (int i = 0; i < 48000; ++i) l[i] = r[i] = static_cast<float>(0.5 * std::sin(2 * M_PI * 1000 * i / 48000.0));
+    float gr = 0;
+    for (int i = 0; i < 48000; i += 64) gr = c.process(&l[i], &r[i], 64, s);
+    float pk = 0;
+    for (int i = 24000; i < 48000; ++i) pk = std::max(pk, std::fabs(l[i]));
+    CHECK_NEAR(20 * std::log10(pk), -16.5, 1.0);
+    CHECK_NEAR(gr, 10.5, 1.0);
+    CHECK(l[30000] == r[30000]);  // los dos canales juntos
+    // Debajo del umbral: igual, más la ganancia de compensación.
+    c.reset();
+    s.makeupDb = 6;
+    std::vector<float> q(4800);
+    for (int i = 0; i < 4800; ++i) q[i] = static_cast<float>(0.01 * std::sin(2 * M_PI * 440 * i / 48000.0));
+    std::vector<float> q0 = q;
+    for (int i = 0; i < 4800; i += 64) c.process(&q[i], nullptr, std::min(64, 4800 - i), s);
+    CHECK_NEAR(q[3000] / q0[3000], std::pow(10.0, 6.0 / 20), 1e-3);
+}
+
+TEST(efectosDelay) {
+    StereoDelay d;
+    d.allocate(48000, 1550);
+    DelaySettings s;
+    s.timeMs = 100;
+    s.feedback = 0.5f;
+    s.toneHz = 16000;
+    // Un golpe de 10 ms de seno: ecos a 100 y 200 ms, el segundo a la mitad.
+    const int n = 48000;
+    std::vector<float> in(n, 0.0f), ol(n), orr(n);
+    for (int i = 0; i < 480; ++i) in[i] = static_cast<float>(std::sin(2 * M_PI * 1000 * i / 48000.0));
+    for (int i = 0; i < n; i += 64) d.process(&in[i], nullptr, 64, &ol[i], &orr[i], s);
+    const double e0 = rmsDe(ol, 0, 4700), e1 = rmsDe(ol, 4800, 5280), e2 = rmsDe(ol, 9600, 10080);
+    CHECK(e0 < 1e-6);
+    CHECK_NEAR(e1, rmsDe(in, 0, 480), 0.05);
+    CHECK_NEAR(e2 / e1, 0.5, 0.05);
+    CHECK_NEAR(rmsDe(orr, 4800, 5280), e1, 1e-6);  // sin ping-pong: igual en los dos lados
+    // Ping-pong: el primer eco a la izquierda, el segundo a la derecha.
+    d.restart();
+    s.pingPong = true;
+    for (int i = 0; i < n; i += 64) d.process(&in[i], nullptr, 64, &ol[i], &orr[i], s);
+    CHECK(rmsDe(ol, 4800, 5280) > 0.3 && rmsDe(orr, 4800, 5280) < 1e-4);
+    CHECK(rmsDe(orr, 9600, 10080) > 0.1 && rmsDe(ol, 9600, 10080) < 1e-4);
+    // Después de restart() no suenan ecos viejos.
+    d.restart();
+    std::vector<float> cero(4800, 0.0f), ol2(4800), or2(4800);
+    for (int i = 0; i < 4800; i += 64) d.process(&cero[i], nullptr, std::min(64, 4800 - i), &ol2[i], &or2[i], s);
+    CHECK(rmsDe(ol2, 0, 4800) == 0.0 && rmsDe(or2, 0, 4800) == 0.0);
+    // Menos brillo: los ecos pierden agudos.
+    d.restart();
+    s.pingPong = false;
+    s.toneHz = 1000;
+    std::vector<float> hf(n, 0.0f);
+    for (int i = 0; i < 480; ++i) hf[i] = static_cast<float>(std::sin(2 * M_PI * 8000 * i / 48000.0));
+    for (int i = 0; i < n; i += 64) d.process(&hf[i], nullptr, 64, &ol[i], &orr[i], s);
+    CHECK(rmsDe(ol, 4800, 5280) < 0.25 * rmsDe(hf, 0, 480));
+}
+
+TEST(efectosReverb) {
+    Reverb rv;
+    rv.allocate(48000);
+    std::mt19937 rng(3);
+    std::uniform_real_distribution<float> u(-0.5f, 0.5f);
+    for (float decay : {0.5f, 2.0f, 6.0f}) {
+        rv.restart();
+        ReverbSettings s;
+        s.decayS = decay;
+        s.toneHz = 16000;
+        s.predelayMs = 0;
+        // Ruido 2 s y luego silencio: la cola baja 60 dB en el tiempo pedido.
+        const int n = 48000 * 2 + static_cast<int>(48000 * decay * 1.2);
+        std::vector<float> in(n, 0.0f), ol(n), orr(n);
+        for (int i = 0; i < 96000; ++i) in[i] = u(rng);
+        for (int i = 0; i < n; i += 64) rv.process(&in[i], nullptr, std::min(64, n - i), &ol[i], &orr[i], s);
+        const double nivel = 20 * std::log10(rmsDe(ol, 48000, 96000) / rmsDe(in, 48000, 96000));
+        const size_t a = 96000 + 4800, b = a + static_cast<size_t>(48000 * decay * 0.5);
+        const double caida = 20 * std::log10(rmsDe(ol, b - 2400, b + 2400) / rmsDe(ol, a - 2400, a + 2400));
+        const double esperada = -60.0 * (b - a) / 48000.0 / decay;
+        double corr = 0, el = 0, er = 0;
+        for (size_t i = a; i < b; ++i) {
+            corr += static_cast<double>(ol[i]) * orr[i];
+            el += static_cast<double>(ol[i]) * ol[i];
+            er += static_cast<double>(orr[i]) * orr[i];
+        }
+        std::printf("  reverb %.1f s: nivel %+.1f dB, caída %.1f dB (esperada %.1f), correlación L/R %.2f\n", decay,
+                    nivel, caida, esperada, corr / std::sqrt(el * er));
+        CHECK(nivel > -9.0 && nivel < 3.0);
+        CHECK_NEAR(caida, esperada, std::fabs(esperada) * 0.3);
+        CHECK(std::fabs(corr / std::sqrt(el * er)) < 0.5);
+        CHECK(std::all_of(ol.begin(), ol.end(), [](float x) { return std::isfinite(x) && std::fabs(x) < 4.0f; }));
+    }
+    // Pre-delay: nada antes de que pase.
+    rv.restart();
+    ReverbSettings s;
+    s.predelayMs = 50;
+    std::vector<float> in(9600, 0.0f), ol(9600), orr(9600);
+    in[0] = 1.0f;
+    for (int i = 0; i < 9600; i += 64) rv.process(&in[i], nullptr, 64, &ol[i], &orr[i], s);
+    CHECK(rmsDe(ol, 0, 2400) == 0.0 && rmsDe(ol, 2400, 9600) > 0.0);
+    // Y restart() la deja en silencio.
+    rv.restart();
+    std::fill(in.begin(), in.end(), 0.0f);
+    for (int i = 0; i < 9600; i += 64) rv.process(&in[i], nullptr, 64, &ol[i], &orr[i], s);
+    CHECK(rmsDe(ol, 0, 9600) == 0.0);
+}
+
+TEST(efectosEnElMezclador) {
+    Mixer m(48000);
+    m.setLimiter(false);
+    m.setTrack(0, genTrack("fx1.wav", 1, 48000, [](int64_t f, int) {
+        return f < 4800 ? static_cast<float>(0.3 * std::sin(2 * M_PI * 440 * f / 48000.0)) : 0.0f;
+    }));
+    const std::vector<float> seco = referencia(m);
+    CHECK(m.trackFx(0, false) == nullptr && m.trackFx(3, true) == nullptr);  // espacio vacío
+    TrackFx *f = m.trackFx(0, true);
+    CHECK(f != nullptr && m.trackFx(0, false) == f);
+    // Sin nada prendido suena igual.
+    CHECK(referencia(m) == seco);
+    // Reverb: la pista mono queda con cola estéreo después de que se calla.
+    f->set(fx::kReverbOn, 1);
+    f->set(fx::kReverbMix, 0.5f);
+    std::vector<float> rev = referencia(m);
+    CHECK(rev.size() == seco.size());
+    double cola = 0, dif = 0;
+    for (size_t i = 2 * 9600; i < rev.size(); i += 2) {
+        cola += std::fabs(rev[i]);
+        dif += std::fabs(rev[i] - rev[i + 1]);
+    }
+    CHECK(cola > 1.0 && dif > 0.1);
+    // El sonido directo no cambia (la reverb se suma aparte).
+    CHECK_NEAR(rev[2 * 100], seco[2 * 100], 0.05);
+    // Delay de 50 ms: el eco aparece a los 50 ms.
+    f->set(fx::kReverbOn, 0);
+    f->set(fx::kDelayOn, 1);
+    f->set(fx::kDelayTime, 50);
+    f->set(fx::kDelayMix, 1.0f);
+    f->set(fx::kDelayFeedback, 0);
+    std::vector<float> eco = referencia(m);
+    CHECK(rmsDe(eco, 2 * 2400 + 2 * 200, 2 * 4800) > 0.5 * rmsDe(seco, 2 * 200, 2 * 2400));
+    CHECK(rmsDe(eco, 2 * 5000, 2 * 7000) > 0.1);  // el eco del final del sonido
+    // Compresor: baja el nivel y lo muestra en su medidor.
+    f->set(fx::kDelayOn, 0);
+    f->set(fx::kCompOn, 1);
+    f->set(fx::kCompThreshold, -30);
+    f->set(fx::kCompRatio, 10);
+    f->set(fx::kCompAttack, 0.5f);
+    std::vector<float> comp = referencia(m);
+    CHECK(rmsDe(comp, 2 * 2400, 2 * 4800) < 0.5 * rmsDe(seco, 2 * 2400, 2 * 4800));
+    m.play();
+    run(m, 4800);
+    float med[kMeterCount];
+    m.readMeters(med);
+    CHECK(med[3 + 2 * kMaxTracks] > 10.0f);
+    m.readMeters(med);
+    CHECK(med[3 + 2 * kMaxTracks] == 0.0f);  // se lee y se borra
+    // Silenciar la pista calla también sus envíos.
+    f->set(fx::kCompOn, 0);
+    f->set(fx::kReverbOn, 1);
+    m.setTrackMute(0, true);
+    std::vector<float> mudo = referencia(m);
+    CHECK(rmsDe(mudo, 0, mudo.size()) == 0.0);
+    // Quitar la pista se lleva sus efectos.
+    m.takeTrack(0);
+    m.setTrack(0, constTrack("fx2.wav", 1, 4800, 0.1f, 0.1f));
+    CHECK(m.trackFx(0, false) == nullptr);
+}
+
+TEST(estudioEfectos) {
+    const std::string dir = nuevaCarpeta("fx1");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    const int id = idDe(s, 1);
+    const int slot = static_cast<int>(pistas(s)[1]["slot"].asInt());
+    std::vector<float> st = s.fxState(id);
+    CHECK(st.size() == fx::kCount && st[fx::kCompOn] == 0.0f && st[fx::kCompThreshold] == -18.0f);
+    CHECK(s.fxState(999).empty());
+    CHECK(s.mixer().trackFx(slot, false) == nullptr);  // nada prendido: sin memoria de más
+    const std::vector<float> info = Studio::fxInfo();
+    CHECK(info.size() == 4 * fx::kCount && info[4 * fx::kDelayTime + 1] == 1500.0f && info[4 * fx::kDelayTime + 3] == 1.0f);
+    // Valores fuera de rango o con decimales de más se ajustan.
+    int32_t v0[Studio::kVersionCount], v1[Studio::kVersionCount];
+    s.versions(v0);
+    s.setFx(id, fx::kCompThreshold, -99);
+    s.setFx(id, fx::kCompRatio, 3.14159f);
+    s.setFx(id, fx::kCompOn, 0.7f);
+    s.versions(v1);
+    CHECK(v1[Studio::verFx(slot)] != v0[Studio::verFx(slot)]);
+    st = s.fxState(id);
+    CHECK(st[fx::kCompThreshold] == -60.0f && std::fabs(st[fx::kCompRatio] - 3.1f) < 1e-5f && st[fx::kCompOn] == 1.0f);
+    TrackFx *f = s.mixer().trackFx(slot, false);
+    CHECK(f && f->get(fx::kCompThreshold) == -60.0f && f->get(fx::kCompOn) == 1.0f);
+    s.setFx(id, 99, 1);  // parámetro que no existe: nada
+    // Presets.
+    std::string err;
+    const Json p = Json::parse(Studio::fxPresetsJson(), err);
+    CHECK(err.empty() && p.size() == static_cast<size_t>(fx::presetCount()) && p[0].asString() == "Voz");
+    CHECK(p[p.size() - 1].asString() == "Sin efectos");
+    CHECK(s.applyFxPreset(id, 1));  // voz con eco
+    st = s.fxState(id);
+    CHECK(st[fx::kCompOn] == 1 && st[fx::kDelayOn] == 1 && st[fx::kReverbOn] == 1 && st[fx::kDelayPingPong] == 1);
+    CHECK(!s.applyFxPreset(id, 99) && !s.applyFxPreset(999, 0));
+    for (int i = 0; i < fx::presetCount(); ++i)
+        for (int k = 0; k < fx::kCount; ++k) {
+            const float v = fx::preset(i).values[static_cast<size_t>(k)];
+            CHECK(v == fx::clampValue(k, v));  // los presets ya vienen ajustados
+        }
+    // Suena (la canción con el preset es distinta) y se exporta igual que en vivo.
+    std::unique_ptr<Mixer> copia(new Mixer(48000));
+    CHECK(s.mixer().cloneInto(*copia, err) && copia->trackFx(slot, false) != nullptr);
+    CHECK(copia->trackFx(slot, false)->get(fx::kDelayTime) == 320.0f);
+    // La sesión lo guarda.
+    CHECK(s.saveNow());
+    Studio s2;
+    s2.open(dir, dir);
+    CHECK(s2.waitIdle(30000));
+    CHECK(s2.fxState(id) == s.fxState(id));
+    CHECK(s2.mixer().trackFx(slot, false) != nullptr);
+    CHECK(s2.fxState(idDe(s2, 0))[fx::kCompOn] == 0.0f);
+    // Medidor del compresor.
+    s2.applyFxPreset(id, 2);
+    s2.play();
+    std::vector<float> out(480 * 2);
+    for (int i = 0; i < 100; ++i) s2.mixer().process(out.data(), 480, 2);
+    float med[MeterBallistics::kCount];
+    s2.meters(1000, med);
+    CHECK(med[MeterBallistics::kCompressor + slot] > 0.5f);
+    CHECK(med[MeterBallistics::kCompressor + static_cast<int>(pistas(s2)[0]["slot"].asInt())] == 0.0f);
+}
+
+TEST(efectosRapidos) {
+    // Doce pistas con todo prendido: muy por debajo del tiempo real.
+    Mixer m(48000);
+    for (int i = 0; i < kMaxTracks; ++i) {
+        m.setTrack(i, seno("rap" + std::to_string(i) + ".wav", i % 2 + 1, 48000 * 4, 200.0 + 50 * i, 0.1));
+        TrackFx *f = m.trackFx(i, true);
+        for (int k = 0; k < fx::kCount; ++k) f->set(k, fx::preset(1).values[static_cast<size_t>(k)]);
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::vector<float> out = referencia(m);
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("  12 pistas con compresor, delay y reverb: 4 s de audio en %.2f s\n", s);
+    CHECK(out.size() == 48000u * 4 * 2);
+    CHECK(std::all_of(out.begin(), out.end(), [](float x) { return std::isfinite(x); }));
 }
 
 // ---------------------------------------------------------------- main

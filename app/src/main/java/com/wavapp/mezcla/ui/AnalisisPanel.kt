@@ -86,11 +86,22 @@ fun PestanaAnalisis(abajo: Dp) {
         ) {
             item(key = "espacio") { EspacioEncabezado() }
             item(key = "titulo") { TituloGrande("Análisis") }
-            item(key = "fuentes") { Fuentes(fuente) }
             if (Mesa.pistas.isEmpty()) {
                 item(key = "vacio") { PieGrupo("Agrega pistas en Mezcla para analizarlas.", Modifier.padding(top = 12.dp)) }
                 return@LazyColumn
             }
+            item(key = "lufsTitulo") { EncabezadoSeccion("Volumen percibido", detalle = "LUFS · la mezcla") }
+            item(key = "lufs") { TarjetaLufs() }
+            item(key = "lufsCancionTitulo") { EncabezadoSeccion("Canción completa") }
+            item(key = "lufsCancion") { TarjetaLufsCancion() }
+            item(key = "lufsPie") {
+                PieGrupo(
+                    "LUFS es el volumen como lo oye la gente (no solo los picos). Se mide lo que sale, después del " +
+                        "master. Spotify y YouTube ponen todo a −14 LUFS: más fuerte no suena más fuerte allá.",
+                )
+            }
+            item(key = "fuentesTitulo") { EncabezadoSeccion("Analizar") }
+            item(key = "fuentes") { Fuentes(fuente) }
             item(key = "diagTitulo") {
                 val detalle = when {
                     Analisis.fuenteId == Nucleo.ID_ENTRADA -> if (Mesa.entrada.abierta) "Micrófono en vivo" else "Micrófono (cerrado)"

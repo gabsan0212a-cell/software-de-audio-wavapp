@@ -29,6 +29,11 @@
 - Automatización: `core/engine/Automation` (curvas) + `Studio` (puntos, grabar movimientos con
   `autoTouch`, deshacer) + `Mixer` (la sigue al sonar y al exportar). La pantalla solo dibuja lo
   que da `autoLane` (posiciones 0..1 ya calculadas) y lee `automationNow` en cada cuadro.
+- Efectos por pista: `core/engine/Effects` (ajustes `fx::Param`, presets, `TrackFx`) con
+  `dsp/Dynamics`, `dsp/Delay` y `dsp/Reverb`. El compresor va en la señal; delay y reverb son
+  envíos estéreo que se suman después del volumen y el paneo. Rangos y escalas vienen de `fxInfo`.
+- LUFS: `dsp/Loudness` (BS.1770 / EBU R128). El mezclador manda bloques de 100 ms de lo que sale;
+  `Studio::loudness` hace las cuentas; `measureSong` y la exportación miden fuera de tiempo real.
 
 ## Cómo se trabaja
 - El dueño no tiene computadora: usa Android + GitHub. Todo se compila en GitHub Actions; el

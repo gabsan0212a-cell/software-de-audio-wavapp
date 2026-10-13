@@ -105,6 +105,9 @@ Json sessionToJson(const ProjectModel &p) {
         jt.set("eq", std::move(eq));
         jt.set("pedazos", std::move(regions));
         jt.set("auto", autoToJson(t));
+        Json fxj = Json::object();
+        for (int k = 0; k < fx::kCount; ++k) fxj.set(fx::info(k).key, static_cast<double>(t.fx[static_cast<size_t>(k)]));
+        jt.set("efectos", std::move(fxj));
         tracks.push(std::move(jt));
     }
     Json master = Json::object();
@@ -112,9 +115,11 @@ Json sessionToJson(const ProjectModel &p) {
     master.set("mute", p.master.mute);
     master.set("limitador", p.master.limiter);
     master.set("notch", p.master.notch);
+    master.set("objetivoLufs", p.master.loudTarget);
     Json exp = Json::object();
     exp.set("bits", p.master.exportBits);
     exp.set("rate", p.master.exportRate);
+    exp.set("ajustarLufs", p.master.exportNormalize);
 
     Json j = Json::object();
     j.set("version", 1);
@@ -144,6 +149,9 @@ bool sessionFromJson(const Json &j, ProjectModel &p) {
     const int bits = static_cast<int>(e["bits"].asInt(24));
     p.master.exportBits = bits == 16 || bits == 32 ? bits : 24;
     p.master.exportRate = e["rate"].asInt(48000) == 44100 ? 44100 : 48000;
+    const int target = static_cast<int>(m["objetivoLufs"].asInt(-14));
+    p.master.loudTarget = target == -16 || target == -23 ? target : -14;
+    p.master.exportNormalize = e["ajustarLufs"].asBool(false);
 
     const Json &ts = j["pistas"];
     for (size_t i = 0; i < ts.size(); ++i) {
@@ -169,6 +177,10 @@ bool sessionFromJson(const Json &j, ProjectModel &p) {
             }
         }
         autoFromJson(o["auto"], t);
+        const Json &fxj = o["efectos"];
+        for (int k = 0; k < fx::kCount; ++k)
+            t.fx[static_cast<size_t>(k)] =
+                fx::clampValue(k, static_cast<float>(fxj[fx::info(k).key].asDouble(fx::info(k).def)));
         if (t.file.empty()) continue;
         p.nextId = std::max(p.nextId, t.id + 1);
         p.tracks.push_back(std::move(t));

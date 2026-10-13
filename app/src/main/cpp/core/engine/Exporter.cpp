@@ -107,7 +107,72 @@ private:
     uint32_t mSeed = 0x9E3779B9u;
 };
 
+// Copia del mezclador lista para renderizar desde el inicio, con ganancia extra en el master.
+std::unique_ptr<Mixer> offlineMixer(const Mixer &live, float gainDb, bool forceLimiter, std::string &err) {
+    auto m = std::make_unique<Mixer>(kRate);  // en el heap: es grande
+    if (!live.cloneInto(*m, err)) return nullptr;
+    if (gainDb != 0.0f) m->setMasterGain(m->masterGain() * std::pow(10.0f, gainDb / 20.0f));
+    if (forceLimiter) m->setLimiter(true);
+    m->prepareOffline();
+    return m;
+}
+
+// Mide un bloque intercalado (L R L R...) de lo que sale.
+void measureBlock(LoudnessFrontEnd &fe, LoudnessMeter &meter, const float *x, int n, std::vector<float> &l,
+                  std::vector<float> &r, std::vector<float> *curve) {
+    l.resize(static_cast<size_t>(n));
+    r.resize(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        l[i] = x[2 * i];
+        r[i] = x[2 * i + 1];
+    }
+    LoudnessBlock b[2];
+    const int made = fe.process(l.data(), r.data(), n, b, 2);
+    for (int i = 0; i < made; ++i) {
+        meter.add(b[i]);
+        if (curve) curve->push_back(meter.shortTerm());
+    }
+}
+
 }  // namespace
+
+LoudnessReport measureMix(const Mixer &live, float gainDb, bool forceLimiter, std::atomic<float> *progress,
+                          float from, float to, const std::atomic<bool> *cancel) {
+    LoudnessReport rep;
+    std::string err;
+    auto mixer = offlineMixer(live, gainDb, forceLimiter, err);
+    if (!mixer) {
+        rep.error = err;
+        return rep;
+    }
+    const int64_t length = mixer->length();
+    if (length <= 0) {
+        rep.error = "No hay pistas";
+        return rep;
+    }
+    LoudnessFrontEnd fe(kRate);
+    LoudnessMeter meter;
+    std::vector<float> block(kBlock * 2), l, r;
+    rep.shortTerm.reserve(static_cast<size_t>(length / (kRate / 10) + 1));
+    for (int64_t done = 0; done < length;) {
+        if (cancel && cancel->load()) {
+            rep.error = "Cancelado";
+            return rep;
+        }
+        const int n = static_cast<int>(std::min<int64_t>(kBlock, length - done));
+        mixer->process(block.data(), n, 2);
+        measureBlock(fe, meter, block.data(), n, l, r, &rep.shortTerm);
+        done += n;
+        if (progress) progress->store(from + (to - from) * static_cast<float>(done) / static_cast<float>(length));
+    }
+    rep.integrated = meter.integrated();
+    rep.range = meter.range();
+    rep.truePeak = meter.truePeakDb();
+    rep.maxMomentary = meter.maxMomentary();
+    rep.maxShortTerm = meter.maxShortTerm();
+    rep.seconds = static_cast<double>(length) / kRate;
+    return rep;
+}
 
 int64_t exportBytes(int64_t frames48k, const ExportFormat &fmt) {
     return outFrames(frames48k, fmt.sampleRate) * 2 * (fmt.bits / 8) + (fmt.isFloat ? 58 : 44);
@@ -130,12 +195,28 @@ ExportResult exportMix(const Mixer &live, int fd, const ExportFormat &fmtIn, std
     };
     if (fd < 0) return fail("No se pudo crear el archivo");
 
-    auto mixer = std::make_unique<Mixer>(kRate);  // en el heap: es grande
+    if (live.length() <= 0) return fail("No hay pistas para exportar");
+    // Ajuste al objetivo: se mide lo que saldría, se corrige el master y se vuelve a medir (el
+    // limitador hace que subir 3 dB no siempre suba 3 dB). Cada pasada es un tercio del progreso.
+    float gainDb = 0.0f;
+    bool forceLimiter = false;
+    float writeFrom = 0.0f;
+    if (fmt.targetLufs < 0.0f) {
+        for (int pass = 0; pass < 2; ++pass) {
+            const LoudnessReport m =
+                measureMix(live, gainDb, forceLimiter, progress, pass * 0.3f, (pass + 1) * 0.3f, cancel);
+            if (!m.error.empty()) return fail(cancel && cancel->load() ? "Exportación cancelada" : m.error);
+            if (m.integrated <= -69.0f) break;  // silencio: no hay nada que ajustar
+            gainDb = std::clamp(gainDb + (fmt.targetLufs - m.integrated), -40.0f, 30.0f);
+            forceLimiter = gainDb > 0.0f;
+        }
+        writeFrom = 0.6f;
+    }
     std::string err;
-    if (!live.cloneInto(*mixer, err)) return fail(err);
+    auto mixer = offlineMixer(live, gainDb, forceLimiter, err);
+    if (!mixer) return fail(err);
     const int64_t length = mixer->length();
     if (length <= 0) return fail("No hay pistas para exportar");
-    mixer->prepareOffline();
 
     const int64_t frames = outFrames(length, fmt.sampleRate);
     const uint64_t dataBytes = static_cast<uint64_t>(frames) * 2 * (fmt.bits / 8);
@@ -146,7 +227,9 @@ ExportResult exportMix(const Mixer &live, int fd, const ExportFormat &fmtIn, std
     std::unique_ptr<Resampler> rs;
     if (fmt.sampleRate != kRate) rs = std::make_unique<Resampler>(2, kRate, fmt.sampleRate);
     Converter conv(fmt);
-    std::vector<float> block(kBlock * 2), resampled;
+    std::vector<float> block(kBlock * 2), resampled, ml, mr;
+    LoudnessFrontEnd fe(kRate);
+    LoudnessMeter meter;
     std::vector<uint8_t> bytes;
     int64_t done = 0, written = 0;
 
@@ -163,6 +246,7 @@ ExportResult exportMix(const Mixer &live, int fd, const ExportFormat &fmtIn, std
         if (cancel && cancel->load()) return fail("Exportación cancelada");
         const int n = static_cast<int>(std::min<int64_t>(kBlock, length - done));
         mixer->process(block.data(), n, 2);
+        measureBlock(fe, meter, block.data(), n, ml, mr, nullptr);
         bool ok;
         if (rs) {
             resampled.clear();
@@ -173,7 +257,8 @@ ExportResult exportMix(const Mixer &live, int fd, const ExportFormat &fmtIn, std
         }
         if (!ok) return fail("No se pudo escribir el archivo (¿falta espacio?)");
         done += n;
-        if (progress) progress->store(static_cast<float>(done) / static_cast<float>(length));
+        if (progress)
+            progress->store(writeFrom + (1.0f - writeFrom) * static_cast<float>(done) / static_cast<float>(length));
     }
     if (rs) {
         resampled.clear();
@@ -193,6 +278,9 @@ ExportResult exportMix(const Mixer &live, int fd, const ExportFormat &fmtIn, std
     }
     res.frames = frames;
     res.bytes = static_cast<int64_t>(h.size() + dataBytes);
+    res.lufs = meter.integrated();
+    res.truePeak = meter.truePeakDb();
+    res.gainDb = gainDb;
     if (progress) progress->store(1.0f);
     return res;
 }

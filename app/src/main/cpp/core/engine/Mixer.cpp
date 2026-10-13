@@ -46,7 +46,7 @@ float fadeCurve(double x) {
 
 }  // namespace
 
-Mixer::Mixer(int sampleRate) : mSampleRate(sampleRate) {
+Mixer::Mixer(int sampleRate) : mSampleRate(sampleRate), mLoudFe(sampleRate) {
     // Mismos tiempos que el prototipo: volumen y paneo 15 ms, mute/solo 10 ms,
     // polaridad 5 ms, master 20 ms.
     mCoefGain = smoothCoef(0.015f, sampleRate);
@@ -93,6 +93,8 @@ bool Mixer::setTrack(int slot, std::unique_ptr<MappedAudio> audio) {
     for (auto &h : s.hold) h.store(false);
     s.autos.store(nullptr);
     s.ownedAutos.reset();
+    s.fx.store(nullptr);
+    s.ownedFx.reset();
     s.peakL.store(0.0f);
     s.peakR.store(0.0f);
     // Nadie lee los pedazos de un espacio vacío: se cambian sin esperar.
@@ -117,14 +119,17 @@ std::unique_ptr<MappedAudio> Mixer::takeTrack(int slot) {
     s.audio.store(nullptr);
     s.pieces.store(nullptr);
     s.autos.store(nullptr);
+    s.fx.store(nullptr);
     std::unique_ptr<MappedAudio> a = std::move(s.owned);
     std::unique_ptr<PieceSet> ps = std::move(s.ownedPieces);
     std::unique_ptr<AutoSet> as = std::move(s.ownedAutos);
+    std::unique_ptr<TrackFx> fx = std::move(s.ownedFx);
     if (!waitForAudioThread()) {
         // El hilo de audio no respondió: no liberamos para no arriesgar un cierre.
         a.release();
         ps.release();
         as.release();
+        fx.release();
     }
     s.removing.store(false);
     updateLength();
@@ -228,6 +233,19 @@ void Mixer::setAutomationHold(int slot, int param, bool hold) {
     if (slot >= 0 && slot < kMaxTracks && param >= 0 && param < autom::kParamCount) mSlots[slot].hold[param].store(hold);
 }
 
+TrackFx *Mixer::trackFx(int slot, bool create) {
+    if (slot < 0 || slot >= kMaxTracks) return nullptr;
+    std::lock_guard<std::mutex> lk(mMutex);
+    Slot &s = mSlots[slot];
+    if (!s.owned) return nullptr;
+    if (!s.ownedFx && create) {
+        // Nadie lo usaba: se publica sin esperar al hilo de audio.
+        s.ownedFx = std::make_unique<TrackFx>(mSampleRate);
+        s.fx.store(s.ownedFx.get(), std::memory_order_release);
+    }
+    return s.ownedFx.get();
+}
+
 std::vector<autom::PosPoint> Mixer::automation(int slot, int param) const {
     if (slot < 0 || slot >= kMaxTracks || param < 0 || param >= autom::kParamCount) return {};
     std::lock_guard<std::mutex> lk(mMutex);
@@ -300,6 +318,9 @@ void Mixer::readMeters(float *out) {
         out[3 + 2 * i] = mSlots[i].peakL.exchange(0.0f);
         out[4 + 2 * i] = mSlots[i].peakR.exchange(0.0f);
     }
+    std::lock_guard<std::mutex> lk(mMutex);  // que el efecto no se vaya mientras se lee
+    for (int i = 0; i < kMaxTracks; ++i)
+        out[3 + 2 * kMaxTracks + i] = mSlots[i].ownedFx ? mSlots[i].ownedFx->takeReduction() : 0.0f;
 }
 
 void Mixer::prefetch() {
@@ -410,6 +431,7 @@ void Mixer::renderBlock(int n) {
         const MappedAudio *a = s.audio.load(std::memory_order_acquire);
         const PieceSet *ps = s.pieces.load(std::memory_order_acquire);
         if (!a || !ps) continue;
+        TrackFx *fx = s.fx.load(std::memory_order_acquire);
         const bool tap = si == tapSource;
         float gainT = s.gain.load(std::memory_order_relaxed);
         float panT = s.pan.load(std::memory_order_relaxed);
@@ -450,15 +472,29 @@ void Mixer::renderBlock(int n) {
 
         // El paneo se suaviza por bloque y la matriz se interpola dentro del bloque.
         const bool mono = a->channels() == 1;
-        const float panEnd = panT + (s.panS - panT) * std::exp(-n / mTauPanFrames);
-        const PanMatrix m0 = panMatrix(s.panS, mono), m1 = panMatrix(panEnd, mono);
+        const float panStart = s.panS;
+        const float panEnd = panT + (panStart - panT) * std::exp(-n / mTauPanFrames);
+        const PanMatrix m0 = panMatrix(panStart, mono), m1 = panMatrix(panEnd, mono);
         const float inv = 1.0f / n;
         const PanMatrix dm = {(m1.a - m0.a) * inv, (m1.b - m0.b) * inv, (m1.c - m0.c) * inv, (m1.d - m0.d) * inv};
         s.panS = panEnd;
 
-        // Entrada del bloque (ceros fuera de los pedazos; el EQ puede seguir sonando un poco).
+        // Entrada del bloque (ceros fuera de los pedazos; el EQ y los efectos pueden seguir
+        // sonando un poco).
         readInput(*a, *ps, n);
         s.eq.process(mInL, mono ? nullptr : mInR, n);
+        bool wet = false;
+        PanMatrix w0{}, dw{};
+        if (fx) {
+            if (snap) fx->restart();
+            fx->processInsert(mInL, mono ? nullptr : mInR, n);
+            wet = fx->processSends(mInL, mono ? nullptr : mInR, n, mWetL, mWetR);
+            if (wet) {  // los envíos son estéreo: se panean como estéreo
+                w0 = mono ? panMatrix(panStart, false) : m0;
+                const PanMatrix w1 = mono ? panMatrix(panEnd, false) : m1;
+                dw = {(w1.a - w0.a) * inv, (w1.b - w0.b) * inv, (w1.c - w0.c) * inv, (w1.d - w0.d) * inv};
+            }
+        }
 
         float pkL = 0.0f, pkR = 0.0f;
         float g = s.gainS, onS = s.onS, invS = s.invS;
@@ -477,6 +513,11 @@ void Mixer::renderBlock(int n) {
                 const float xl = mInL[i], xr = mInR[i];
                 l = xl * (m0.a + dm.a * fi) + xr * (m0.b + dm.b * fi);
                 r = xl * (m0.c + dm.c * fi) + xr * (m0.d + dm.d * fi);
+            }
+            if (wet) {
+                const float wl = mWetL[i], wr = mWetR[i];
+                l += wl * (w0.a + dw.a * fi) + wr * (w0.b + dw.b * fi);
+                r += wl * (w0.c + dw.c * fi) + wr * (w0.d + dw.d * fi);
             }
             l *= k;
             r *= k;
@@ -540,6 +581,7 @@ void Mixer::renderBlock(int n) {
     atomicMax(mPeakL, pkL);
     atomicMax(mPeakR, pkR);
     mReduction.store(limiterOn ? mLimiter.reductionDb() : 0.0f, std::memory_order_relaxed);
+    if (!mOffline) feedLoudness(n);
 
     mPos += n;
     if (mPos >= length && !freeRun) {
@@ -579,6 +621,32 @@ void Mixer::readInput(const MappedAudio &a, const PieceSet &ps, int n) {
             }
         }
     }
+}
+
+void Mixer::feedLoudness(int n) {
+    const uint32_t req = mLoudGenReq.load(std::memory_order_acquire);
+    if (req != mLoudGen) {  // medición nueva: sin lo que traían los filtros
+        mLoudGen = req;
+        mLoudFe.reset();
+    }
+    LoudnessBlock b[2];
+    const int made = mLoudFe.process(mMixL, mMixR, n, b, 2);
+    for (int i = 0; i < made; ++i) {
+        const uint64_t w = mLoudWrite.load(std::memory_order_relaxed);
+        if (w - mLoudRead.load(std::memory_order_acquire) >= static_cast<uint64_t>(kLoudRing)) return;  // nadie lee
+        b[i].gen = mLoudGen;
+        mLoudRing[w % kLoudRing] = b[i];
+        mLoudWrite.store(w + 1, std::memory_order_release);
+    }
+}
+
+int Mixer::readLoudness(LoudnessBlock *out, int max) {
+    const uint64_t r = mLoudRead.load(std::memory_order_relaxed);
+    const uint64_t w = mLoudWrite.load(std::memory_order_acquire);
+    const int n = static_cast<int>(std::min<uint64_t>(w - r, static_cast<uint64_t>(max)));
+    for (int i = 0; i < n; ++i) out[i] = mLoudRing[(r + i) % kLoudRing];
+    mLoudRead.store(r + n, std::memory_order_release);
+    return n;
 }
 
 void Mixer::applyNotch(int n) {
@@ -646,6 +714,7 @@ bool Mixer::cloneInto(Mixer &dst, std::string &error) const {
             std::lock_guard<std::mutex> dl(dst.mMutex);
             dst.publishAutos(d, std::make_unique<AutoSet>(*s.ownedAutos));
         }
+        if (s.ownedFx) dst.trackFx(i, true)->copyParams(*s.ownedFx);
         d.gain.store(s.gain.load());
         d.pan.store(s.pan.load());
         d.mute.store(s.mute.load());

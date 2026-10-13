@@ -20,6 +20,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTouchInput
@@ -245,6 +246,49 @@ class PantallaTest {
         }
         regla.waitUntil(2_000) { p0.autoVol.n == 0 && !Edicion.abierta }
 
+        // Efectos: el botón FX abre la hoja; un preset prende compresor y reverb.
+        regla.runOnUiThread { if (Mesa.reproduciendo) Mesa.reproducirPausar() }
+        regla.onNodeWithContentDescription("Efectos pista $id").performClick()
+        regla.waitUntil(2_000) { Vista.efectos != null }
+        regla.onNodeWithContentDescription("Preset Voz").performClick()
+        regla.waitUntil(2_000) { p0.fxOn(Nucleo.FX_COMP) && p0.fxOn(Nucleo.FX_REVERB) && !p0.fxOn(Nucleo.FX_DELAY) }
+        regla.onNodeWithText("Delay").performScrollTo().performClick()
+        regla.waitUntil(2_000) { p0.fxOn(Nucleo.FX_DELAY) }
+        regla.waitForIdle()
+        captura("22-efectos")
+        regla.onNodeWithText("Listo").performClick()
+        regla.waitUntil(2_000) { Vista.efectos == null }
+        assertTrue(p0.fxActivo)
+
+        // Volumen percibido (LUFS): se mide lo que sale mientras suena.
+        regla.runOnUiThread {
+            Mesa.saltar(0.0)
+            Mesa.reproducirPausar()
+        }
+        regla.onNodeWithTag("pestana-2").performClick()
+        regla.waitUntil(2_000) { Analisis.abierto }
+        avanzarHasta(8_000, { "no midió el volumen: ${Mesa.volumen.segundos} s" }) {
+            Mesa.volumen.segundos > 2f && Mesa.volumen.integrado > -60f
+        }
+        regla.onNodeWithTag("tarjetaLufs").assertIsDisplayed()
+        avanzarMedidores()
+        captura("23-lufs")
+        regla.runOnUiThread { if (Mesa.reproduciendo) Mesa.reproducirPausar() }
+        // La primera vez el botón dice "Medir la canción completa"; si ya se midió, "Medir otra vez".
+        val boton = if (regla.onAllNodesWithText("Medir otra vez").fetchSemanticsNodes().isEmpty()) {
+            "Medir la canción completa"
+        } else {
+            "Medir otra vez"
+        }
+        regla.onNodeWithTag("panelAnalisis").performScrollToNode(hasText(boton))
+        regla.onNodeWithText(boton).performClick()
+        avanzarHasta(60_000, { "no midió la canción: ${Mesa.volumen.cancion}" }) { Mesa.volumen.cancion == 2 }
+        assertTrue(Mesa.volumen.cancionIntegrado > -60f && Mesa.volumen.curva.isNotEmpty())
+        avanzarMedidores()
+        captura("24-lufs-cancion")
+        regla.onNodeWithTag("pestana-0").performClick()
+        regla.waitUntil(2_000) { !Analisis.abierto }
+
         // Hoja de exportar (sin abrir el selector de archivos del sistema).
         regla.onNodeWithContentDescription("Exportar").performClick()
         regla.onNodeWithText("Exportar la mezcla").assertIsDisplayed()
@@ -252,8 +296,12 @@ class PantallaTest {
         regla.waitUntil(2_000) { Mesa.exportBits == 32 }
         regla.onNodeWithText("24 bits").performClick()
         regla.waitUntil(2_000) { Mesa.exportBits == 24 }
+        regla.onNodeWithText("Ajustar el volumen").performScrollTo().performClick()
+        regla.waitUntil(2_000) { Mesa.ajustarAlExportar }
         regla.waitForIdle()
         captura("9-exportar")
+        regla.onNodeWithText("Ajustar el volumen").performScrollTo().performClick()
+        regla.waitUntil(2_000) { !Mesa.ajustarAlExportar }
         regla.onNodeWithText("Cancelar").performClick()
         regla.waitUntil(2_000) { !Vista.exportar }
 

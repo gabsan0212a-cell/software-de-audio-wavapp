@@ -16,6 +16,7 @@
 #include "dsp/AnalysisView.h"
 #include "dsp/Analyzer.h"
 #include "engine/Decoder.h"
+#include "engine/Exporter.h"
 #include "engine/Importer.h"
 #include "engine/LiveInput.h"
 #include "engine/Meters.h"
@@ -43,8 +44,8 @@ public:
     static constexpr int kMaxHistory = 100;
 
     enum Version { kVerTracks = 0, kVerMaster, kVerHistory, kVerStatus, kVerBackground, kVerFirstSlot };
-    // Por cada espacio del mezclador: parámetros, EQ, pedazos y automatización.
-    static constexpr int kVersPerSlot = 4;
+    // Por cada espacio del mezclador: parámetros, EQ, pedazos, automatización y efectos.
+    static constexpr int kVersPerSlot = 5;
     // Al final: la entrada en vivo (ganancia, escucha y su EQ).
     static constexpr int kVerInput = kVerFirstSlot + kVersPerSlot * kMaxTracks;
     static constexpr int kVersionCount = kVerInput + 1;
@@ -57,6 +58,7 @@ public:
     static constexpr int verEq(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 1; }
     static constexpr int verRegions(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 2; }
     static constexpr int verAuto(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 3; }
+    static constexpr int verFx(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 4; }
     // trackParams(): volumen (dB), paneo, mute, solo, fase, modo de automatización.
     static constexpr int kTrackParamCount = 6;
 
@@ -68,6 +70,18 @@ public:
     // automatización, 2 = el paneo la sigue, 4 = se graba el volumen, 8 = se graba el paneo.
     static constexpr int kAutoNowCount = 3;
     static constexpr int64_t kAutoGlide = kRate / 4;  // al soltar, regresa a lo que había en 250 ms
+    // masterState(): volumen (dB), mute, limitador, notch, bits y frecuencia de exportación,
+    // objetivo de LUFS, ajustar al exportar.
+    static constexpr int kMasterStateCount = 8;
+    // loudness(): momentáneo, corto plazo, integrado (LUFS), rango (LU), pico real (dBTP), máx.
+    // momentáneo, máx. corto plazo, segundos medidos, objetivo, veredicto, diferencia con el
+    // objetivo (dB). Sin dato: kLoudnessNone.
+    static constexpr int kLoudCount = 11;
+    // songLoudness(): estado (0 nada, 1 midiendo, 2 lista, 3 la mezcla cambió después), integrado,
+    // rango, pico real, máx. momentáneo, máx. corto plazo, segundos, veredicto, diferencia.
+    static constexpr int kSongLoudCount = 9;
+    // Veredicto del volumen frente al objetivo (±1 dB es "en el objetivo").
+    enum LoudVerdict { kLoudNoData = 0, kLoudLow, kLoudOk, kLoudHigh };
 
     explicit Studio(DecodeFunction decoder = nullptr);
     ~Studio();
@@ -98,8 +112,7 @@ public:
     // [bypass, auto-ganancia, n, y por banda (en orden): tipo, frecuencia, ganancia, Q, activa].
     std::vector<float> eqState(int id) const;
     std::vector<Region> regions(int id) const;
-    // volumen master (dB), mute, limitador, notch, bits y frecuencia de exportación.
-    void masterState(float *out) const;
+    void masterState(float *out) const;  // kMasterStateCount valores
     // {"mensaje","ocupada","texto","exportando","exportaciones","ultimaOk"}
     std::string statusJson() const;
     float progress() const { return mProgress.load(); }  // -1 = sin barra
@@ -129,6 +142,14 @@ public:
     float eqTrimDb(int id) const;
     void eqResponse(int id, int pos, const float *freqs, float *outDb, int n) const;  // pos -1 = todo
 
+    // ---------- Efectos de la pista: compresor, delay y reverb (param: fx::Param)
+    void setFx(int id, int param, float value);
+    std::vector<float> fxState(int id) const;  // fx::kCount valores
+    // Por parámetro: mínimo, máximo, valor inicial y si su control es logarítmico (0 o 1).
+    static std::vector<float> fxInfo();
+    static std::string fxPresetsJson();  // ["Voz", "Voz con eco", ...]
+    bool applyFxPreset(int id, int index);
+
     // ---------- Master y exportar
     void setMasterDb(float db);
     void setMasterMute(bool on);
@@ -139,6 +160,20 @@ public:
     // Exporta en el hilo de trabajos y cierra `fd`. `name` es para el mensaje final.
     bool exportMix(int fd, const std::string &name);
     void cancelExport() { mCancelExport.store(true); }
+
+    // ---------- Volumen percibido (LUFS) de lo que sale (después del master)
+    // Se mide mientras suena; al reproducir desde el inicio empieza una medición nueva.
+    void loudness(float *out);  // kLoudCount valores
+    // Los últimos n valores del momentáneo y del corto plazo (10 por segundo).
+    void loudnessHistory(float *momentary, float *shortTerm, int n);
+    void resetLoudness();
+    void setLoudnessTarget(int lufs);  // −14, −16 o −23
+    void setExportNormalize(bool on);
+    // La canción completa, fuera de tiempo real (en el hilo de trabajos). false si hay otro trabajo.
+    bool measureSong();
+    void songLoudness(float *out) const;  // kSongLoudCount valores
+    // Corto plazo a lo largo de la canción en `cols` columnas (el máximo de cada una).
+    std::vector<float> songLoudnessCurve(int cols) const;
 
     // ---------- Transporte
     void play();
@@ -276,6 +311,7 @@ private:
     const TrackModel *findLocked(int id) const;
     void applyTrackLocked(TrackModel &t);
     void applyEqLocked(TrackModel &t);
+    void applyFxLocked(TrackModel &t);
     void applyRegionsLocked(TrackModel &t, const std::vector<Region> &list);
     void applyAutoLocked(TrackModel &t, int param);
     bool automatedLocked(const TrackModel &t, int param) const;
@@ -309,6 +345,8 @@ private:
     std::string newFileName(const std::string &prefix);
 
     void setMessage(const std::string &message);
+    void pumpLoudnessLocked();  // con mLoudMutex: pasa los bloques del mezclador al medidor
+    static void loudVerdict(float lufs, int target, float *out);  // veredicto y diferencia
     std::string baseStatus() const;
     void bump(int v) { mVer[v].fetch_add(1, std::memory_order_relaxed); }
     void bumpAll();
@@ -345,6 +383,15 @@ private:
     std::atomic<bool> mDirty{false}, mRestoring{false};
     std::atomic<int64_t> mDirtyMs{0};
     std::mutex mSaveMutex;
+
+    // Volumen percibido: en vivo y de la canción completa.
+    mutable std::mutex mLoudMutex;
+    LoudnessMeter mLoud;
+    uint32_t mLoudGen = 0;
+    int mSongState = 0;  // 0 nada, 1 midiendo, 2 lista
+    int64_t mSongChanges = 0;
+    LoudnessReport mSongReport;
+    std::atomic<int64_t> mChanges{0};  // cambios al proyecto (para saber si la medición ya no vale)
 
     // Hilo de la pantalla
     Analyzer mAnalyzer{kRate};

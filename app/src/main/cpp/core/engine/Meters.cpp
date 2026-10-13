@@ -14,6 +14,7 @@ void MeterBallistics::reset() {
     mL = mR = mTickL = mTickR = mMaxL = mMaxR = kFloor;
     mReduction = 0.0f;
     mInL = mInR = kFloor;
+    for (float &c : mComp) c = 0.0f;
     mClipL = mClipR = mInClip = false;
     mTickTimeL = mTickTimeR = mLast = 0;
 }
@@ -46,6 +47,8 @@ void MeterBallistics::update(const float *raw, int64_t nowMs, const float *input
     if (raw[0] >= 0.999f) mClipL = true;
     if (raw[1] >= 0.999f) mClipR = true;
     mReduction = raw[2];
+    for (int s = 0; s < kMaxTracks; ++s)
+        mComp[s] = std::max({0.0f, raw[3 + 2 * kMaxTracks + s], mComp[s] - 20.0f * dt});
     if (input) {
         mInL = std::max(toDb(input[0]), mInL - fallTrack);
         mInR = std::max(toDb(input[1]), mInR - fallTrack);
@@ -60,6 +63,8 @@ bool MeterBallistics::moving() const {
     if (mL > -119.0f || mR > -119.0f || mInL > -119.0f || mInR > -119.0f) return true;
     for (const auto &t : mTrack)
         if (t[0] > -119.0f || t[1] > -119.0f) return true;
+    for (float c : mComp)
+        if (c > 0.0f) return true;
     return false;
 }
 
@@ -81,6 +86,7 @@ void MeterBallistics::read(float *out) const {
     out[kInputL] = mInL;
     out[kInputR] = mInR;
     out[kInputClip] = mInClip ? 1.0f : 0.0f;
+    for (int s = 0; s < kMaxTracks; ++s) out[kCompressor + s] = mComp[s];
 }
 
 void MeterBallistics::clearClip() {

@@ -68,13 +68,15 @@ JNI(jintArray, outputInfo)(JNIEnv *env, jobject) {
 // [pistas máx., bandas máx., medidores, datos de análisis, versiones, columnas y filas del
 //  espectrograma, frecuencia del proyecto, pedazos máx., versión de la entrada, datos de la
 //  entrada, id del EQ de la entrada, primera versión por espacio, versiones por espacio, datos de
-//  automationNow por espacio, datos de trackParams]
+//  automationNow por espacio, datos de trackParams, datos de masterState, de loudness y de
+//  songLoudness, parámetros de efectos, primer medidor de compresor]
 JNI(jintArray, constants)(JNIEnv *env, jobject) {
     const int32_t v[] = {kMaxTracks, kMaxBands, MeterBallistics::kCount, AnalysisView::kStatCount,
                          Studio::kVersionCount, Studio::kSpectrogramCols, Studio::kSpectrogramRows, Studio::kRate,
                          kMaxRegions, Studio::kVerInput, Studio::kInputStateCount, Studio::kInputId,
                          Studio::kVerFirstSlot, Studio::kVersPerSlot, Studio::kAutoNowCount,
-                         Studio::kTrackParamCount};
+                         Studio::kTrackParamCount, Studio::kMasterStateCount, Studio::kLoudCount,
+                         Studio::kSongLoudCount, fx::kCount, MeterBallistics::kCompressor};
     const jsize n = static_cast<jsize>(sizeof v / sizeof v[0]);
     jintArray a = env->NewIntArray(n);
     env->SetIntArrayRegion(a, 0, n, v);
@@ -104,9 +106,9 @@ JNI(jlongArray, regions)(JNIEnv *env, jobject, jint id) {
     return a;
 }
 JNI(void, masterState)(JNIEnv *env, jobject, jfloatArray out) {
-    float v[6];
+    float v[Studio::kMasterStateCount];
     gStudio.masterState(v);
-    env->SetFloatArrayRegion(out, 0, std::min<jsize>(6, env->GetArrayLength(out)), v);
+    env->SetFloatArrayRegion(out, 0, std::min<jsize>(Studio::kMasterStateCount, env->GetArrayLength(out)), v);
 }
 JNI(jstring, statusJson)(JNIEnv *env, jobject) { return jstr(env, gStudio.statusJson()); }
 JNI(jfloat, progress)(JNIEnv *, jobject) { return gStudio.progress(); }
@@ -316,3 +318,37 @@ JNI(jboolean, autoBegin)(JNIEnv *, jobject, jint id, jint param, jint index) {
 JNI(void, autoDrag)(JNIEnv *, jobject, jlong deltaFrames, jfloat deltaPos) { gStudio.autoDrag(deltaFrames, deltaPos); }
 JNI(void, autoEnd)(JNIEnv *, jobject) { gStudio.autoEnd(); }
 JNI(void, autoTouch)(JNIEnv *, jobject, jint id, jint param, jboolean down) { gStudio.autoTouch(id, param, down); }
+
+// ---------- Volumen percibido (LUFS)
+JNI(void, loudness)(JNIEnv *env, jobject, jfloatArray out) {
+    float v[Studio::kLoudCount];
+    gStudio.loudness(v);
+    env->SetFloatArrayRegion(out, 0, std::min<jsize>(Studio::kLoudCount, env->GetArrayLength(out)), v);
+}
+JNI(void, loudnessHistory)(JNIEnv *env, jobject, jfloatArray momentary, jfloatArray shortTerm) {
+    const jsize n = std::min(env->GetArrayLength(momentary), env->GetArrayLength(shortTerm));
+    if (n <= 0) return;
+    std::vector<float> m(static_cast<size_t>(n)), st(static_cast<size_t>(n));
+    gStudio.loudnessHistory(m.data(), st.data(), n);
+    env->SetFloatArrayRegion(momentary, 0, n, m.data());
+    env->SetFloatArrayRegion(shortTerm, 0, n, st.data());
+}
+JNI(void, resetLoudness)(JNIEnv *, jobject) { gStudio.resetLoudness(); }
+JNI(void, setLoudnessTarget)(JNIEnv *, jobject, jint lufs) { gStudio.setLoudnessTarget(lufs); }
+JNI(void, setExportNormalize)(JNIEnv *, jobject, jboolean on) { gStudio.setExportNormalize(on); }
+JNI(jboolean, measureSong)(JNIEnv *, jobject) { return gStudio.measureSong() ? JNI_TRUE : JNI_FALSE; }
+JNI(void, songLoudness)(JNIEnv *env, jobject, jfloatArray out) {
+    float v[Studio::kSongLoudCount];
+    gStudio.songLoudness(v);
+    env->SetFloatArrayRegion(out, 0, std::min<jsize>(Studio::kSongLoudCount, env->GetArrayLength(out)), v);
+}
+JNI(jfloatArray, songLoudnessCurve)(JNIEnv *env, jobject, jint cols) { return floats(env, gStudio.songLoudnessCurve(cols)); }
+
+// ---------- Efectos (param: fx::Param)
+JNI(void, setFx)(JNIEnv *, jobject, jint id, jint param, jfloat value) { gStudio.setFx(id, param, value); }
+JNI(jfloatArray, fxState)(JNIEnv *env, jobject, jint id) { return floats(env, gStudio.fxState(id)); }
+JNI(jfloatArray, fxInfo)(JNIEnv *env, jobject) { return floats(env, Studio::fxInfo()); }
+JNI(jstring, fxPresetsJson)(JNIEnv *env, jobject) { return jstr(env, Studio::fxPresetsJson()); }
+JNI(jboolean, applyFxPreset)(JNIEnv *, jobject, jint id, jint index) {
+    return gStudio.applyFxPreset(id, index) ? JNI_TRUE : JNI_FALSE;
+}

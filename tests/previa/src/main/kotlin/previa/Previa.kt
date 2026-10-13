@@ -215,6 +215,54 @@ fun main(args: Array<String>) {
             Vista.pestana = Vista.MEZCLA
             esperar(300)
         }
+        if (quiere("efectos")) {
+            Vista.pestana = Vista.MEZCLA
+            val voz = Mesa.pistas[1]
+            Mesa.aplicarPresetFx(voz, 1)  // voz con eco
+            Mesa.aplicarPresetFx(Mesa.pistas[0], 5)  // bajo
+            Mesa.saltar(0.0)
+            if (!Mesa.reproduciendo) Mesa.reproducirPausar()
+            esperar(1500)
+            foto("26-mezcla-fx", ambos = false)
+            Vista.efectos = voz
+            esperar(800)
+            foto("27-efectos")
+            rueda(500f, 40)
+            esperar(500)
+            foto("28-efectos-abajo", ambos = false)
+            Vista.efectos = null
+            esperar(500)
+        }
+        if (quiere("lufs")) {
+            Vista.pestana = Vista.MEZCLA
+            Mesa.saltar(0.0)
+            Mesa.reiniciarLufs()
+            if (!Mesa.reproduciendo) Mesa.reproducirPausar()
+            esperar(6000)
+            Vista.pestana = Vista.ANALISIS
+            esperar(800)
+            foto("29-lufs")
+            Mesa.medirCancion()
+            hasta(30_000, "canción medida") { Mesa.volumen.cancion == 2 }
+            rueda(400f, 30)
+            esperar(600)
+            foto("30-lufs-cancion")
+            rueda(400f, -40)
+            Vista.pestana = Vista.MEZCLA
+            esperar(300)
+            rueda(400f, 120)
+            esperar(600)
+            foto("31-master-lufs", ambos = false)
+            rueda(400f, -120)
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            Mesa.ponerAjusteAlExportar(true)
+            Vista.exportar = true
+            esperar(700)
+            foto("32-exportar-lufs")
+            Vista.exportar = false
+            Mesa.ponerAjusteAlExportar(false)
+            esperar(400)
+        }
         if (quiere("exportar")) {
             Vista.pestana = Vista.MEZCLA
             Vista.exportar = true

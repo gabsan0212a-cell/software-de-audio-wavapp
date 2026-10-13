@@ -19,7 +19,9 @@ public:
     static constexpr int kMoving = kMasterL + 9;                         // 1 si algo sigue bajando
     static constexpr int kInputL = kMasterL + 10, kInputR = kMasterL + 11; // entrada en vivo (dB)
     static constexpr int kInputClip = kMasterL + 12;                     // la entrada saturó (0 o 1)
-    static constexpr int kCount = kMasterL + 13;
+    // Reducción del compresor de cada pista (dB, ≥ 0): sube de inmediato y baja 20 dB/s.
+    static constexpr int kCompressor = kMasterL + 13;                    // + espacio
+    static constexpr int kCount = kCompressor + kMaxTracks;
 
     MeterBallistics() { reset(); }
     // `raw`: picos lineales de Mixer::readMeters (desde la lectura anterior); `input`: L y R de
@@ -34,6 +36,7 @@ private:
     float mTrack[kMaxTracks][2];
     float mL, mR, mTickL, mTickR, mMaxL, mMaxR, mReduction;
     float mInL, mInR;
+    float mComp[kMaxTracks];
     bool mClipL, mClipR, mInClip;
     int64_t mTickTimeL, mTickTimeR, mLast;
 };

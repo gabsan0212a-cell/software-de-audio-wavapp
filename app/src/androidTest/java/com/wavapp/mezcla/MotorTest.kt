@@ -535,7 +535,9 @@ class MotorTest {
         Thread.sleep(1500)
         Nucleo.inputState(datos)
         assertEquals(1f, datos[6])
-        assertTrue("cuenta lo grabado (${datos[7]} s)", datos[7] > 0.8f)
+        assertTrue("cuenta lo grabado (${datos[7]} s; entrada ${Nucleo.inputInfo().joinToString()})", datos[7] > 0.8f)
+        val modo = Nucleo.inputInfo()[0]
+        assertTrue("la entrada se lee (modo $modo)", modo == 1 || modo == 2)
         assertTrue("la mezcla suena mientras se graba", Nucleo.isPlaying())
         val id = Nucleo.recordStop()
         assertTrue("la toma quedó como pista (${estado()})", id > 0)

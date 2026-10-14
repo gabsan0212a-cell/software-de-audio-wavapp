@@ -158,6 +158,8 @@ jobs:
           shopt -s nullglob
           fotos=(capturas/*.png)
           if [ ${#fotos[@]} -eq 0 ]; then echo "Sin capturas"; exit 0; fi
+          # El registro del emulador (logcat) va también, para revisar fallas desde fuera.
+          [ -s logcat.txt ] && fotos+=(logcat.txt)
           gh release delete capturas -y --cleanup-tag || true
           gh release create capturas "${fotos[@]}" --prerelease --target "$GITHUB_SHA" \
             --title "Capturas de las pruebas" \

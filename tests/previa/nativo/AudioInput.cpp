@@ -3,7 +3,7 @@
 #include <cmath>
 #include <vector>
 #include "engine/LiveInput.h"
-int AudioInput::start(int, int channels) {
+int AudioInput::start(int, int channels, bool) {
     stop();
     mRun.store(true);
     const int ch = channels == 2 ? 2 : 1;

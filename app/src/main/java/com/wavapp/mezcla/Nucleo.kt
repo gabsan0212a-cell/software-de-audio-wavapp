@@ -235,6 +235,12 @@ object Nucleo {
     /** Abre la entrada (deviceId 0 = la del sistema; 1 o 2 canales). Devuelve los canales abiertos o 0. */
     external fun inputStart(deviceId: Int, channels: Int): Int
     external fun inputStop()
+    /**
+     * Cómo se está leyendo la entrada: [modo (0 cerrada, 1 a la par de la salida, 2 con hilo
+     * propio), segundos leídos, veces que faltaron muestras, cuadros tirados, reserva en ráfagas,
+     * ráfaga, capacidad].
+     */
+    external fun inputInfo(): IntArray
     external fun setInputGain(db: Float)
     external fun setMonitor(on: Boolean)
     external fun setMonitorDb(db: Float)

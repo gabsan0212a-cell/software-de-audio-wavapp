@@ -18,6 +18,24 @@ static Studio gStudio(decodeWithMediaCodec);
 static AudioOutput gOutput(gStudio.mixer());
 static AudioInput gInput(gStudio.input());
 
+namespace {
+bool voiceOn() { return gStudio.voiceFxState()[vfx::kOn] > 0.5f; }
+
+// Si la entrada "a la par" no recibe nada en este aparato, se vuelve a abrir con su propio hilo
+// (como antes). Lo revisa la pantalla cada vez que pregunta por la salida o la entrada.
+void revisarEntrada() {
+    if (!gInput.stuck()) return;
+    gOutput.setInput(nullptr);
+    const int ch = gInput.start(gInput.deviceId(), gInput.channelsWanted(), false);
+    if (ch > 0) {
+        gStudio.inputOpened(ch);
+    } else {
+        gStudio.inputClosed();
+        gStudio.notify("No se pudo abrir la entrada de audio");
+    }
+}
+}  // namespace
+
 #define JNI(ret, name) extern "C" JNIEXPORT ret JNICALL Java_com_wavapp_mezcla_Nucleo_##name
 
 namespace {
@@ -62,6 +80,7 @@ JNI(void, saveNow)(JNIEnv *, jobject) { gStudio.saveNow(); }
 JNI(void, clearProject)(JNIEnv *, jobject) { gStudio.clearProject(); }
 JNI(jboolean, waitIdle)(JNIEnv *, jobject, jint timeoutMs) { return gStudio.waitIdle(timeoutMs) ? JNI_TRUE : JNI_FALSE; }
 JNI(jintArray, outputInfo)(JNIEnv *env, jobject) {
+    revisarEntrada();
     int32_t v[6];
     gOutput.info(v);
     jintArray a = env->NewIntArray(6);
@@ -228,15 +247,12 @@ JNI(jbyteArray, spectrogram)(JNIEnv *env, jobject, jint id) {
 
 // ---------- Entrada en vivo y grabación
 // Abre la entrada (deviceId 0 = la del sistema). Devuelve los canales abiertos o 0.
-namespace {
-bool voiceOn() { return gStudio.voiceFxState()[vfx::kOn] > 0.5f; }
-}  // namespace
 
 JNI(jint, inputStart)(JNIEnv *, jobject, jint deviceId, jint channels) {
     gOutput.setInput(nullptr);
     gStudio.inputClosed();
     gOutput.start();  // la entrada se lee al ritmo de la salida (full duplex)
-    const int ch = gInput.start(deviceId, channels);
+    const int ch = gInput.start(deviceId, channels, true);
     if (ch > 0) {
         gStudio.inputOpened(ch);
         gOutput.setLiveMode(voiceOn());
@@ -245,6 +261,15 @@ JNI(jint, inputStart)(JNIEnv *, jobject, jint deviceId, jint channels) {
         gStudio.notify("No se pudo abrir la entrada de audio");
     }
     return ch;
+}
+// [modo (0 cerrada, 1 a la par de la salida, 2 con hilo propio), segundos leídos, faltas,
+//  cuadros tirados, reserva (ráfagas), ráfaga, capacidad]
+JNI(jintArray, inputInfo)(JNIEnv *env, jobject) {
+    int32_t v[AudioInput::kInfoCount];
+    gInput.info(v);
+    jintArray a = env->NewIntArray(AudioInput::kInfoCount);
+    env->SetIntArrayRegion(a, 0, AudioInput::kInfoCount, v);
+    return a;
 }
 JNI(void, inputStop)(JNIEnv *, jobject) {
     gStudio.inputClosed();
@@ -259,6 +284,7 @@ JNI(void, setMonitor)(JNIEnv *, jobject, jboolean on) {
 }
 JNI(void, setMonitorDb)(JNIEnv *, jobject, jfloat db) { gStudio.setMonitorDb(db); }
 JNI(void, inputState)(JNIEnv *env, jobject, jfloatArray out) {
+    revisarEntrada();
     if (gInput.lost()) {
         gStudio.inputClosed();
         gStudio.notify("Se desconectó la entrada de audio");

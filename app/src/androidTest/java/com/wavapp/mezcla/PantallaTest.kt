@@ -337,7 +337,10 @@ class PantallaTest {
         captura("14-grabar")
         regla.onNodeWithContentDescription("Grabar").performClick()
         regla.waitUntil(3_000) { Mesa.entrada.grabando }
-        avanzarHasta(8_000, { "la grabación no avanzó: ${Mesa.entrada.segundos} s, ${Mesa.estado}" }) {
+        avanzarHasta(10_000, {
+            "la grabación no avanzó: ${Mesa.entrada.segundos} s, ${Mesa.estado}; entrada ${Nucleo.inputInfo().joinToString()}, " +
+                "salida ${Nucleo.outputInfo().joinToString()}"
+        }) {
             Mesa.entrada.segundos > 1.2
         }
         captura("15-grabando")

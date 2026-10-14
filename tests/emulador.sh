@@ -5,6 +5,7 @@
 set -uo pipefail
 mkdir -p capturas
 juntar() { find app/build/outputs -name '*.png' -exec cp {} capturas/ \; 2> /dev/null || true; }
+adb logcat -G 16M || true  # que no se pierda lo del principio
 adb logcat -c || true
 adb shell cmd uimode night no || true
 ./gradlew connectedDebugAndroidTest

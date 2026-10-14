@@ -30,6 +30,30 @@ jobs:
           sudo sysctl -w vm.mmap_rnd_bits=28
           bash tests/native/run.sh
 
+  modelo-real:
+    name: Modelo de voz (C++ igual a PyTorch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: modelos
+          key: modelo-voz-kim-60dc4e5f-ref-cbafabd1
+      - name: Bajar el modelo y su referencia (release "modelos")
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p modelos
+          for f in voz-kim.wvm kim-ref.wvm; do
+            [ -s "modelos/$f" ] || gh release download modelos -p "$f" -D modelos --clobber
+          done
+          printf '%s  %s\n' \
+            60dc4e5f461601e9f56c8f5faf6144f03e7e795d28286b10e47bad0ec1d3497a modelos/voz-kim.wvm \
+            cbafabd1d87836a161ea39371dfb404787f72d7a08a622e10bed63b33a17ab8d modelos/kim-ref.wvm | sha256sum -c
+      - name: Comparar con el original
+        run: bash tests/native/modelo-real.sh modelos
+
   apk:
     name: Compilar APK
     runs-on: ubuntu-latest
@@ -105,7 +129,7 @@ jobs:
 
   publicar:
     name: Publicar en Releases
-    needs: [pruebas-nativas, apk, emulador]
+    needs: [pruebas-nativas, modelo-real, apk, emulador]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

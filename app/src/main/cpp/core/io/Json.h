@@ -48,6 +48,9 @@ public:
     const Json &operator[](const std::string &key) const;  // nulo si no existe
     const Json &operator[](const char *key) const { return (*this)[std::string(key)]; }
     bool has(const std::string &key) const;
+    // Claves de un objeto en su orden (para recorrerlo). Fuera de rango: "" y nulo.
+    const std::string &keyAt(size_t i) const;
+    const Json &valueAt(size_t i) const;
 
     // ---------- Escritura
     Json &push(Json v);                          // agrega al arreglo

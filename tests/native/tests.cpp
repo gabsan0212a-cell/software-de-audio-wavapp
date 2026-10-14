@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -42,6 +43,12 @@
 #include "io/WavWriter.h"
 #include "project/Edit.h"
 #include "project/Session.h"
+#include "sep/Half.h"
+#include "sep/MelRoformer.h"
+#include "sep/ModelFile.h"
+#include "sep/Separator.h"
+#include "sep/Stft.h"
+#include "sep/ThreadPool.h"
 
 // ---------------------------------------------------------------- mini framework
 static int gChecks = 0, gFailures = 0;
@@ -3153,6 +3160,312 @@ TEST(efectosRapidos) {
     std::printf("  12 pistas con compresor, delay y reverb: 4 s de audio en %.2f s\n", s);
     CHECK(out.size() == 48000u * 4 * 2);
     CHECK(std::all_of(out.begin(), out.end(), [](float x) { return std::isfinite(x); }));
+}
+
+
+// ---------------------------------------------------------------- separar la voz (sep/)
+// Datos de prueba: tests/native/datos (mini.wvm y sus respuestas, generados con el código
+// original en PyTorch por tools/modelos/referencias.py).
+static std::string datos(const std::string &n) { return "tests/native/datos/" + n; }
+
+static double snrDb(const std::vector<float> &ref, const std::vector<float> &x) {
+    double s = 0, e = 0;
+    const size_t n = std::min(ref.size(), x.size());
+    for (size_t i = 0; i < n; ++i) {
+        s += static_cast<double>(ref[i]) * ref[i];
+        const double d = static_cast<double>(ref[i]) - x[i];
+        e += d * d;
+    }
+    return ref.size() == x.size() ? 10 * std::log10(s / std::max(e, 1e-30)) : -999.0;
+}
+
+TEST(mitadFlotante) {
+    // Las 65536 combinaciones contra la definición de float16.
+    int malas = 0;
+    for (uint32_t h = 0; h < 65536; ++h) {
+        const int sign = (h >> 15) & 1, e = (h >> 10) & 31, m = h & 1023;
+        double v;
+        if (e == 0) v = std::ldexp(m / 1024.0, -14);
+        else if (e == 31) v = m ? std::nan("") : INFINITY;
+        else v = std::ldexp(1.0 + m / 1024.0, e - 15);
+        if (sign) v = -v;
+        const float f = halfToFloat(static_cast<uint16_t>(h));
+        const bool ok = std::isnan(v) ? std::isnan(f) : (f == static_cast<float>(v) && std::signbit(f) == (sign == 1));
+        if (!ok) ++malas;
+    }
+    CHECK(malas == 0);
+    uint16_t in[5] = {0x3C00, 0xC000, 0x7BFF, 0x0001, 0x8000};
+    float out[5];
+    halfToFloat(in, out, 5);
+    CHECK(out[0] == 1.0f && out[1] == -2.0f && out[2] == 65504.0f && out[3] == std::ldexp(1.0f, -24));
+    CHECK(out[4] == 0.0f && std::signbit(out[4]));
+}
+
+TEST(modeloArchivo) {
+    std::string e;
+    auto m = ModelFile::open(datos("mini.wvm"), e);
+    CHECK(m && e.empty());
+    if (!m) return;
+    CHECK(m->header()["modelo"].asString() == "mel_band_roformer");
+    CHECK(m->header()["config"]["dim"].asInt() == 32);
+    // Matrices chicas en float32; las grandes (≥ 4096 valores) en float16.
+    const ModelFile::Tensor *t = m->find("layers.0.0.layers.0.0.to_qkv.weight");
+    CHECK(t && t->type == ModelFile::kF32 && t->shape.size() == 2 && t->shape[0] == 96 && t->shape[1] == 32);
+    const ModelFile::Tensor *grande = m->find("mask_estimators.0.to_freqs.0.0.2.weight");
+    CHECK(grande && grande->type == ModelFile::kF16 && grande->count == 128 * 128);
+    const ModelFile::Tensor *b = m->find("freqs_per_band");
+    CHECK(b && b->type == ModelFile::kU8 && b->count == 12 * 129);
+    std::vector<float> v;
+    CHECK(m->floats("layers.0.0.layers.0.0.norm.gamma", v, 32) && v.size() == 32);
+    CHECK(!m->floats("layers.0.0.layers.0.0.norm.gamma", v, 31));
+    CHECK(!m->find("no.existe") && !m->floats("no.existe", v));
+
+    // El mismo modelo dentro de otro archivo (como un asset sin comprimir en el APK).
+    std::vector<char> todo;
+    {
+        FILE *f = std::fopen(datos("mini.wvm").c_str(), "rb");
+        int c;
+        while ((c = std::fgetc(f)) != EOF) todo.push_back(static_cast<char>(c));
+        std::fclose(f);
+    }
+    const std::string dentro = tmpPath("apk.bin");
+    {
+        FILE *f = std::fopen(dentro.c_str(), "wb");
+        const std::string basura(12345, 'x');
+        std::fwrite(basura.data(), 1, basura.size(), f);
+        std::fwrite(todo.data(), 1, todo.size(), f);
+        std::fwrite(basura.data(), 1, 100, f);
+        std::fclose(f);
+    }
+    const int fd = ::open(dentro.c_str(), O_RDONLY);
+    auto m2 = ModelFile::openFd(fd, 12345, static_cast<int64_t>(todo.size()), e);
+    ::close(fd);
+    std::vector<float> v2;
+    CHECK(m2 && m2->floats("layers.0.0.layers.0.0.norm.gamma", v2, 32) && v2 == v);
+
+    // Archivos rotos: no se abren (y no revientan).
+    auto roto = [&](const std::vector<char> &bytes) {
+        const std::string r = tmpPath("roto.wvm");
+        FILE *f = std::fopen(r.c_str(), "wb");
+        std::fwrite(bytes.data(), 1, bytes.size(), f);
+        std::fclose(f);
+        std::string err;
+        auto x = ModelFile::open(r, err);
+        return !x && !err.empty();
+    };
+    std::vector<char> malo = todo;
+    malo[0] = 'X';
+    CHECK(roto(malo));
+    CHECK(roto(std::vector<char>(todo.begin(), todo.begin() + todo.size() / 2)));  // cortado
+    malo = todo;
+    malo[8] = static_cast<char>(0xFF);  // cabecera más larga que el archivo
+    malo[9] = static_cast<char>(0xFF);
+    CHECK(roto(malo));
+    CHECK(roto(std::vector<char>(10, 0)));
+    auto noExiste = ModelFile::open(tmpPath("nada.wvm"), e);
+    CHECK(!noExiste && !e.empty());
+}
+
+TEST(stftIdaYVuelta) {
+    const int n = 256, hop = 64, len = 4096;
+    StereoStft st(n, hop);
+    std::mt19937 rng(3);
+    std::normal_distribution<float> g(0.0f, 0.3f);
+    std::vector<float> l(len), r(len);
+    for (int i = 0; i < len; ++i) {
+        l[static_cast<size_t>(i)] = g(rng);
+        r[static_cast<size_t>(i)] = 0.5f * std::sin(0.01f * i) + 0.1f * g(rng);
+    }
+    const int frames = st.frames(len);
+    CHECK(frames == 65);
+    std::vector<float> spec(static_cast<size_t>(frames) * st.bins() * 4);
+    st.forward(l.data(), r.data(), len, spec.data());
+    // Un cuadro contra la DFT directa (con el relleno por reflejo y la ventana Hann periódica).
+    const int t = 5;
+    double peor = 0;
+    for (int f : {0, 1, 17, 64, 128}) {
+        double re[2] = {0, 0}, im[2] = {0, 0};
+        for (int k = 0; k < n; ++k) {
+            int i = t * hop - n / 2 + k;
+            if (i < 0) i = -i;
+            const double w = 0.5 - 0.5 * std::cos(2 * M_PI * k / n);
+            const double a = -2 * M_PI * f * k / n;
+            for (int c = 0; c < 2; ++c) {
+                const double x = (c == 0 ? l : r)[static_cast<size_t>(i)] * w;
+                re[c] += x * std::cos(a);
+                im[c] += x * std::sin(a);
+            }
+        }
+        const float *s = &spec[(static_cast<size_t>(t) * st.bins() + f) * 4];
+        for (int c = 0; c < 2; ++c) {
+            peor = std::max(peor, std::fabs(s[2 * c] - re[c]));
+            peor = std::max(peor, std::fabs(s[2 * c + 1] - im[c]));
+        }
+    }
+    CHECK(peor < 1e-4);
+    // Ida y vuelta: vuelve la misma señal.
+    std::vector<float> l2(len), r2(len);
+    st.inverse(spec.data(), frames, l2.data(), r2.data());
+    double err = 0;
+    for (int i = 0; i < len; ++i)
+        err = std::max({err, std::fabs(static_cast<double>(l2[static_cast<size_t>(i)] - l[static_cast<size_t>(i)])),
+                        std::fabs(static_cast<double>(r2[static_cast<size_t>(i)] - r[static_cast<size_t>(i)]))});
+    CHECK(err < 1e-5);
+}
+
+TEST(hilosReparten) {
+    ThreadPool pool(3);
+    CHECK(pool.size() == 3);
+    std::vector<std::atomic<int>> veces(1000);
+    for (auto &v : veces) v.store(0);
+    std::atomic<int> malHilo{0};
+    pool.parallelFor(1000, [&](int i, int w) {
+        veces[static_cast<size_t>(i)].fetch_add(1);
+        if (w < 0 || w >= 3) malHilo.fetch_add(1);
+    });
+    CHECK(std::all_of(veces.begin(), veces.end(), [](const std::atomic<int> &v) { return v.load() == 1; }));
+    CHECK(malHilo.load() == 0);
+    // Una tarea que falla: el error sale en quien llamó y el grupo sigue sirviendo.
+    bool salio = false;
+    try {
+        pool.parallelFor(50, [&](int i, int) {
+            if (i == 7) throw std::runtime_error("x");
+        });
+    } catch (const std::runtime_error &) {
+        salio = true;
+    }
+    CHECK(salio);
+    std::atomic<int> cuenta{0};
+    std::atomic<bool> parar{true};
+    pool.parallelFor(100, [&](int, int) { cuenta.fetch_add(1); }, &parar);
+    CHECK(cuenta.load() == 0);
+    pool.parallelFor(100, [&](int, int) { cuenta.fetch_add(1); });
+    CHECK(cuenta.load() == 100);
+}
+
+TEST(separadorMini) {
+    std::string e;
+    auto mf = ModelFile::open(datos("mini.wvm"), e);
+    auto ref = ModelFile::open(datos("mini-ref.wvm"), e);
+    CHECK(mf && ref);
+    if (!mf || !ref) return;
+    auto m = MelRoformer::load(*mf, e);
+    CHECK(m && e.empty());
+    if (!m) return;
+    CHECK(m->chunk() == 4096 && m->frames() == 65 && m->config().overlap == 2);
+    ThreadPool pool(3);
+    std::vector<float> in, out;
+    CHECK(ref->floats("entrada", in) && ref->floats("salida", out));
+    std::vector<float> l(4096), r(4096);
+    MelRoformer::Inside ins;
+    CHECK(m->run(in.data(), in.data() + 4096, l.data(), r.data(), pool, nullptr, &ins));
+    std::vector<float> mia(l);
+    mia.insert(mia.end(), r.begin(), r.end());
+    CHECK(snrDb(out, mia) > 110);
+    // Lo de adentro también es igual al original (bandas, cada transformer, máscaras).
+    std::vector<float> x;
+    CHECK(ref->floats("bandas", x) && snrDb(x, ins.bands) > 110);
+    for (int i = 0; i < 2; ++i) {
+        CHECK(ref->floats("capa" + std::to_string(i) + ".tiempo", x) && snrDb(x, ins.time[static_cast<size_t>(i)]) > 110);
+        CHECK(ref->floats("capa" + std::to_string(i) + ".frecuencia", x) &&
+              snrDb(x, ins.freq[static_cast<size_t>(i)]) > 110);
+    }
+    CHECK(ref->floats("mascaras", x) && snrDb(x, ins.masks) > 110);
+    // Una segunda pasada da exactamente lo mismo (no queda nada de la anterior).
+    std::vector<float> l2(4096), r2(4096);
+    CHECK(m->run(in.data(), in.data() + 4096, l2.data(), r2.data(), pool));
+    CHECK(l2 == l && r2 == r);
+
+    // La canción entera, troceada como demix_track: con relleno, con el último trozo reflejado
+    // y con uno solo rellenado con ceros.
+    for (int n : {15000, 3000, 1500}) {
+        std::vector<float> ent, sal;
+        CHECK(ref->floats("demix" + std::to_string(n) + ".entrada", ent) &&
+              ref->floats("demix" + std::to_string(n) + ".salida", sal));
+        std::vector<float> gl, gr;
+        Separator::Options opt;
+        std::string err = Separator::run(*m, pool, n,
+            [&](int64_t from, int k, float *a, float *b) {
+                CHECK(from >= 0 && from + k <= n);
+                std::copy(ent.begin() + from, ent.begin() + from + k, a);
+                std::copy(ent.begin() + n + from, ent.begin() + n + from + k, b);
+            },
+            [&](const float *a, const float *b, int k) {
+                gl.insert(gl.end(), a, a + k);
+                gr.insert(gr.end(), b, b + k);
+                return true;
+            }, opt);
+        CHECK(err.empty());
+        gl.insert(gl.end(), gr.begin(), gr.end());
+        CHECK(gl.size() == sal.size());
+        CHECK(snrDb(sal, gl) > 110);
+    }
+    CHECK(Separator::chunkCount(15000, 4096, 2) == 10 && Separator::chunkCount(3000, 4096, 2) == 2);
+    CHECK(Separator::chunkCount(1500, 4096, 2) == 1 && Separator::chunkCount(0, 4096, 2) == 0);
+}
+
+TEST(separadorSigueDondeQuedo) {
+    std::string e;
+    auto mf = ModelFile::open(datos("mini.wvm"), e);
+    auto ref = ModelFile::open(datos("mini-ref.wvm"), e);
+    auto m = mf ? MelRoformer::load(*mf, e) : nullptr;
+    CHECK(m && ref);
+    if (!m || !ref) return;
+    std::vector<float> ent, sal;
+    CHECK(ref->floats("demix15000.entrada", ent) && ref->floats("demix15000.salida", sal));
+    const int n = 15000;
+    ThreadPool pool(2);
+    const std::string cache = tmpPath("trozos");
+    mkdir(cache.c_str(), 0700);
+    auto correr = [&](const std::string &clave, std::atomic<bool> *cancel, int pararEn, int &reusados,
+                      std::vector<float> &salida) {
+        salida.clear();
+        std::vector<float> gr;
+        Separator::Options opt;
+        opt.cacheDir = cache;
+        opt.cacheKey = clave;
+        opt.cancel = cancel;
+        opt.progress = [&](int hechos, int, int r) {
+            reusados = r;
+            if (cancel && hechos == pararEn) cancel->store(true);
+        };
+        std::string err = Separator::run(*m, pool, n,
+            [&](int64_t from, int k, float *a, float *b) {
+                std::copy(ent.begin() + from, ent.begin() + from + k, a);
+                std::copy(ent.begin() + n + from, ent.begin() + n + from + k, b);
+            },
+            [&](const float *a, const float *b, int k) {
+                salida.insert(salida.end(), a, a + k);
+                gr.insert(gr.end(), b, b + k);
+                return true;
+            }, opt);
+        salida.insert(salida.end(), gr.begin(), gr.end());
+        return err;
+    };
+    std::atomic<bool> cancel{false};
+    int reusados = -1;
+    std::vector<float> salida;
+    // Se cancela después del 4.º trozo: los 4 quedan guardados.
+    CHECK(correr("cancion", &cancel, 4, reusados, salida) == "Cancelado");
+    cancel.store(false);
+    CHECK(correr("cancion", nullptr, 0, reusados, salida).empty());
+    CHECK(reusados == 4);
+    CHECK(snrDb(sal, salida) > 110);
+    // Todo guardado: otra vez, sin calcular nada.
+    CHECK(correr("cancion", nullptr, 0, reusados, salida).empty());
+    CHECK(reusados == 10 && snrDb(sal, salida) > 110);
+    // Otra entrada (otra clave): no se usan los trozos viejos.
+    CHECK(correr("otra", nullptr, 0, reusados, salida).empty());
+    CHECK(reusados == 0);
+    // Si quien recibe no puede guardar, se avisa.
+    Separator::Options opt;
+    std::string err = Separator::run(*m, pool, n,
+        [&](int64_t from, int k, float *a, float *b) {
+            std::copy(ent.begin() + from, ent.begin() + from + k, a);
+            std::copy(ent.begin() + n + from, ent.begin() + n + from + k, b);
+        },
+        [&](const float *, const float *, int) { return false; }, opt);
+    CHECK(!err.empty() && err != "Cancelado");
 }
 
 // ---------------------------------------------------------------- main

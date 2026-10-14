@@ -11,7 +11,7 @@ FILES="$(find "$CORE" -name '*.cpp' | sort | tr '\n' ' ') tests/native/tests.cpp
 OUT="${TMPDIR:-/tmp}/wavapp-tests"
 mkdir -p "$OUT"
 CXX="${CXX:-g++}"
-FLAGS="-std=c++17 -O1 -g -Wall -Wextra -Werror -I$CORE -D_FILE_OFFSET_BITS=64"
+FLAGS="-std=c++17 -O1 -g -Wall -Wextra -Werror -I$CORE -isystem app/src/main/cpp/third_party/eigen -D_FILE_OFFSET_BITS=64"
 
 echo "== ASan + UBSan"
 # shellcheck disable=SC2086
@@ -23,7 +23,8 @@ echo "== TSan (concurrencia)"
 # shellcheck disable=SC2086
 $CXX $FLAGS -fsanitize=thread $FILES -o "$OUT/tests-tsan" -lpthread
 if [ "$#" -eq 0 ]; then
-    "$OUT/tests-tsan" concurrencia concurrenciaEstudio concurrenciaEntrada
+    "$OUT/tests-tsan" concurrencia concurrenciaEstudio concurrenciaEntrada hilosReparten separadorMini \
+        separadorSigueDondeQuedo
 else
     "$OUT/tests-tsan" "$@"
 fi

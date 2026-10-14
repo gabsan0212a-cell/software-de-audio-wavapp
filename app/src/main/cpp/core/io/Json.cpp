@@ -295,6 +295,15 @@ const Json &Json::operator[](const std::string &key) const {
     return nullJson();
 }
 
+const std::string &Json::keyAt(size_t i) const {
+    static const std::string empty;
+    return mType == Type::Object && i < mObj.size() ? mObj[i].first : empty;
+}
+
+const Json &Json::valueAt(size_t i) const {
+    return mType == Type::Object && i < mObj.size() ? mObj[i].second : nullJson();
+}
+
 bool Json::has(const std::string &key) const {
     if (mType != Type::Object) return false;
     for (const auto &kv : mObj)

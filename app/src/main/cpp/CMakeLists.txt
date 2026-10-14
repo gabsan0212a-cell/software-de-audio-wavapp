@@ -15,6 +15,8 @@ add_library(wavapp SHARED
     android/jni_bridge.cpp)
 
 target_include_directories(wavapp PRIVATE core android)
+# Eigen (solo encabezados, MPL2): las multiplicaciones de matrices del separador de voces.
+target_include_directories(wavapp SYSTEM PRIVATE third_party/eigen)
 target_compile_definitions(wavapp PRIVATE _FILE_OFFSET_BITS=64)
 target_compile_options(wavapp PRIVATE -Wall -Wextra)
 target_link_libraries(wavapp oboe::oboe mediandk log)

@@ -63,6 +63,7 @@ object Vista {
     var automatizacion by mutableStateOf<Pista?>(null)
     var efectos by mutableStateOf<Pista?>(null)
     var preparar by mutableStateOf<Pista?>(null)
+    var voz by mutableStateOf(false)
 
     // Grabar: qué entrada (0 = la primera de la lista), en estéreo o no, y la última toma.
     var entradaId by mutableIntStateOf(0)
@@ -142,6 +143,7 @@ fun PantallaMesa() {
         )
         HojaEfectos(Vista.efectos?.takeIf { it in Mesa.pistas }, alCerrar = { Vista.efectos = null })
         HojaPreparar(Vista.preparar?.takeIf { it in Mesa.pistas }, alCerrar = { Vista.preparar = null })
+        HojaVoz(Vista.voz, alCerrar = { Vista.voz = false })
         HojaExportar(
             Vista.exportar, alCerrar = { Vista.exportar = false },
             alGuardar = {

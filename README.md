@@ -60,7 +60,12 @@ internet).
       el instrumental y la voz original como guía; después saca la tonalidad, el tempo, los pulsos
       y dónde canta la voz. Tarda (de 20 minutos a una hora en un celular): sigue con la pantalla
       apagada y, si se interrumpe, continúa donde quedó
-- [ ] 12. Voz en vivo con auto-tune y audio de baja latencia (interfaz USB y consola)
+- [x] 12. Voz en vivo para cantar sobre la pista (Grabar → **Voz en vivo**): auto-tune en la escala
+      de la canción preparada (o la que elijas), con velocidad de "natural" a "robot"; filtro de
+      graves, compuerta, de-esser, compresor, doblaje, delay a tiempo con la canción y reverb, con
+      presets ("Paraíso", "Natural", "Trap (robot)"...). Afinador en pantalla. Audio de baja
+      latencia: la entrada se lee a la par de la salida (full duplex), búfer mínimo que crece solo
+      si hay cortes y el procesador avisado (ADPF). La voz pasa por el limitador del master
 - [ ] 13. Pantalla "En vivo" y grabar la presentación (1.0.0)
 
 Sin plugins VST en Android.
@@ -93,13 +98,20 @@ Sin plugins VST en Android.
     con fundidos; cada trozo se guarda para seguir si se interrumpe).
   - `dsp/Pitch` (tono con YIN) y `dsp/SongAnalysis` (tonalidad con perfiles de Krumhansl,
     tempo y pulsos, dónde canta la voz).
+  - La voz en vivo: `dsp/PitchTracker` (tono en vivo cada 4 ms con YIN anclado a lo más
+    reciente), `dsp/PitchShifter` (cambia el tono leyendo una línea de retardo a otra velocidad y
+    saltando períodos completos con fundido: 1 a 6 ms de retraso), `dsp/AutoTune` (la nota de la
+    escala más cercana y la velocidad de corrección), `dsp/VoiceDynamics` (filtro de graves,
+    compuerta y de-esser), `dsp/Doubler` y `engine/VoiceFx` (la cadena completa, sus ajustes y
+    presets).
 - `app/src/main/cpp/third_party/eigen/`: Eigen 3.4 (álgebra lineal, licencia MPL2).
 - `tools/modelos/` y `.github/workflows/modelos.yml`: convierten el modelo original (PyTorch) al
   formato `.wvm` y generan las referencias con las que se compara el C++; se publican en
   Releases → `modelos`. El código de terceros corre en un trabajo sin permisos de escritura, con
   huellas fijas. El CI baja el modelo a `app/src/main/assets/modelos/` (no va en git) y lo mete
   sin comprimir en el APK.
-- `app/src/main/cpp/android/`: lo de la plataforma: `AudioOutput` y `AudioInput` (Oboe), `MediaDecoder`
+- `app/src/main/cpp/android/`: lo de la plataforma: `AudioOutput` y `AudioInput` (Oboe; la
+  entrada se lee dentro del callback de la salida, full duplex), `MediaDecoder`
   (MP3, AAC, FLAC, OGG, Opus... con MediaCodec desde C++) y `jni_bridge.cpp` (el puente).
 - `app/src/main/java/.../`: **solo pantalla**. `Nucleo.kt` (el puente), `Mesa.kt` (espejo del
   estado del núcleo para Compose), `Analisis.kt` y `Edicion.kt` (lo que recuerda cada panel),
@@ -111,7 +123,8 @@ Sin plugins VST en Android.
   - `Pantalla.kt` (pestañas y mini reproductor), `MezclaTab.kt`, `Reproductor.kt`,
     `Ecualizador.kt`, `Efectos.kt` (la hoja del botón FX), `AnalisisPanel.kt`, `Volumen.kt`
     (LUFS), `EdicionPanel.kt` (pedazos y carriles de automatización), `Automatizacion.kt` (la hoja
-    del botón A), `GrabarTab.kt`, `Exportar.kt` y `Preparar.kt` (preparar para cantar).
+    del botón A), `GrabarTab.kt`, `VozEnVivo.kt` (afinador, presets y la hoja de ajustes de la
+    voz), `Exportar.kt` y `Preparar.kt` (preparar para cantar).
   - `Plataforma.kt`: lo único que obliga Android en la pantalla (atrás, pantalla encendida,
     selector de archivos, barra de estado).
 

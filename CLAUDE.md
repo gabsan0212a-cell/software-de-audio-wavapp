@@ -26,6 +26,13 @@
   micrófono y la lista de entradas/salidas de audio).
 - Grabación: `core/engine/LiveInput` (entrada → ganancia → se graba → EQ → escucha/análisis) y
   `android/AudioInput` (Oboe). El EQ de la entrada usa las funciones del EQ con `Studio::kInputId`.
+  La entrada no tiene callback propio: `AudioOutput` la lee en el suyo (`AudioInput::pull`, full
+  duplex con reserva de una ráfaga). La escucha entra al bus antes del master (pasa por el limitador).
+- Voz en vivo: `core/engine/VoiceFx` (ajustes `vfx::Param`, presets) dentro de `LiveInput`:
+  graves → compuerta → `dsp/AutoTune` (`PitchTracker` + `PitchShifter`) → EQ de la entrada →
+  de-esser → compresor → volumen → doblaje y envíos de delay (a tiempo con el BPM de la canción) y
+  reverb. La escala "de la canción" y el tempo los pone `Studio::applySongToVoiceLocked`. En modo
+  en vivo `AudioOutput` usa 2 ráfagas de búfer (sube si hay cortes) y ADPF. Pantalla: `ui/VozEnVivo.kt`.
 - Automatización: `core/engine/Automation` (curvas) + `Studio` (puntos, grabar movimientos con
   `autoTouch`, deshacer) + `Mixer` (la sigue al sonar y al exportar). La pantalla solo dibuja lo
   que da `autoLane` (posiciones 0..1 ya calculadas) y lee `automationNow` en cada cuadro.

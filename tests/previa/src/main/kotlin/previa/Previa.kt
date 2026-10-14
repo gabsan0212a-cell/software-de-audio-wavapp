@@ -338,6 +338,30 @@ fun main(args: Array<String>) {
             esperar(500)
             foto("19-con-grabacion", ambos = false)
         }
+        if (quiere("voz")) {
+            // La voz en vivo con el preset "Paraíso", el afinador y la hoja de ajustes.
+            Vista.pestana = Vista.GRABAR
+            hasta(5000, "entrada abierta") { Mesa.entrada.abierta }
+            Mesa.aplicarPresetVoz(0)
+            Mesa.prenderVoz(true, true)
+            esperar(600)
+            rueda(400f, 12)
+            esperar(1500)
+            hasta(3000, "una nota en el afinador") { Mesa.voz.objetivo >= 0 }
+            foto("37-voz-en-vivo")
+            Vista.voz = true
+            esperar(1200)
+            hasta(3000, "una nota en el afinador") { Mesa.voz.objetivo >= 0 }
+            foto("38-hoja-voz")
+            rueda(500f, 10)
+            esperar(800)
+            foto("39-hoja-voz-efectos", ambos = false)
+            Vista.voz = false
+            Mesa.prenderVoz(false, false)
+            Mesa.ponerEscucha(false)
+            Vista.pestana = Vista.MEZCLA
+            esperar(500)
+        }
         if (quiere("preparar")) {
             // El modelo real si está a mano (WAVAPP_MODELO): tarda lo suficiente para ver el avance.
             // Si no, el mini de las pruebas (termina enseguida).

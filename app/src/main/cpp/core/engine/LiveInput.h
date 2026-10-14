@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "dsp/Equalizer.h"
+#include "engine/VoiceFx.h"
 #include "io/WavWriter.h"
 
 class Mixer;
@@ -40,6 +41,8 @@ struct Take {
 
 // La entrada en vivo (micrófono del celular o interfaz USB), a la frecuencia del proyecto:
 //   entrada → ganancia → (así se graba) → EQ → escucha en los audífonos y análisis.
+// Con la voz en vivo encendida (VoiceFx), la voz pasa por su cadena (auto-tune, compuerta,
+// compresor, doblaje, delay y reverb) con el EQ en medio.
 // La grabación queda sin EQ (la pista nueva recibe el EQ que se escuchó, y se puede cambiar).
 // La plataforma llama a push() desde su hilo de entrada; el mezclador suma la escucha en su
 // hilo de salida (mixMonitor). Un hilo propio pasa la grabación al disco.
@@ -61,6 +64,7 @@ public:
     bool monitoring() const { return mMonitor.load(std::memory_order_relaxed) && mActive.load(std::memory_order_relaxed); }
     Equalizer &eq() { return mEq; }
     const Equalizer &eq() const { return mEq; }
+    VoiceFx &voice() { return mVoice; }
     // La plataforma abrió (1 o 2 canales) o cerró la entrada.
     void setActive(bool on, int channels);
     bool active() const { return mActive.load(); }
@@ -79,8 +83,8 @@ public:
     // ---------- Hilo de entrada
     void push(const float *in, int frames, int channels);
 
-    // ---------- Hilo de salida (lo llama el mezclador)
-    void mixMonitor(float *l, float *r, int n);
+    // ---------- Hilo de salida (lo llama el mezclador). Devuelve si sumó algo.
+    bool mixMonitor(float *l, float *r, int n);
 
 private:
     static constexpr int kBlock = 256;
@@ -91,6 +95,8 @@ private:
     const int mRate;
     Mixer &mMixer;
     Equalizer mEq;
+    VoiceFx mVoice;
+    bool mVoiceWasOn = false;  // hilo de entrada
 
     std::atomic<bool> mActive{false};
     std::atomic<int> mChannels{1};
@@ -122,5 +128,5 @@ private:
 
     // Estado del hilo de entrada
     float mGainS = 1.0f;
-    float mL[kBlock], mR[kBlock], mInter[2 * kBlock];
+    float mL[kBlock], mR[kBlock], mInter[2 * kBlock], mMono[kBlock];
 };

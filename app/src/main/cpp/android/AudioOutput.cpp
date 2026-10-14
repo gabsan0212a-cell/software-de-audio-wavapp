@@ -2,6 +2,7 @@
 
 #include <android/log.h>
 
+#include "AudioInput.h"
 #include "engine/Mixer.h"
 
 #define LOG_TAG "WavApp"
@@ -11,7 +12,9 @@
 AudioOutput::~AudioOutput() { stop(); }
 
 namespace {
-constexpr int kIdleSeconds = 5;  // sin sonar este tiempo, la salida se duerme
+constexpr int kIdleSeconds = 5;   // sin sonar este tiempo, la salida se duerme
+constexpr int kNormalBursts = 4;  // búfer de siempre (~8 ms): aguanta mejor los picos de trabajo
+constexpr int kMaxLiveBursts = 6;
 }
 
 bool AudioOutput::start() {
@@ -53,8 +56,14 @@ bool AudioOutput::openStream() {
         mStream.reset();
         return false;
     }
-    // 4 ráfagas de búfer (~8 ms): responde al instante y aguanta mejor los picos de trabajo.
-    mStream->setBufferSizeInFrames(mStream->getFramesPerBurst() * 4);
+    // El callback todavía no corre: su estado se puede poner aquí.
+    mBursts = kNormalBursts;
+    mLiveBursts = 2;
+    mWasLive = false;
+    mTuneFrames = 0;
+    mStream->setBufferSizeInFrames(mStream->getFramesPerBurst() * kNormalBursts);
+    // ADPF: el sistema ve cuánto tarda cada ráfaga y sube la velocidad del procesador a tiempo.
+    mStream->setPerformanceHintEnabled(true);
     r = mStream->requestStart();
     if (r != oboe::Result::OK) {
         LOGE("requestStart: %s", oboe::convertToText(r));
@@ -97,11 +106,43 @@ int AudioOutput::latencyFrames() {
     return ms ? static_cast<int>(ms.value() * kSampleRate / 1000.0) : -1;
 }
 
+void AudioOutput::tuneBuffer(oboe::AudioStream *stream, int numFrames) {
+    const bool live = mLiveMode.load(std::memory_order_relaxed);
+    if (live && !mWasLive) {  // entra al modo en vivo: desde lo mínimo
+        mLiveBursts = 2;
+        mTuneFrames = 0;
+        auto x = stream->getXRunCount();
+        mLastXruns = x ? x.value() : 0;
+    }
+    mWasLive = live;
+    if (live) {
+        // Cada medio segundo: si hubo cortes, una ráfaga más (hasta 6).
+        mTuneFrames += numFrames;
+        if (mTuneFrames >= stream->getSampleRate() / 2) {
+            mTuneFrames = 0;
+            auto x = stream->getXRunCount();
+            if (x) {
+                if (x.value() > mLastXruns && mLiveBursts < kMaxLiveBursts) ++mLiveBursts;
+                mLastXruns = x.value();
+            }
+        }
+    }
+    const int want = live ? mLiveBursts : kNormalBursts;
+    if (want != mBursts) {
+        stream->setBufferSizeInFrames(stream->getFramesPerBurst() * want);
+        mBursts = want;
+    }
+}
+
 oboe::DataCallbackResult AudioOutput::onAudioReady(oboe::AudioStream *stream, void *audioData, int32_t numFrames) {
+    tuneBuffer(stream, numFrames);
+    // Full duplex: lo que entró por el micrófono suena en esta misma ráfaga.
+    AudioInput *in = mInput.load(std::memory_order_acquire);
+    if (in) in->pull(numFrames);
     mMixer.process(static_cast<float *>(audioData), numFrames, stream->getChannelCount());
     // Sin sonar un rato: se duerme (el sistema apaga la ruta de audio y ahorra batería).
-    // Mientras se escucha la entrada en vivo no se duerme.
-    mIdleFrames = mMixer.needsOutput() ? 0 : mIdleFrames + numFrames;
+    // Con la entrada abierta no se duerme (ella depende de la salida).
+    mIdleFrames = mMixer.needsOutput() || in ? 0 : mIdleFrames + numFrames;
     if (mIdleFrames > static_cast<int64_t>(stream->getSampleRate()) * kIdleSeconds) {
         mSleeping.store(true);
         return oboe::DataCallbackResult::Stop;

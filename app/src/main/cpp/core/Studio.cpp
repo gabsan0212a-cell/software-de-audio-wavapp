@@ -250,11 +250,14 @@ void Studio::clearProject() {
         const int next = mProject.nextId;
         TrackModel input = std::move(mProject.input);  // los ajustes de la entrada se quedan
         const float gain = mProject.inputGainDb, monitor = mProject.monitorDb;
+        const vfx::Values voice = mProject.voice;
         mProject = ProjectModel();
         mProject.nextId = next;
         mProject.input = std::move(input);
         mProject.inputGainDb = gain;
         mProject.monitorDb = monitor;
+        mProject.voice = voice;
+        applySongToVoiceLocked();
         applyMasterLocked();
         mUndo.clear();
         mRedo.clear();
@@ -478,6 +481,14 @@ void Studio::applyInputLocked() {
     mInput.setGainDb(mProject.inputGainDb);
     mInput.setMonitorGain(dbToGain(mProject.monitorDb, kVolMin + 0.1f));
     applyEqLocked(mProject.input);
+    for (int p = 0; p < vfx::kCount; ++p) mInput.voice().set(p, mProject.voice[static_cast<size_t>(p)]);
+    applySongToVoiceLocked();
+}
+
+void Studio::applySongToVoiceLocked() {
+    const SongModel &s = mProject.song;
+    mInput.voice().setSongKey(s.ready() ? s.key : -1, s.minor);
+    mInput.voice().setTempo(s.ready() ? s.bpm : 0.0f);
 }
 
 void Studio::applyEqLocked(TrackModel &t) {
@@ -557,6 +568,7 @@ void Studio::removeAllLocked(bool deleteFiles) {
     }
     mProject.tracks.clear();
     mProject.song = SongModel();
+    applySongToVoiceLocked();
     mGesture.active = false;
     mAutoGesture.active = false;
     mTouch = AutoTouch();
@@ -792,6 +804,7 @@ void Studio::jobRestore() {
         for (EqBandModel &b : mProject.input.bands) b.slot = k++;
         mProject.inputGainDb = pm.inputGainDb;
         mProject.monitorDb = pm.monitorDb;
+        mProject.voice = pm.voice;
         applyInputLocked();
     }
     bump(kVerMaster);
@@ -826,6 +839,7 @@ void Studio::jobRestore() {
             mProject.song = std::move(pm.song);
             if (mProject.song.vocalId && !findLocked(mProject.song.vocalId)) mProject.song.vocalId = 0;
         }
+        applySongToVoiceLocked();
     }
     bump(kVerSong);
     mRestoring.store(false);
@@ -846,6 +860,7 @@ bool Studio::removeTrack(int id) {
         if (id == mProject.song.instrumentalId) mProject.song = SongModel();
         if (id == mProject.song.vocalId) mProject.song.vocalId = 0;
         if (id == mProject.song.sourceId) mProject.song.sourceId = 0;
+        applySongToVoiceLocked();
         bump(kVerSong);
         if (mGesture.active && mGesture.id == id) mGesture.active = false;
         if (mAutoGesture.active && mAutoGesture.id == id) mAutoGesture.active = false;
@@ -1327,6 +1342,56 @@ void Studio::inputState(float *out) const {
     out[5] = li >= 0 && lo >= 0 ? (li + lo) * 1000.0f / kRate : -1.0f;
     out[6] = mInput.recording() ? 1.0f : 0.0f;
     out[7] = static_cast<float>(mInput.recordedSeconds());
+}
+
+// ---------------------------------------------------------------- voz en vivo
+
+void Studio::setVoiceFx(int param, float value) {
+    if (param < 0 || param >= vfx::kCount) return;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        mProject.voice[static_cast<size_t>(param)] = vfx::clampValue(param, value);
+        mInput.voice().set(param, mProject.voice[static_cast<size_t>(param)]);
+    }
+    bump(kVerInput);
+    markDirty();
+}
+
+std::vector<float> Studio::voiceFxState() const {
+    std::lock_guard<std::mutex> lk(mModel);
+    return std::vector<float>(mProject.voice.begin(), mProject.voice.end());
+}
+
+std::vector<float> Studio::voiceFxInfo() {
+    std::vector<float> v;
+    for (int k = 0; k < vfx::kCount; ++k) {
+        const vfx::Info &i = vfx::info(k);
+        v.insert(v.end(), {i.min, i.max, i.def, i.log ? 1.0f : 0.0f});
+    }
+    return v;
+}
+
+std::string Studio::voicePresetsJson() {
+    Json a = Json::array();
+    for (int i = 0; i < vfx::presetCount(); ++i) a.push(std::string(vfx::preset(i).name));
+    return a.dump();
+}
+
+bool Studio::applyVoicePreset(int index) {
+    if (index < 0 || index >= vfx::presetCount()) return false;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        const vfx::Values &v = vfx::preset(index).values;
+        for (int p = 0; p < vfx::kCount; ++p) {
+            // Lo que es de la persona y de la canción se queda como estaba.
+            if (p == vfx::kTuneKey || p == vfx::kTuneScale || p == vfx::kRange || p == vfx::kLevel) continue;
+            mProject.voice[static_cast<size_t>(p)] = v[static_cast<size_t>(p)];
+            mInput.voice().set(p, v[static_cast<size_t>(p)]);
+        }
+    }
+    bump(kVerInput);
+    markDirty();
+    return true;
 }
 
 bool Studio::recordStart() {
@@ -2546,6 +2611,7 @@ void Studio::jobSeparate(int id, std::string file, std::string name, int quality
             mProject.song.sourceId = id;
             mProject.song.instrumentalId = instId;
             mProject.song.vocalId = vocId;
+            applySongToVoiceLocked();
             bump(kVerTracks);
         }
     }
@@ -2582,6 +2648,7 @@ void Studio::jobSeparate(int id, std::string file, std::string name, int quality
             s.vocalEnd = std::move(info.vocalEnd);
             s.envelope = std::move(info.envelope);
             s.notes = info.notes;
+            applySongToVoiceLocked();
         }
     }
     markDirty();

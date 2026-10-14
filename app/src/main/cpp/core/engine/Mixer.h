@@ -174,6 +174,7 @@ private:
     };
 
     void renderBlock(int n);
+    void finishBus(int n, bool rolling);  // anti-zumbido, análisis, master y medidores
     void readInput(const MappedAudio &a, const PieceSet &ps, int n);
     static std::unique_ptr<PieceSet> makePieces(std::vector<Region> regions, int64_t fileFrames);
     void publishPieces(Slot &s, std::unique_ptr<PieceSet> ps);  // con mMutex

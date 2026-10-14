@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "engine/Mixer.h"
+#include "engine/VoiceFx.h"
 
 // El proyecto tal como lo guarda la sesión y lo ve la pantalla. El Studio es su dueño.
 
@@ -76,5 +77,6 @@ struct ProjectModel {
     TrackModel input;
     float inputGainDb = 0.0f;   // -24 .. +24
     float monitorDb = 0.0f;     // volumen de la escucha: -60 (= -∞) .. +6
+    vfx::Values voice = vfx::defaults();  // la voz en vivo (auto-tune y efectos)
     SongModel song;
 };

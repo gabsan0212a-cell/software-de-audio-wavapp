@@ -204,6 +204,27 @@ class Entrada {
     val pista by lazy { Pista(-1, Nucleo.ID_ENTRADA, "Micrófono", 1, 0, "entrada en vivo") }
 }
 
+/**
+ * La voz en vivo (auto-tune y efectos de la entrada), como la tiene el núcleo. Lo que cambia en
+ * cada cuadro (la nota, la compuerta, cuánto bajan el de-esser y el compresor) se lee al dibujar.
+ */
+class Voz {
+    var valores by mutableStateOf(FloatArray(0))
+    fun valor(p: Int): Float = valores.getOrElse(p) { 0f }
+    fun on(p: Int): Boolean = valor(p) > 0.5f
+    val encendida: Boolean get() = on(Nucleo.VOZ_ENCENDIDA)
+    var nota by mutableFloatStateOf(0f)       // lo que se canta (MIDI con decimales; 0 = nada)
+    var sale by mutableFloatStateOf(0f)       // como sale después del auto-tune
+    var objetivo by mutableIntStateOf(-1)     // la nota de la escala a la que va
+    var compuerta by mutableStateOf(false)    // abierta
+    var deEsser by mutableFloatStateOf(0f)    // dB que baja
+    var compresor by mutableFloatStateOf(0f)  // dB que baja
+    var retrasoMs by mutableFloatStateOf(0f)  // del auto-tune
+    var tonica by mutableIntStateOf(-1)       // la escala en uso (-1 = cromática)
+    var escala by mutableIntStateOf(2)        // 0 mayor, 1 menor, 2 cromática
+    var deCancion by mutableStateOf(true)     // la escala sale de la canción preparada
+}
+
 class MedidorMaster {
     var l by mutableFloatStateOf(-120f)
     var r by mutableFloatStateOf(-120f)
@@ -289,6 +310,15 @@ object Mesa {
     val infoFx: FloatArray by lazy { Nucleo.fxInfo() }
     private var moviendo = false
 
+    /** La voz en vivo: sus ajustes, presets y rangos (vienen del núcleo). */
+    val voz = Voz()
+    val presetsVoz: List<String> by lazy {
+        val a = JSONArray(Nucleo.voicePresetsJson())
+        List(a.length()) { a.getString(it) }
+    }
+    val infoVoz: FloatArray by lazy { Nucleo.voiceFxInfo() }
+    private val bufVoz = FloatArray(Nucleo.DATOS_VOZ)
+
     /** La canción preparada para cantar y cómo va la separación de la voz. */
     val cancion = Cancion()
     val separacion = Separacion()
@@ -355,6 +385,8 @@ object Mesa {
             entrada.pista.vEq = ve
             leerEntrada()
             leerEq(entrada.pista)
+            voz.valores = Nucleo.voiceFxState()
+            leerMedidoresVoz()
         }
         for (p in pistas) {
             val vp = versiones[Nucleo.verParams(p.slot)]
@@ -769,6 +801,22 @@ object Mesa {
         e.medidor.r = bufMedidores[k + 1]
         e.satura = bufMedidores[k + 2] != 0f
         if (e.grabando) leerEntrada()  // los segundos grabados
+        if (e.abierta && voz.encendida) leerMedidoresVoz()
+    }
+
+    private fun leerMedidoresVoz() {
+        Nucleo.voiceMeters(bufVoz)
+        val v = voz
+        v.nota = bufVoz[0]
+        v.sale = bufVoz[1]
+        v.objetivo = bufVoz[2].toInt()
+        v.compuerta = bufVoz[3] != 0f
+        v.deEsser = bufVoz[4]
+        v.compresor = bufVoz[5]
+        v.retrasoMs = bufVoz[6]
+        v.tonica = bufVoz[7].toInt()
+        v.escala = bufVoz[8].toInt()
+        v.deCancion = bufVoz[9] != 0f
     }
 
     // ------------------------------------------------------------------ entrada en vivo y grabación
@@ -787,6 +835,19 @@ object Mesa {
     fun ponerGananciaEntrada(db: Float) { Nucleo.setInputGain(db); sincronizar() }
     fun ponerEscucha(on: Boolean) { Nucleo.setMonitor(on); sincronizar() }
     fun ponerVolumenEscucha(db: Float) { Nucleo.setMonitorDb(db); sincronizar() }
+
+    // ------------------------------------------------------------------ voz en vivo
+
+    fun ponerVoz(param: Int, valor: Float) { Nucleo.setVoiceFx(param, valor); sincronizar() }
+    fun alternarVoz(param: Int) = ponerVoz(param, if (voz.on(param)) 0f else 1f)
+    fun aplicarPresetVoz(indice: Int) { Nucleo.applyVoicePreset(indice); sincronizar() }
+
+    /** Prende o apaga la voz en vivo. Al prenderla también se escucha (sale por la consola). */
+    fun prenderVoz(on: Boolean, conEscucha: Boolean) {
+        Nucleo.setVoiceFx(Nucleo.VOZ_ENCENDIDA, if (on) 1f else 0f)
+        if (on && conEscucha && !entrada.escucha) Nucleo.setMonitor(true)
+        sincronizar()
+    }
 
     /** Empieza a grabar o termina (la toma queda como pista nueva). Devuelve el id nuevo o -1. */
     fun grabarOParar(): Int {

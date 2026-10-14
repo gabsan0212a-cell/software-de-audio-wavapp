@@ -344,6 +344,25 @@ class PantallaTest {
         regla.onNodeWithContentDescription("Detener grabación").performClick()
         regla.waitUntil(5_000) { !Mesa.entrada.grabando && Mesa.pistas.size == 5 }
         assertEquals("Grabación 1", Mesa.pistas.last().nombre)
+
+        // Voz en vivo: se prende, un preset la deja como la canción y la hoja tiene todos los ajustes.
+        regla.onNodeWithTag("panelGrabar").performScrollToKey("voz")
+        regla.waitForIdle()
+        regla.onNodeWithContentDescription("Voz en vivo").performSemanticsAction(SemanticsActions.OnClick)
+        regla.waitUntil(2_000) { Mesa.voz.encendida }
+        regla.onNodeWithContentDescription("Preset de voz Paraíso").performSemanticsAction(SemanticsActions.OnClick)
+        regla.waitUntil(2_000) { Mesa.voz.on(Nucleo.VOZ_DOBLAJE) && Mesa.voz.on(Nucleo.VOZ_DELAY) }
+        avanzarMedidores()
+        captura("28-voz-en-vivo")
+        regla.onNodeWithText("Ajustes de la voz…").performSemanticsAction(SemanticsActions.OnClick)
+        regla.waitUntil(2_000) { Vista.voz }
+        regla.onNodeWithTag("escalaVoz").assertExists()
+        avanzarMedidores()
+        captura("29-hoja-voz")
+        regla.onNodeWithText("Listo").performClick()
+        regla.waitUntil(2_000) { !Vista.voz }
+        regla.runOnUiThread { Mesa.prenderVoz(false, false) }
+        regla.waitUntil(2_000) { !Mesa.voz.encendida }
         regla.onNodeWithTag("pestana-0").performClick()
         regla.waitUntil(2_000) { !Mesa.entrada.abierta }
         regla.waitForIdle()

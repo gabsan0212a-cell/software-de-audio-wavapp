@@ -343,13 +343,9 @@ void Mixer::process(float *out, int frames, int channels) {
     while (done < frames) {
         const int n = std::min(kBlock, frames - done);
         renderBlock(n);
-        if (LiveInput *in = mLive.load(std::memory_order_acquire)) {
-            // La escucha de la entrada va encima de la mezcla (con su propio volumen).
-            in->mixMonitor(mMixL, mMixR, n);
-            for (int i = 0; i < n; ++i) {
-                mMixL[i] = std::clamp(mMixL[i], -1.0f, 1.0f);
-                mMixR[i] = std::clamp(mMixR[i], -1.0f, 1.0f);
-            }
+        for (int i = 0; i < n; ++i) {  // nunca más de 0 dBFS (sin el limitador podría pasar)
+            mMixL[i] = std::clamp(mMixL[i], -1.0f, 1.0f);
+            mMixR[i] = std::clamp(mMixR[i], -1.0f, 1.0f);
         }
         float *o = out + static_cast<size_t>(done) * channels;
         if (channels == 2) {
@@ -395,9 +391,15 @@ void Mixer::renderBlock(int n) {
     const float target = (wantPlay && seek < 0) ? 1.0f : 0.0f;
     const bool rolling = mTransport > 0.0f || target > 0.0f;
     mRolling.store(rolling, std::memory_order_relaxed);
+    LiveInput *live = mOffline ? nullptr : mLive.load(std::memory_order_acquire);
     if (!rolling) {
         std::fill(mMixL, mMixL + n, 0.0f);
         std::fill(mMixR, mMixR + n, 0.0f);
+        // Sin la canción, la voz en vivo (si se escucha) igual pasa por el master y su limitador.
+        if (live && live->mixMonitor(mMixL, mMixR, n)) {
+            finishBus(n, false);
+            return;
+        }
         mLimiter.reset();
         mReduction.store(0.0f, std::memory_order_relaxed);
         return;
@@ -542,6 +544,31 @@ void Mixer::renderBlock(int n) {
         atomicMax(s.peakR, pkR);
     }
 
+    // La voz en vivo (escucha de la entrada) entra al bus como una pista más, antes del master.
+    if (live) live->mixMonitor(mMixL, mMixR, n);
+    finishBus(n, true);
+
+    mPos += n;
+    if (mPos >= length && !freeRun) {
+        if (mSeekTarget.load() >= 0) {
+            // Llegó al final con un salto pendiente (p. ej. "al inicio" justo antes de que
+            // termine): no se detiene; espera en silencio a que el salto se aplique.
+            mPos = length;
+        } else {  // fin de la canción: se detiene y vuelve al inicio
+            bool expected = true;
+            mPlaying.compare_exchange_strong(expected, false);
+            mPos = 0;
+            mTransport = 0.0f;
+        }
+    }
+}
+
+void Mixer::finishBus(int n, bool rolling) {
+    const int tapSource = mTapSource.load(std::memory_order_relaxed);
+    if (!rolling) {  // sin pistas sonando: lo que se analiza es lo que hay en el bus
+        std::fill(mBlkTapL, mBlkTapL + n, 0.0f);
+        std::fill(mBlkTapR, mBlkTapR + n, 0.0f);
+    }
     // Bus: anti-zumbido; el análisis de la mezcla se toma aquí (antes del volumen master).
     applyNotch(n);
     if (tapSource < 0) {
@@ -581,21 +608,7 @@ void Mixer::renderBlock(int n) {
     atomicMax(mPeakL, pkL);
     atomicMax(mPeakR, pkR);
     mReduction.store(limiterOn ? mLimiter.reductionDb() : 0.0f, std::memory_order_relaxed);
-    if (!mOffline) feedLoudness(n);
-
-    mPos += n;
-    if (mPos >= length && !freeRun) {
-        if (mSeekTarget.load() >= 0) {
-            // Llegó al final con un salto pendiente (p. ej. "al inicio" justo antes de que
-            // termine): no se detiene; espera en silencio a que el salto se aplique.
-            mPos = length;
-        } else {  // fin de la canción: se detiene y vuelve al inicio
-            bool expected = true;
-            mPlaying.compare_exchange_strong(expected, false);
-            mPos = 0;
-            mTransport = 0.0f;
-        }
-    }
+    if (!mOffline && rolling) feedLoudness(n);
 }
 
 void Mixer::readInput(const MappedAudio &a, const PieceSet &ps, int n) {

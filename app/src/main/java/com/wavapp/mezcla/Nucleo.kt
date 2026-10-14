@@ -41,6 +41,9 @@ object Nucleo {
     /** Versión de la canción preparada para cantar (y de cómo va la separación). */
     val VER_CANCION = c[21]
     val DATOS_SEPARAR = c[22]
+    /** Cuántos ajustes tiene la voz en vivo (ver los VOZ_ de abajo) y cuántos datos da [voiceMeters]. */
+    val VOZ_PARAMS = c[23]
+    val DATOS_VOZ = c[24]
     /** "Sin dato" en los valores de LUFS. */
     const val SIN_DATO = -200f
 
@@ -100,6 +103,40 @@ object Nucleo {
     const val FX_REVERB_DURACION = 14
     const val FX_REVERB_BRILLO = 15
     const val FX_REVERB_PREDELAY = 16
+
+    // Ajustes de la voz en vivo (iguales a vfx::Param del núcleo).
+    const val VOZ_ENCENDIDA = 0
+    const val VOZ_AUTOTUNE = 1
+    const val VOZ_AFINAR = 2              // cuánto corrige (0..1)
+    const val VOZ_VELOCIDAD = 3           // ms para llegar a la nota (0 = robot)
+    const val VOZ_TONICA = 4              // 0 = Do (si la escala es a mano)
+    const val VOZ_ESCALA = 5              // ESCALA_
+    const val VOZ_REGISTRO = 6            // 0 grave, 1 media, 2 aguda
+    const val VOZ_GRAVES = 7              // Hz del filtro de graves
+    const val VOZ_COMPUERTA = 8
+    const val VOZ_COMPUERTA_UMBRAL = 9
+    const val VOZ_DEESSER = 10
+    const val VOZ_DEESSER_UMBRAL = 11
+    const val VOZ_COMP = 12
+    const val VOZ_COMP_UMBRAL = 13
+    const val VOZ_COMP_PROPORCION = 14
+    const val VOZ_COMP_GANANCIA = 15
+    const val VOZ_DOBLAJE = 16
+    const val VOZ_DOBLAJE_CANTIDAD = 17
+    const val VOZ_DELAY = 18
+    const val VOZ_DELAY_PULSOS = 19       // 0 = 1/4, 1 = 1/8 con punto, 2 = 1/8, 3 = 1/16
+    const val VOZ_DELAY_REPETICIONES = 20
+    const val VOZ_DELAY_CANTIDAD = 21
+    const val VOZ_REVERB = 22
+    const val VOZ_REVERB_CANTIDAD = 23
+    const val VOZ_REVERB_DURACION = 24
+    const val VOZ_VOLUMEN = 25            // dB
+
+    // Escala del auto-tune (VOZ_ESCALA).
+    const val ESCALA_CANCION = 0
+    const val ESCALA_MAYOR = 1
+    const val ESCALA_MENOR = 2
+    const val ESCALA_CROMATICA = 3
 
     // ---------- Ciclo de vida
     /** Abre el proyecto de esa carpeta (la primera vez carga las pistas de prueba). */
@@ -281,6 +318,22 @@ object Nucleo {
     /** ["Voz", "Voz con eco", ...] */
     external fun fxPresetsJson(): String
     external fun applyFxPreset(id: Int, index: Int): Boolean
+
+    // ---------- Voz en vivo: auto-tune y efectos de la entrada
+    external fun setVoiceFx(param: Int, value: Float)
+    external fun voiceFxState(): FloatArray
+    /** [mín, máx, inicial, log 1/0] por cada ajuste. */
+    external fun voiceFxInfo(): FloatArray
+    /** ["Paraíso", "Natural", ...] */
+    external fun voicePresetsJson(): String
+    /** Pone un preset (y prende la voz); no cambia la escala, la tónica, el registro ni el volumen. */
+    external fun applyVoicePreset(index: Int): Boolean
+    /**
+     * [nota que se canta (MIDI con decimales; 0 = nada), como sale, nota de la escala (-1 = nada),
+     * compuerta abierta, de-esser dB, compresor dB, retraso del auto-tune ms, tónica en uso
+     * (-1 = cromática), escala en uso (0 mayor, 1 menor, 2 cromática), viene de la canción 1/0].
+     */
+    external fun voiceMeters(out: FloatArray)
 
     // ---------- Preparar una canción para cantar en vivo (quitarle la voz con IA)
     /** El modelo de voz en un archivo. false si no es válido. */

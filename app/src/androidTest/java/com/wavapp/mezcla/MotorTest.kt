@@ -402,6 +402,49 @@ class MotorTest {
         assertTrue(JSONObject(Nucleo.songJson()).getBoolean("lista"))
     }
 
+    @Test
+    fun vozEnVivoConAutoTune() {
+        cargarPrueba()
+        assertEquals(26, Nucleo.VOZ_PARAMS)
+        assertEquals(Nucleo.VOZ_PARAMS * 4, Nucleo.voiceFxInfo().size)
+        val nombres = JSONArray(Nucleo.voicePresetsJson())
+        assertEquals("Paraíso", nombres.getString(0))
+        // Un preset prende la voz; la escala elegida a mano manda sobre la de la canción.
+        assertTrue(Nucleo.applyVoicePreset(0))
+        val v = Nucleo.voiceFxState()
+        assertEquals(Nucleo.VOZ_PARAMS, v.size)
+        assertEquals(1f, v[Nucleo.VOZ_ENCENDIDA])
+        assertEquals(1f, v[Nucleo.VOZ_DOBLAJE])
+        Nucleo.setVoiceFx(Nucleo.VOZ_ESCALA, Nucleo.ESCALA_MENOR.toFloat())
+        Nucleo.setVoiceFx(Nucleo.VOZ_TONICA, 9f)
+        val m = FloatArray(Nucleo.DATOS_VOZ)
+        Nucleo.voiceMeters(m)
+        assertEquals(9f, m[7])  // La
+        assertEquals(1f, m[8])  // menor
+        assertEquals(0f, m[9])  // elegida a mano
+        // Con la entrada abierta (se lee a la par de la salida) y la mezcla sonando: la voz pasa
+        // por toda la cadena y el audio no se detiene.
+        assertTrue("se abre la entrada de audio", Nucleo.inputStart(0, 1) > 0)
+        Nucleo.setMonitor(true)
+        Nucleo.seek(0.0)
+        Nucleo.play()
+        Thread.sleep(2000)
+        assertTrue("la mezcla sigue (${Nucleo.positionSeconds()} s)", Nucleo.positionSeconds() > 1.0)
+        val datos = FloatArray(Nucleo.DATOS_ENTRADA)
+        Nucleo.inputState(datos)
+        assertEquals(1f, datos[0])
+        Nucleo.voiceMeters(m)
+        assertTrue("retraso del auto-tune ${m[6]} ms", m[6] >= 0f && m[6] < 10f)
+        val salida = Nucleo.outputInfo()
+        assertTrue("la salida sigue abierta (${salida.joinToString()})", salida[0] > 0 && salida[5] == 0)
+        Nucleo.pause()
+        Nucleo.setMonitor(false)
+        Nucleo.inputStop()
+        Nucleo.setVoiceFx(Nucleo.VOZ_ENCENDIDA, 0f)
+        Nucleo.setVoiceFx(Nucleo.VOZ_ESCALA, Nucleo.ESCALA_CANCION.toFloat())
+        assertEquals(0f, Nucleo.voiceFxState()[Nucleo.VOZ_ENCENDIDA])
+    }
+
     /** Codifica un tono estéreo (L = -R) a AAC en M4A con el codificador del sistema. */
     private fun codificarAac(f: File, segundos: Int, frecuencia: Int) {
         val formato = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, frecuencia, 2).apply {

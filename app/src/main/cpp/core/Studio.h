@@ -250,6 +250,16 @@ public:
     bool recording() const { return mInput.recording(); }
     std::vector<float> recordingWave(int cols, double seconds) const { return mInput.recentWave(cols, seconds); }
 
+    // ---------- Voz en vivo: auto-tune y efectos de la entrada (ver engine/VoiceFx.h). La escala
+    // "de la canción" y el delay a tiempo salen de la canción preparada.
+    void setVoiceFx(int param, float value);
+    std::vector<float> voiceFxState() const;  // vfx::kCount valores
+    static std::vector<float> voiceFxInfo();  // [mín, máx, inicial, log] por ajuste
+    static std::string voicePresetsJson();    // ["Paraíso", "Natural", ...]
+    // Pone un preset (y prende la voz). No cambia la escala, la tónica, el registro ni el volumen.
+    bool applyVoicePreset(int index);
+    void voiceMeters(float *out) { mInput.voice().meters(out); }  // VoiceFx::kMeterCount valores
+
     // ---------- Forma de onda
     // Del pedazo `index`, solo la parte [from, to) de la línea de tiempo, en `cols` columnas:
     // [columna][canal][min, max], ya con sus fundidos.
@@ -341,6 +351,7 @@ private:
     const Equalizer *eqOf(const TrackModel &t) const;
     int eqVersion(const TrackModel &t) const;
     void applyInputLocked();
+    void applySongToVoiceLocked();  // tonalidad y tempo de la canción preparada → voz en vivo
     TrackModel *findLocked(int id);
     const TrackModel *findLocked(int id) const;
     void applyTrackLocked(TrackModel &t);

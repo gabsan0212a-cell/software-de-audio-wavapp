@@ -12,6 +12,7 @@
 #include "Studio.h"
 #include "dsp/AnalysisView.h"
 #include "engine/Meters.h"
+#include "engine/VoiceFx.h"
 
 static Studio gStudio(decodeWithMediaCodec);
 static AudioOutput gOutput(gStudio.mixer());
@@ -51,7 +52,9 @@ JNI(jboolean, start)(JNIEnv *, jobject) {
 }
 JNI(void, stop)(JNIEnv *, jobject) {
     gStudio.inputClosed();  // si estaba grabando, la toma se guarda
+    gOutput.setInput(nullptr);
     gInput.stop();
+    gOutput.setLiveMode(false);
     gOutput.stop();
     gStudio.stopBackground();
 }
@@ -78,7 +81,7 @@ JNI(jintArray, constants)(JNIEnv *env, jobject) {
                          Studio::kVerFirstSlot, Studio::kVersPerSlot, Studio::kAutoNowCount,
                          Studio::kTrackParamCount, Studio::kMasterStateCount, Studio::kLoudCount,
                          Studio::kSongLoudCount, fx::kCount, MeterBallistics::kCompressor, Studio::kVerSong,
-                         Studio::kSepStateCount};
+                         Studio::kSepStateCount, vfx::kCount, VoiceFx::kMeterCount};
     const jsize n = static_cast<jsize>(sizeof v / sizeof v[0]);
     jintArray a = env->NewIntArray(n);
     env->SetIntArrayRegion(a, 0, n, v);
@@ -225,16 +228,28 @@ JNI(jbyteArray, spectrogram)(JNIEnv *env, jobject, jint id) {
 
 // ---------- Entrada en vivo y grabación
 // Abre la entrada (deviceId 0 = la del sistema). Devuelve los canales abiertos o 0.
+namespace {
+bool voiceOn() { return gStudio.voiceFxState()[vfx::kOn] > 0.5f; }
+}  // namespace
+
 JNI(jint, inputStart)(JNIEnv *, jobject, jint deviceId, jint channels) {
-    gOutput.start();  // para escucharse hace falta la salida
+    gOutput.setInput(nullptr);
     gStudio.inputClosed();
+    gOutput.start();  // la entrada se lee al ritmo de la salida (full duplex)
     const int ch = gInput.start(deviceId, channels);
-    if (ch > 0) gStudio.inputOpened(ch);
-    else gStudio.notify("No se pudo abrir la entrada de audio");
+    if (ch > 0) {
+        gStudio.inputOpened(ch);
+        gOutput.setLiveMode(voiceOn());
+        gOutput.setInput(&gInput);
+    } else {
+        gStudio.notify("No se pudo abrir la entrada de audio");
+    }
     return ch;
 }
 JNI(void, inputStop)(JNIEnv *, jobject) {
     gStudio.inputClosed();
+    gOutput.setInput(nullptr);
+    gOutput.setLiveMode(false);
     gInput.stop();
 }
 JNI(void, setInputGain)(JNIEnv *, jobject, jfloat db) { gStudio.setInputGain(db); }
@@ -353,6 +368,26 @@ JNI(jfloatArray, fxInfo)(JNIEnv *env, jobject) { return floats(env, Studio::fxIn
 JNI(jstring, fxPresetsJson)(JNIEnv *env, jobject) { return jstr(env, Studio::fxPresetsJson()); }
 JNI(jboolean, applyFxPreset)(JNIEnv *, jobject, jint id, jint index) {
     return gStudio.applyFxPreset(id, index) ? JNI_TRUE : JNI_FALSE;
+}
+
+// ---------- Voz en vivo: auto-tune y efectos de la entrada (param: vfx::Param)
+JNI(void, setVoiceFx)(JNIEnv *, jobject, jint param, jfloat value) {
+    gStudio.setVoiceFx(param, value);
+    if (gInput.open()) gOutput.setLiveMode(voiceOn());
+}
+JNI(jfloatArray, voiceFxState)(JNIEnv *env, jobject) { return floats(env, gStudio.voiceFxState()); }
+JNI(jfloatArray, voiceFxInfo)(JNIEnv *env, jobject) { return floats(env, Studio::voiceFxInfo()); }
+JNI(jstring, voicePresetsJson)(JNIEnv *env, jobject) { return jstr(env, Studio::voicePresetsJson()); }
+JNI(jboolean, applyVoicePreset)(JNIEnv *, jobject, jint index) {
+    const bool ok = gStudio.applyVoicePreset(index);
+    if (gInput.open()) gOutput.setLiveMode(voiceOn());
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+JNI(void, voiceMeters)(JNIEnv *env, jobject, jfloatArray out) {
+    float v[VoiceFx::kMeterCount];
+    gStudio.voiceMeters(v);
+    const jsize n = std::min<jsize>(env->GetArrayLength(out), VoiceFx::kMeterCount);
+    env->SetFloatArrayRegion(out, 0, n, v);
 }
 
 // ---------- Preparar una canción para cantar en vivo (quitarle la voz con IA)

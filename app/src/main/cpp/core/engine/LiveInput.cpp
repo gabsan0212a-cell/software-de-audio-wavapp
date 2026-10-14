@@ -51,7 +51,7 @@ void SpscRing::skip(size_t n) {
 
 // ---------------------------------------------------------------- entrada en vivo
 
-LiveInput::LiveInput(int sampleRate, Mixer &mixer) : mRate(sampleRate), mMixer(mixer) {
+LiveInput::LiveInput(int sampleRate, Mixer &mixer) : mRate(sampleRate), mMixer(mixer), mVoice(sampleRate) {
     mEq.setSampleRate(sampleRate);
 }
 
@@ -69,6 +69,8 @@ void LiveInput::setActive(bool on, int channels) {
     if (on && !mActive.load()) {
         // El hilo de entrada todavía no corre: se puede limpiar su estado.
         mEq.resetState();
+        mVoice.restart();
+        mVoiceWasOn = mVoice.on();
         mGainS = mGainTarget.load();
     }
     mActive.store(on);
@@ -130,9 +132,22 @@ void LiveInput::push(const float *in, int frames, int ch) {
             if (written < want) mRecDropped.fetch_add(static_cast<int64_t>((want - written) / mRecChannels));
         }
 
-        // EQ en vivo → escucha y análisis.
-        mEq.process(mL, stereo ? mR : nullptr, n);
-        if (!stereo) std::copy(mL, mL + n, mR);
+        // La voz en vivo (auto-tune y efectos) con el EQ en medio, o solo el EQ → escucha y análisis.
+        const bool voice = mVoice.on();
+        if (voice != mVoiceWasOn) {  // el EQ pasa de estéreo a mono (o al revés): sin restos
+            if (voice) mVoice.restart();
+            mEq.resetState();
+            mVoiceWasOn = voice;
+        }
+        if (voice) {
+            for (int i = 0; i < n; ++i) mMono[i] = stereo ? 0.5f * (mL[i] + mR[i]) : mL[i];
+            mVoice.processPre(mMono, n);
+            mEq.process(mMono, nullptr, n);
+            mVoice.processPost(mMono, n, mL, mR);
+        } else {
+            mEq.process(mL, stereo ? mR : nullptr, n);
+            if (!stereo) std::copy(mL, mL + n, mR);
+        }
         if (monitor) {
             for (int i = 0; i < n; ++i) {
                 mInter[2 * i] = mL[i];
@@ -150,14 +165,14 @@ void LiveInput::push(const float *in, int frames, int ch) {
 
 // ---------------------------------------------------------------- hilo de salida
 
-void LiveInput::mixMonitor(float *l, float *r, int n) {
+bool LiveInput::mixMonitor(float *l, float *r, int n) {
     const bool on = monitoring();
     if (on && !mWasMonitoring) mMonitorRing.skip(mMonitorRing.available());  // lo viejo no se oye
     mWasMonitoring = on;
     const float gainT = on ? mMonitorGain.load(std::memory_order_relaxed) : 0.0f;
     if (!on && mMonGainS < 1e-5f) {
         mMonGainS = 0.0f;
-        return;
+        return false;
     }
     // Retraso mínimo: si se juntó de más (la entrada llega en ráfagas), se tira lo más viejo.
     const size_t keep = 2 * static_cast<size_t>(n + 2 * mLastPush.load(std::memory_order_relaxed));
@@ -175,6 +190,7 @@ void LiveInput::mixMonitor(float *l, float *r, int n) {
         }
     }
     if (std::fabs(gainT - mMonGainS) < 1e-7f) mMonGainS = gainT;
+    return true;
 }
 
 // ---------------------------------------------------------------- grabación

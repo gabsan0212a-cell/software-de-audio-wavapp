@@ -25,15 +25,19 @@
 #include "Studio.h"
 #include "dsp/AnalysisView.h"
 #include "dsp/Analyzer.h"
+#include "dsp/AutoTune.h"
 #include "dsp/Delay.h"
 #include "dsp/Dynamics.h"
 #include "dsp/Equalizer.h"
 #include "dsp/Limiter.h"
 #include "dsp/Loudness.h"
 #include "dsp/Pitch.h"
+#include "dsp/PitchShifter.h"
+#include "dsp/PitchTracker.h"
 #include "dsp/Resampler.h"
 #include "dsp/Reverb.h"
 #include "dsp/SongAnalysis.h"
+#include "dsp/VoiceDynamics.h"
 #include "engine/Automation.h"
 #include "engine/Effects.h"
 #include "engine/Exporter.h"
@@ -41,6 +45,7 @@
 #include "engine/LiveInput.h"
 #include "engine/Meters.h"
 #include "engine/Mixer.h"
+#include "engine/VoiceFx.h"
 #include "io/Json.h"
 #include "io/MappedAudio.h"
 #include "io/WavReader.h"
@@ -1957,7 +1962,11 @@ TEST(entradaEnVivoEscucha) {
         m.process(out.data(), 192, 2);
         if (k > 50) pico = std::max(pico, picoDe(out));
     }
-    CHECK_NEAR(pico, 0.5, 0.02);  // se escucha igual que entra (la mezcla está parada)
+    // Se escucha como una pista más: pasa por el master (con el limitador y su compensación),
+    // aunque la mezcla esté parada.
+    Limiter lim;
+    lim.setup(48000);
+    CHECK_NEAR(pico, 0.5 * std::pow(10.0, lim.makeupDb() / 20.0), 0.02);
     // Apagada: se va a silencio con un fundido corto.
     in.setMonitor(false);
     CHECK(!m.needsOutput());
@@ -2325,7 +2334,14 @@ TEST(concurrenciaEntrada) {
     std::mt19937 rng(11);
     float buf[64];
     for (int it = 0; it < 200; ++it) {
-        switch (rng() % 9) {
+        switch (rng() % 11) {
+            case 9: s.setVoiceFx(static_cast<int>(rng() % vfx::kCount), static_cast<float>(rng() % 100) / 50.0f); break;
+            case 10: {
+                if (rng() % 2) s.applyVoicePreset(static_cast<int>(rng() % vfx::presetCount()));
+                float vm[VoiceFx::kMeterCount];
+                s.voiceMeters(vm);
+                s.voiceFxState();
+            } break;
             case 0: s.setMonitor(rng() % 2); break;
             case 1: s.setInputGain((rng() % 48) - 24.0f); s.setMonitorDb(-(rng() % 30) * 1.0f); break;
             case 2: s.addEqBand(Studio::kInputId); s.setEqBand(Studio::kInputId, 0, rng() % 6, 50.0f + rng() % 9000, 3, 1, true); break;
@@ -3749,11 +3765,23 @@ TEST(estudioSepararVoz) {
         CHECK(c2["tonica"].asInt() == c["tonica"].asInt() && std::fabs(c2["bpm"].asDouble() - c["bpm"].asDouble()) < 0.02);
         CHECK(c2["partes"].size() == c["partes"].size());
     }
+    // La voz en vivo afina en la escala de la canción (la elegida por omisión).
+    float vm[VoiceFx::kMeterCount];
+    s.voiceMeters(vm);
+    if (c["tonica"].asInt() >= 0) {
+        CHECK(vm[7] == static_cast<float>(c["tonica"].asInt()));
+        CHECK(vm[8] == static_cast<float>(c["menor"].asBool() ? kScaleMinor : kScaleMajor));
+    } else {
+        CHECK(vm[8] == static_cast<float>(kScaleChromatic));
+    }
+    CHECK(vm[9] == 1.0f);
     // Quitar la voz guía no deshace la canción; quitar el instrumental, sí.
     CHECK(s.removeTrack(vozId));
     c = Json::parse(s.songJson(), je);
     CHECK(c["lista"].asBool() && c["voz"].asInt() == 0);
     CHECK(s.removeTrack(instId));
+    s.voiceMeters(vm);
+    CHECK(vm[8] == static_cast<float>(kScaleChromatic));  // sin canción: todas las notas
     c = Json::parse(s.songJson(), je);
     CHECK(!c["lista"].asBool());
 
@@ -3767,6 +3795,498 @@ TEST(estudioSepararVoz) {
 }
 
 // ---------------------------------------------------------------- main
+
+// ---------------------------------------------------------------- voz en vivo (auto-tune y efectos)
+
+// Voz sintética: pulsos glotales (diente de sierra suavizado) por tres formantes de "a", con un
+// poco de aire. `hz` es la nota en cada muestra (0 = silencio).
+static std::vector<float> vozSintetica(const std::vector<double> &hz, double nivel = 0.3, double aire = 0.01,
+                                       unsigned semilla = 1) {
+    struct Formante {
+        double f, bw, z1, z2;
+    };
+    Formante fs[3] = {{700, 130, 0, 0}, {1220, 70, 0, 0}, {2600, 160, 0, 0}};
+    std::mt19937 rng(semilla);
+    std::normal_distribution<double> ruido(0.0, 1.0);
+    std::vector<float> out(hz.size());
+    double fase = 0.0, lp = 0.0;
+    for (size_t i = 0; i < hz.size(); ++i) {
+        double s = 0.0;
+        if (hz[i] > 0) {
+            fase += hz[i] / 48000.0;
+            if (fase >= 1.0) fase -= 1.0;
+            s = 2.0 * fase - 1.0;
+        }
+        lp += 0.2 * (s - lp);
+        const double x = lp + (hz[i] > 0 ? aire * ruido(rng) : 0.0);
+        double y = 0.0;
+        for (Formante &f : fs) {
+            const double r = std::exp(-M_PI * f.bw / 48000.0), th = 2 * M_PI * f.f / 48000.0;
+            const double v = x + 2 * r * std::cos(th) * f.z1 - r * r * f.z2;
+            f.z2 = f.z1;
+            f.z1 = v;
+            y += v * (1 - r) * 0.5;
+        }
+        out[i] = static_cast<float>(y);
+    }
+    float pk = 0.0f;
+    for (float v : out) pk = std::max(pk, std::fabs(v));
+    if (pk > 0.0f)
+        for (float &v : out) v = static_cast<float>(v / pk * nivel);
+    return out;
+}
+
+// La nota medida fuera de tiempo real (YIN a 48 kHz, ventana de 25 ms) cada `paso` muestras.
+static std::vector<float> tonosDe(const std::vector<float> &x, size_t desde, size_t hasta, int paso = 480) {
+    PitchDetector det(48000, 1200, 60.0f, 1000.0f);
+    std::vector<float> r;
+    for (size_t i = desde; i + det.needed() < hasta; i += paso) r.push_back(det.detect(x.data() + i, 0.15f).hz);
+    return r;
+}
+
+static double centsEntre(double a, double b) { return 1200.0 * std::log2(a / b); }
+
+static double peorCents(const std::vector<float> &tonos, double hz) {
+    double peor = 0.0;
+    for (float h : tonos) peor = std::max(peor, h > 0.0f ? std::fabs(centsEntre(h, hz)) : 1200.0);
+    return peor;
+}
+
+// Máxima segunda diferencia desde `desde` (un clic la dispara).
+static double saltoMaximo(const std::vector<float> &x, size_t desde) {
+    double d = 0.0;
+    for (size_t i = desde; i + 2 < x.size(); ++i) d = std::max(d, static_cast<double>(std::fabs(x[i + 2] - 2 * x[i + 1] + x[i])));
+    return d;
+}
+
+TEST(seguidorDeTono) {
+    // Notas fijas en todo el rango de una voz: la estimación queda a pocos cents.
+    for (double f : {90.0, 150.0, 220.0, 330.0, 440.0, 660.0}) {
+        const std::vector<float> x = vozSintetica(std::vector<double>(48000, f));
+        PitchTracker t(48000);
+        double peor = 0.0;
+        int con = 0, sin = 0;
+        for (int i = 0; i < 48000; i += 64) {
+            t.process(x.data() + i, 64);
+            if (i < 12000) continue;
+            if (!t.voiced()) {
+                ++sin;
+                continue;
+            }
+            peor = std::max(peor, std::fabs(centsEntre(t.hz(), f)));
+            ++con;
+        }
+        CHECK(sin == 0 && con > 500);
+        CHECK(peor < 8.0);
+        CHECK_NEAR(t.period(), 48000.0 / f, 48000.0 / f * 0.005);
+    }
+    // Después de silencio prende rápido y sigue un cambio de nota.
+    std::vector<double> hz(96000, 0.0);
+    for (int i = 24000; i < 48000; ++i) hz[i] = 220.0;
+    for (int i = 48000; i < 96000; ++i) hz[i] = 246.94;
+    const std::vector<float> x = vozSintetica(hz);
+    PitchTracker t(48000);
+    int prende = -1, cambia = -1;
+    bool silencioSinNota = true;
+    for (int i = 0; i < 96000; i += 32) {
+        t.process(x.data() + i, 32);
+        if (i < 24000 && t.voiced()) silencioSinNota = false;
+        if (prende < 0 && i >= 24000 && t.voiced()) prende = i + 32 - 24000;
+        if (cambia < 0 && i >= 48000 && t.voiced() && std::fabs(centsEntre(t.hz(), 246.94)) < 20) cambia = i + 32 - 48000;
+    }
+    CHECK(silencioSinNota);
+    CHECK(prende > 0 && prende < 48000 * 30 / 1000);
+    CHECK(cambia > 0 && cambia < 48000 * 25 / 1000);
+    // Con aire, ruido y temblor no confunde la octava ni pierde la nota.
+    {
+        std::vector<double> h(4 * 48000);
+        std::mt19937 g(7);
+        std::normal_distribution<double> n(0, 1);
+        double j = 0.0;
+        for (size_t i = 0; i < h.size(); ++i) {
+            j = 0.999 * j + 0.001 * n(g);
+            h[i] = 180.0 * std::exp2(40.0 * j / 1200.0) * (1 + 0.003 * n(g));
+        }
+        std::vector<float> v = vozSintetica(h, 0.3, 0.03);
+        std::normal_distribution<double> rn(0, 0.03);
+        for (float &s : v) s += static_cast<float>(rn(g));
+        PitchTracker tt(48000);
+        int octavas = 0, total = 0, sinNota = 0;
+        for (int i = 0; i + 64 <= static_cast<int>(v.size()); i += 64) {
+            tt.process(v.data() + i, 64);
+            if (i < 24000) continue;
+            ++total;
+            if (!tt.voiced()) ++sinNota;
+            else if (std::fabs(centsEntre(tt.hz(), h[static_cast<size_t>(i)])) > 600) ++octavas;
+        }
+        CHECK(octavas == 0);
+        CHECK(sinNota < total / 50);
+    }
+    // El rango cambia sin reservar memoria y se respeta: una nota de 90 Hz con "aguda" (130 Hz
+    // o más) no se toma como tal.
+    {
+        const std::vector<float> v = vozSintetica(std::vector<double>(48000, 90.0));
+        PitchTracker tt(48000);
+        tt.setRange(130.0f, 1100.0f);
+        bool noventa = false;
+        for (int i = 0; i < 48000; i += 64) {
+            tt.process(v.data() + i, 64);
+            if (tt.voiced() && std::fabs(centsEntre(tt.hz(), 90.0)) < 50) noventa = true;
+        }
+        CHECK(!noventa);
+    }
+}
+
+TEST(cambiadorDeTono) {
+    // Una voz de 200 Hz corrida ±50 y ±100 cents: sale la nota pedida, sin clics, y con un retraso
+    // de entre ~1 ms y un período.
+    const double f = 200.0;
+    const std::vector<float> x = vozSintetica(std::vector<double>(96000, f));
+    const double clicEntrada = saltoMaximo(x, 24000);
+    for (double c : {50.0, -50.0, 100.0, -100.0}) {
+        PitchShifter sh(48000);
+        std::vector<float> y(x.size());
+        const float ratio = static_cast<float>(std::exp2(c / 1200.0));
+        float dmin = 1e9f, dmax = 0.0f;
+        for (size_t i = 0; i < x.size(); i += 64) {
+            sh.process(x.data() + i, y.data() + i, 64, ratio, 240.0f, false);
+            if (i > 4800) {
+                dmin = std::min(dmin, sh.delay());
+                dmax = std::max(dmax, sh.delay());
+            }
+        }
+        CHECK(peorCents(tonosDe(y, 24000, y.size()), f * ratio) < 2.0);
+        CHECK(saltoMaximo(y, 24000) < 1.5 * clicEntrada);
+        CHECK(dmin >= 20.0f && dmax <= PitchShifter::kMinDelay + 240 + 40);
+    }
+    // Sin corregir (1:1) la salida es la entrada atrasada, igualita.
+    {
+        PitchShifter sh(48000);
+        std::vector<float> y(x.size());
+        for (size_t i = 0; i < x.size(); i += 64) sh.process(x.data() + i, y.data() + i, 64, 1.0f, 240.0f, false);
+        const int d = static_cast<int>(std::lround(sh.delay()));
+        CHECK(d > PitchShifter::kMinDelay && d < PitchShifter::kMinDelay + 32);
+        double err = 0.0;
+        for (size_t i = 1000; i < x.size(); ++i) err = std::max(err, static_cast<double>(std::fabs(y[i] - x[i - d])));
+        CHECK(err < 1e-6);
+    }
+    // Al bajar el tono el retraso crece; en silencio vuelve al mínimo.
+    {
+        PitchShifter sh(48000);
+        std::vector<float> y(x.size());
+        const float abajo = static_cast<float>(std::exp2(-100.0 / 1200.0));
+        float dmax = 0.0f;
+        for (size_t i = 0; i < 48000; i += 64) {
+            sh.process(x.data() + i, y.data() + i, 64, abajo, 240.0f, false);
+            dmax = std::max(dmax, sh.delay());
+        }
+        CHECK(dmax > PitchShifter::kMinDelay + 120);
+        std::vector<float> ceros(4800, 0.0f), salida(4800);
+        for (int i = 0; i < 4800; i += 64) sh.process(ceros.data() + i, salida.data() + i, 64, 1.0f, 0.0f, true);
+        CHECK(sh.delay() <= PitchShifter::kMinDelay + 24);
+        CHECK(picoDe(salida, 2400) < 1e-6f);
+    }
+}
+
+TEST(autoTuneEscala) {
+    // La menor: La Si Do Re Mi Fa Sol.
+    CHECK(AutoTune::inScale(69, 9, kScaleMinor) && AutoTune::inScale(72, 9, kScaleMinor));
+    CHECK(!AutoTune::inScale(70, 9, kScaleMinor) && !AutoTune::inScale(73, 9, kScaleMinor));
+    CHECK(AutoTune::inScale(61, 0, kScaleChromatic));
+    CHECK(AutoTune::nearestNote(69.3f, 9, kScaleMinor, -1) == 69);
+    CHECK(AutoTune::nearestNote(70.4f, 9, kScaleMinor, -1) == 71);  // La♯ no está: Si
+    CHECK(AutoTune::nearestNote(69.6f, 9, kScaleMinor, -1) == 69);  // ... o La, la más cerca
+    // Entre Mi (64) y Fa (65): con la ventaja de la actual no salta de una a otra.
+    CHECK(AutoTune::nearestNote(64.55f, 9, kScaleMinor, 64) == 64);
+    CHECK(AutoTune::nearestNote(64.55f, 9, kScaleMinor, -1) == 65);
+    CHECK(AutoTune::nearestNote(64.8f, 9, kScaleMinor, 64) == 65);
+    // Do mayor y cromática.
+    CHECK(AutoTune::nearestNote(60.8f, 0, kScaleMajor, -1) == 60);
+    CHECK(AutoTune::nearestNote(60.8f, 0, kScaleChromatic, -1) == 61);
+    CHECK(AutoTune::nearestNote(61.2f, 0, kScaleMajor, -1) == 62);
+}
+
+TEST(autoTuneCorrige) {
+    const double desafinado = 440.0 * std::exp2(30.0 / 1200.0);  // La + 30 cents
+    const std::vector<float> x = vozSintetica(std::vector<double>(96000, desafinado));
+    for (float velocidad : {0.0f, 20.0f}) {
+        AutoTune at(48000);
+        TuneSettings s;
+        s.key = 9;
+        s.scale = kScaleMinor;
+        s.speedMs = velocidad;
+        std::vector<float> y = x;
+        for (size_t i = 0; i < y.size(); i += 64) at.process(y.data() + i, 64, s, false);
+        CHECK(peorCents(tonosDe(y, 24000, y.size()), 440.0) < 5.0);
+        const AutoTune::Info info = at.info();
+        CHECK(info.note == 69);
+        CHECK_NEAR(info.inputMidi, 69.3, 0.06);
+        CHECK_NEAR(info.outputMidi, 69.0, 0.05);
+        CHECK(at.latencySamples() < 48000 * 0.008f);  // menos de 8 ms
+    }
+    // Solo afinador: sale igual que entra, pero dice la nota.
+    {
+        AutoTune at(48000);
+        TuneSettings s;
+        s.correct = false;
+        std::vector<float> y = x;
+        for (size_t i = 0; i < y.size(); i += 64) at.process(y.data() + i, 64, s, false);
+        CHECK(peorCents(tonosDe(y, 24000, y.size()), desafinado) < 3.0);
+        CHECK(at.info().note == 69);
+    }
+    // Vibrato de ±40 cents alrededor de Mi: al instante casi lo borra; con 60 ms pasa.
+    std::vector<double> hz(3 * 48000);
+    for (size_t i = 0; i < hz.size(); ++i) hz[i] = 329.63 * std::exp2(40.0 / 1200.0 * std::sin(2 * M_PI * 5.5 * i / 48000.0));
+    const std::vector<float> v = vozSintetica(hz);
+    for (float velocidad : {0.0f, 60.0f}) {
+        AutoTune at(48000);
+        TuneSettings s;
+        s.key = 9;
+        s.scale = kScaleMinor;
+        s.speedMs = velocidad;
+        std::vector<float> y = v;
+        for (size_t i = 0; i < y.size(); i += 64) at.process(y.data() + i, 64, s, false);
+        const double sale = peorCents(tonosDe(y, 48000, y.size(), 240), 329.63);
+        if (velocidad == 0.0f) CHECK(sale < 16.0);
+        else CHECK(sale > 30.0);
+    }
+    // En silencio no hay nota ni corrección.
+    {
+        AutoTune at(48000);
+        TuneSettings s;
+        std::vector<float> z(24000, 0.0f);
+        for (size_t i = 0; i < z.size(); i += 64) at.process(z.data() + i, 64, s, true);
+        CHECK(at.info().note == -1 && at.info().inputMidi == 0.0f);
+        CHECK(picoDe(z) == 0.0f);
+    }
+}
+
+TEST(compuertaYDeEsser) {
+    NoiseGate g;
+    g.setup(48000);
+    GateSettings gs;  // abre arriba de -50 dB y baja 30 dB
+    // Ruido de fondo de ~-60 dB: se cierra y lo baja casi 30 dB.
+    std::vector<float> ruido(96000);
+    std::mt19937 rng(3);
+    std::uniform_real_distribution<float> u(-0.001f, 0.001f);
+    for (float &v : ruido) v = u(rng);
+    std::vector<float> y = ruido;
+    g.process(y.data(), 96000, gs);
+    CHECK(!g.open());
+    CHECK(rmsDe(y, 72000, 96000) < rmsDe(ruido, 72000, 96000) * 0.04);
+    // La voz la abre en menos de 1 ms y pasa entera.
+    std::vector<float> v = senoMono(440, 0, 4800, 0.3);
+    g.process(v.data(), 4800, gs);
+    CHECK(g.open());
+    CHECK_NEAR(picoDe(v, 96), 0.3, 0.01);
+    // Sostiene un momento después de que se calla, y luego cierra.
+    std::vector<float> z(48000, 0.0f);
+    g.process(z.data(), 2400, gs);  // 50 ms
+    CHECK(g.open());
+    g.process(z.data(), 48000, gs);
+    CHECK(!g.open());
+    CHECK(g.gainDb() < -25.0f);
+
+    DeEsser d;
+    d.setup(48000);
+    DeEssSettings ds;
+    // Lo grave no se toca.
+    const std::vector<float> grave = senoMono(400, 0, 48000, 0.5);
+    std::vector<float> g2 = grave;
+    CHECK(d.process(g2.data(), 48000, ds) < 0.5f);
+    double err = 0.0;
+    for (size_t i = 0; i < g2.size(); ++i) err = std::max(err, static_cast<double>(std::fabs(g2[i] - grave[i])));
+    CHECK(err < 1e-4);
+    // Una "s" fuerte (7 kHz) baja varios dB.
+    const std::vector<float> ese = senoMono(7000, 0, 48000, 0.3);
+    std::vector<float> e2 = ese;
+    CHECK(d.process(e2.data(), 48000, ds) > 4.0f);
+    CHECK(rmsDe(e2, 24000, 48000) < rmsDe(ese, 24000, 48000) * 0.7);
+}
+
+// Pasa una voz mono por la cadena en bloques de 256.
+static void porLaCadena(VoiceFx &v, const std::vector<float> &x, std::vector<float> &l, std::vector<float> &r) {
+    l.assign(x.size(), 0.0f);
+    r.assign(x.size(), 0.0f);
+    float mono[VoiceFx::kMaxBlock];
+    for (size_t i = 0; i < x.size(); i += VoiceFx::kMaxBlock) {
+        const int n = static_cast<int>(std::min<size_t>(VoiceFx::kMaxBlock, x.size() - i));
+        std::copy(x.begin() + static_cast<long>(i), x.begin() + static_cast<long>(i) + n, mono);
+        v.processPre(mono, n);
+        v.processPost(mono, n, l.data() + i, r.data() + i);
+    }
+}
+
+static void ponerPreset(VoiceFx &v, int i) {
+    for (int p = 0; p < vfx::kCount; ++p) v.set(p, vfx::preset(i).values[static_cast<size_t>(p)]);
+}
+
+static int presetLlamado(const char *nombre) {
+    for (int i = 0; i < vfx::presetCount(); ++i)
+        if (std::string(vfx::preset(i).name) == nombre) return i;
+    return -1;
+}
+
+TEST(vozEnVivoCadena) {
+    // Ajustes: rango y paso; los presets prenden la voz.
+    CHECK(vfx::clampValue(vfx::kTuneSpeed, -5.0f) == 0.0f);
+    CHECK(vfx::clampValue(vfx::kTuneKey, 13.0f) == 11.0f);
+    CHECK(vfx::clampValue(vfx::kOn, 0.7f) == 1.0f);
+    CHECK(vfx::clampValue(vfx::kTuneAmount, 0.333f) == 0.33f);
+    CHECK(vfx::presetCount() >= 5);
+    for (int i = 0; i < vfx::presetCount(); ++i) CHECK(vfx::preset(i).values[vfx::kOn] == 1.0f);
+    CHECK(presetLlamado("Paraíso") == 0 && presetLlamado("Solo afinar") > 0 && presetLlamado("Sin efectos") > 0);
+
+    VoiceFx v(48000);
+    CHECK(!v.on());
+    float m[VoiceFx::kMeterCount];
+    // La escala de la canción: La menor; sin canción, todas las notas.
+    v.setSongKey(9, true);
+    v.meters(m);
+    CHECK(m[7] == 9.0f && m[8] == static_cast<float>(kScaleMinor) && m[9] == 1.0f);
+    v.setSongKey(-1, false);
+    v.meters(m);
+    CHECK(m[7] == -1.0f && m[8] == static_cast<float>(kScaleChromatic) && m[9] == 1.0f);
+    // Escala elegida a mano.
+    v.set(vfx::kTuneScale, vfx::kScaleMajorChoice);
+    v.set(vfx::kTuneKey, 7);
+    v.meters(m);
+    CHECK(m[7] == 7.0f && m[8] == static_cast<float>(kScaleMajor) && m[9] == 0.0f);
+    v.set(vfx::kTuneScale, vfx::kScaleSong);
+    v.setSongKey(9, true);
+
+    // "Solo afinar": La + 30 cents sale en La, igual en los dos lados.
+    const std::vector<float> x = vozSintetica(std::vector<double>(96000, 440.0 * std::exp2(30.0 / 1200.0)));
+    std::vector<float> l, r;
+    ponerPreset(v, presetLlamado("Solo afinar"));
+    v.restart();
+    porLaCadena(v, x, l, r);
+    CHECK(peorCents(tonosDe(l, 24000, l.size()), 440.0) < 5.0);
+    CHECK(l == r);
+    v.meters(m);
+    CHECK(m[2] == 69.0f && m[3] == 1.0f);
+    CHECK(m[6] >= 0.0f && m[6] < 8.0f);
+
+    // "Paraíso": estéreo (doblaje, eco de ida y vuelta), finito, con el compresor trabajando.
+    ponerPreset(v, presetLlamado("Paraíso"));
+    v.setTempo(100.0f);
+    v.restart();
+    porLaCadena(v, x, l, r);
+    bool finito = true;
+    double dif = 0.0;
+    for (size_t i = 0; i < l.size(); ++i) {
+        finito = finito && std::isfinite(l[i]) && std::isfinite(r[i]);
+        dif = std::max(dif, static_cast<double>(std::fabs(l[i] - r[i])));
+    }
+    CHECK(finito);
+    CHECK(dif > 1e-3);
+    v.meters(m);
+    CHECK(m[5] > 0.5f);
+    CHECK(m[4] >= 0.0f);
+
+    // El eco va a tiempo con la canción: 1/4 a 100 BPM = 600 ms después del golpe.
+    ponerPreset(v, presetLlamado("Sin efectos"));
+    v.set(vfx::kDelayOn, 1);
+    v.set(vfx::kDelayBeats, 0);
+    v.set(vfx::kDelayFeedback, 0);
+    v.set(vfx::kDelayMix, 1);
+    v.setTempo(100.0f);
+    v.restart();
+    std::vector<float> golpe(48000, 0.0f);
+    for (int i = 4800; i < 4808; ++i) golpe[static_cast<size_t>(i)] = 0.8f;
+    porLaCadena(v, golpe, l, r);
+    auto picoEn = [](const std::vector<float> &s, size_t a, size_t b) {
+        size_t k = a;
+        for (size_t i = a; i < b; ++i)
+            if (std::fabs(s[i]) > std::fabs(s[k])) k = i;
+        return static_cast<long>(k);
+    };
+    const long seco = picoEn(l, 0, 20000), eco = picoEn(l, 20000, 48000);
+    CHECK_NEAR(static_cast<double>(eco - seco), 28800.0, 4.0);
+    // Apagada, la entrada en vivo no la usa (no cambia nada aquí, pero dice que está apagada).
+    v.set(vfx::kOn, 0);
+    CHECK(!v.on());
+}
+
+TEST(entradaConVozEnVivo) {
+    // La voz en vivo encendida: lo que se escucha sale procesado (y por el master); el retraso
+    // del auto-tune es chico.
+    Mixer m(48000);
+    LiveInput in(48000, m);
+    m.setLiveInput(&in);
+    ponerPreset(in.voice(), presetLlamado("Solo afinar"));
+    in.voice().setSongKey(9, true);
+    in.setActive(true, 1);
+    in.setMonitor(true);
+    const std::vector<float> x = vozSintetica(std::vector<double>(96000, 440.0 * std::exp2(30.0 / 1200.0)));
+    std::vector<float> out(192 * 2), salida;
+    for (size_t k = 0; k + 192 <= x.size(); k += 192) {
+        in.push(x.data() + k, 192, 1);
+        m.process(out.data(), 192, 2);
+        for (int i = 0; i < 192; ++i) salida.push_back(out[static_cast<size_t>(2 * i)]);
+    }
+    CHECK(peorCents(tonosDe(salida, 24000, salida.size()), 440.0) < 5.0);
+    float met[VoiceFx::kMeterCount];
+    in.voice().meters(met);
+    CHECK(met[2] == 69.0f);
+    m.setLiveInput(nullptr);
+}
+
+TEST(estudioVozEnVivo) {
+    const std::string dir = nuevaCarpeta("voz-en-vivo");
+    Json ses;
+    {
+        Studio s;
+        s.open(dir, dir);
+        CHECK(s.waitIdle(30000));
+        s.clearProject();
+        CHECK(Studio::voiceFxInfo().size() == static_cast<size_t>(vfx::kCount) * 4);
+        std::string e;
+        const Json nombres = Json::parse(Studio::voicePresetsJson(), e);
+        CHECK(nombres.size() == static_cast<size_t>(vfx::presetCount()) && nombres[0].asString() == "Paraíso");
+        CHECK(s.voiceFxState()[vfx::kOn] == 0.0f);  // apagada al principio
+        int32_t v0[Studio::kVersionCount], v1[Studio::kVersionCount];
+        s.versions(v0);
+        s.setVoiceFx(vfx::kOn, 1);
+        s.versions(v1);
+        CHECK(v1[Studio::kVerInput] != v0[Studio::kVerInput]);
+        s.setVoiceFx(vfx::kTuneKey, 4);
+        s.setVoiceFx(vfx::kTuneScale, vfx::kScaleMajorChoice);
+        s.setVoiceFx(vfx::kLevel, -3);
+        s.setVoiceFx(vfx::kTuneSpeed, 999);  // fuera de rango
+        s.setVoiceFx(-1, 1);
+        s.setVoiceFx(vfx::kCount, 1);
+        std::vector<float> st = s.voiceFxState();
+        CHECK(st.size() == static_cast<size_t>(vfx::kCount));
+        CHECK(st[vfx::kOn] == 1.0f && st[vfx::kTuneKey] == 4.0f && st[vfx::kTuneSpeed] == 400.0f);
+        // Un preset no toca la escala, la tónica, el registro ni el volumen.
+        int trap = -1;
+        for (int i = 0; i < vfx::presetCount(); ++i)
+            if (std::string(vfx::preset(i).name) == "Trap (robot)") trap = i;
+        CHECK(trap >= 0 && s.applyVoicePreset(trap));
+        CHECK(!s.applyVoicePreset(99));
+        st = s.voiceFxState();
+        CHECK(st[vfx::kTuneSpeed] == 0.0f && st[vfx::kDelayOn] == 1.0f);
+        CHECK(st[vfx::kTuneKey] == 4.0f && st[vfx::kTuneScale] == vfx::kScaleMajorChoice && st[vfx::kLevel] == -3.0f);
+        float m[VoiceFx::kMeterCount];
+        s.voiceMeters(m);
+        CHECK(m[7] == 4.0f && m[8] == static_cast<float>(kScaleMajor) && m[9] == 0.0f);  // Mi mayor, a mano
+        CHECK(s.saveNow());
+        ses = leerSesion(dir);
+    }
+    CHECK(ses["entrada"]["voz"]["encendida"].asDouble() == 1.0);
+    CHECK(ses["entrada"]["voz"]["tonica"].asDouble() == 4.0);
+    // Al volver a abrir, todo como estaba (y el núcleo de audio lo usa).
+    Studio s2;
+    s2.open(dir, dir);
+    CHECK(s2.waitIdle(30000));
+    const std::vector<float> st = s2.voiceFxState();
+    CHECK(st[vfx::kOn] == 1.0f && st[vfx::kTuneSpeed] == 0.0f && st[vfx::kLevel] == -3.0f);
+    float m[VoiceFx::kMeterCount];
+    s2.voiceMeters(m);
+    CHECK(m[7] == 4.0f && m[8] == static_cast<float>(kScaleMajor));
+}
+
 int main(int argc, char **argv) {
     char tmpl[] = "/tmp/wavapp-pruebas-XXXXXX";
     gDir = mkdtemp(tmpl);

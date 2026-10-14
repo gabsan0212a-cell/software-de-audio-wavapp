@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <mutex>
 #include <thread>
+class AudioInput;
 class Mixer;
 class AudioOutput {
 public:
@@ -13,6 +14,8 @@ public:
     void stop();
     void info(int32_t out[6]);
     int latencyFrames() { return 960; }
+    void setInput(AudioInput *) {}
+    void setLiveMode(bool) {}
 private:
     Mixer &mMixer;
     std::thread mThread;

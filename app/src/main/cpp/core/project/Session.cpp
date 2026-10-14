@@ -131,6 +131,9 @@ Json sessionToJson(const ProjectModel &p) {
     in.set("gananciaDb", step(p.inputGainDb, 0.5));
     in.set("escuchaDb", step(p.monitorDb, 0.5));
     in.set("eq", eqToJson(p.input));
+    Json voz = Json::object();
+    for (int k = 0; k < vfx::kCount; ++k) voz.set(vfx::info(k).key, static_cast<double>(p.voice[static_cast<size_t>(k)]));
+    in.set("voz", std::move(voz));
     j.set("entrada", std::move(in));
     if (p.song.ready()) {
         const SongModel &c = p.song;
@@ -211,6 +214,9 @@ bool sessionFromJson(const Json &j, ProjectModel &p) {
     p.inputGainDb = static_cast<float>(in["gananciaDb"].asDouble(0));
     p.monitorDb = static_cast<float>(in["escuchaDb"].asDouble(0));
     eqFromJson(in["eq"], p.input);
+    const Json &voz = in["voz"];
+    for (int k = 0; k < vfx::kCount; ++k)
+        p.voice[static_cast<size_t>(k)] = vfx::clampValue(k, static_cast<float>(voz[vfx::info(k).key].asDouble(vfx::info(k).def)));
     const Json &cj = j["cancion"];
     if (cj.isObject() && cj["instrumental"].asInt(0) > 0) {
         SongModel &c = p.song;

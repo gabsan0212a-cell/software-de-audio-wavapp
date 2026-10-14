@@ -92,6 +92,14 @@ fun PestanaGrabar(abajo: Dp, audio: EstadoAudio, permiso: PermisoMicrofono) {
             item(key = "escuchaTitulo") { EncabezadoSeccion("Escucha") }
             item(key = "escucha") { TarjetaEscucha(audio.salida) }
             item(key = "escuchaPie") { PieGrupo(avisoEscucha(audio.salida)) }
+            item(key = "vozTitulo") { EncabezadoSeccion("Voz en vivo", detalle = "auto-tune y efectos") }
+            item(key = "voz") { TarjetaVozEnVivo(audio.salida) }
+            item(key = "vozPie") {
+                PieGrupo(
+                    "Para cantar sobre la pista: tu voz sale afinada y con efectos por la consola o los audífonos. " +
+                        "La grabación se guarda sin efecto.",
+                )
+            }
             item(key = "eqTitulo") { EncabezadoSeccion("Ecualizador en vivo") }
             item(key = "eq") { TarjetaEqEntrada() }
             item(key = "eqPie") {

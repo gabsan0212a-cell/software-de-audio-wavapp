@@ -47,3 +47,6 @@ internal fun recordarAudio(): EstadoAudio =
 
 @Composable
 internal fun recordarPermisoMicrofono(): PermisoMicrofono = PermisoMicrofono(true, false) {}
+
+@Composable
+internal fun recordarPermisoAvisos(): () -> Unit = {}

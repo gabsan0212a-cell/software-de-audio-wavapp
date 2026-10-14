@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -50,6 +51,23 @@ struct MasterModel {
     bool exportNormalize = false;  // al exportar, ajustar el volumen a ese objetivo
 };
 
+// La canción preparada para cantar en vivo: al quitarle la voz quedan el instrumental y la voz
+// original (guía), más lo que se sabe de la canción (dsp/SongAnalysis).
+struct SongModel {
+    int sourceId = 0;        // la pista de la que salió (queda en silencio)
+    int instrumentalId = 0;  // 0 = no hay canción preparada
+    int vocalId = 0;         // la voz original (empieza en silencio); 0 = se quitó
+    int key = -1;            // tónica 0..11 (0 = Do), -1 = no se sabe
+    bool minor = false;
+    float keyScore = 0.0f;   // qué tan clara es la tonalidad (0..1)
+    float bpm = 0.0f;
+    std::vector<float> beats;                 // segundos
+    std::vector<float> vocalStart, vocalEnd;  // segundos: dónde canta la voz original
+    std::vector<float> envelope;              // la voz original, 10 por segundo, 0..1
+    std::array<float, 12> notes{};            // cuánto usa la voz cada nota (0..1)
+    bool ready() const { return instrumentalId != 0; }
+};
+
 struct ProjectModel {
     int nextId = 1;
     MasterModel master;
@@ -58,4 +76,5 @@ struct ProjectModel {
     TrackModel input;
     float inputGainDb = 0.0f;   // -24 .. +24
     float monitorDb = 0.0f;     // volumen de la escucha: -60 (= -∞) .. +6
+    SongModel song;
 };

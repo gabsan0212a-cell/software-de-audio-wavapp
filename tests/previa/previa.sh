@@ -3,8 +3,8 @@
 # escritorio, corre la pantalla real con Compose de escritorio y guarda capturas en claro y
 # oscuro en tests/previa/capturas. Sirve para revisar el diseño sin esperar al emulador.
 # Uso: tests/previa/previa.sh [escena,escena...]   (inicio, reproduciendo, master, reproductor,
-#      eq, analisis, edicion, automatizacion, efectos, lufs, exportar, menus, tocar, grabar, vacio;
-#      por omisión todas)
+#      eq, analisis, edicion, automatizacion, efectos, lufs, exportar, menus, tocar, grabar, preparar,
+#      vacio; por omisión todas). Con WAVAPP_MODELO=ruta/voz-kim.wvm, "preparar" usa el modelo real.
 #      tests/previa/previa.sh --compilar   (solo revisa que compile contra Compose 1.7.3)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -18,7 +18,7 @@ mkdir -p build/nativo
 cp "$APP/android/jni_bridge.cpp" "$APP/android/MediaDecoder.h" build/nativo/
 cp nativo/AudioOutput.h nativo/AudioInput.h build/nativo/
 JAVA=${JAVA_HOME:-$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")}
-g++ -std=c++17 -O2 -fPIC -shared -w -I"$APP/core" -Ibuild/nativo -I"$JAVA/include" -I"$JAVA/include/linux" \
+g++ -std=c++17 -O2 -fPIC -shared -w -I"$APP/core" -isystem "$APP/third_party/eigen" -Ibuild/nativo -I"$JAVA/include" -I"$JAVA/include/linux" \
     $(find "$APP/core" -name '*.cpp') build/nativo/jni_bridge.cpp nativo/AudioOutput.cpp nativo/AudioInput.cpp nativo/MediaDecoder.cpp \
     -o build/nativo/libwavapp.so -lpthread
 rm -rf capturas

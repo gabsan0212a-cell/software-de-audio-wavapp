@@ -66,23 +66,40 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/modelos
+          key: modelo-voz-kim-60dc4e5f-apk
+      - name: Bajar el modelo de voz para el APK (release "modelos")
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p app/src/main/assets/modelos
+          cd app/src/main/assets/modelos
+          [ -s voz-kim.wvm ] || gh release download modelos -p voz-kim.wvm --clobber
+          echo '60dc4e5f461601e9f56c8f5faf6144f03e7e795d28286b10e47bad0ec1d3497a  voz-kim.wvm' | sha256sum -c
       - name: Compilar el APK optimizado (release con R8, solo ARM)
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease
           cp app/build/outputs/apk/release/app-release.apk wavapp.apk
           ls -l wavapp.apk
+          # El modelo va adentro y sin comprimir (el núcleo lo lee directo del APK).
+          unzip -v wavapp.apk assets/modelos/voz-kim.wvm | tee modelo-en-apk.txt
+          grep -q ' Stored ' modelo-en-apk.txt
       - id: version
         run: echo "version=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: wavapp-apk
           path: wavapp.apk
+          compression-level: 0  # casi todo es el modelo, que no se comprime
 
   emulador:
     name: Prueba en emulador
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -90,6 +107,19 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
+      - uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/modelos
+          key: modelo-voz-kim-60dc4e5f-apk
+      - name: Bajar el modelo de voz para el APK (release "modelos")
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p app/src/main/assets/modelos
+          cd app/src/main/assets/modelos
+          [ -s voz-kim.wvm ] || gh release download modelos -p voz-kim.wvm --clobber
+          echo '60dc4e5f461601e9f56c8f5faf6144f03e7e795d28286b10e47bad0ec1d3497a  voz-kim.wvm' | sha256sum -c
       - name: Habilitar KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -97,11 +127,17 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Pruebas instrumentadas
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ADB_INSTALL_TIMEOUT: 10  # minutos para instalar (el APK trae el modelo)
         with:
           api-level: 30
           arch: x86_64
           target: default
           profile: Nexus 6
+          # El modelo de voz: el APK pesa ~470 MB y separar un trozo pide memoria y procesador.
+          cores: 4
+          ram-size: 4096M
+          disk-size: 6000M
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -camera-front none
           script: bash tests/emulador.sh

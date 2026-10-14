@@ -318,6 +318,90 @@ class MotorTest {
         assertTrue(estado().getString("mensaje").startsWith("Mezcla recuperada"))
     }
 
+    /** El modelo mini de las pruebas nativas (pesos al azar: separa mal, pero rápido), en un archivo. */
+    private fun modeloMini(): File {
+        val f = File(ctx.cacheDir, "modelo-mini.wvm")
+        InstrumentationRegistry.getInstrumentation().context.assets.open("mini.wvm").use { i ->
+            f.outputStream().use { o -> i.copyTo(o) }
+        }
+        return f
+    }
+
+    @Test
+    fun quitaLaVozYAnalizaLaCancion() {
+        cargarPrueba()
+        val id = pistas().getJSONObject(1).getInt("id")  // "Voz"
+        assertFalse(Nucleo.setVoiceModel(File(archivos, "no-existe.wvm").path))
+        assertTrue(Nucleo.setVoiceModel(modeloMini().path))
+        assertTrue(Nucleo.hasVoiceModel())
+        val guardados = IntArray(2)
+        Nucleo.separationSaved(id, Nucleo.CALIDAD_ALTA, guardados)
+        // 12 s a 16 kHz (la frecuencia del mini) en trozos de 4096 que se enciman a la mitad.
+        assertEquals(0, guardados[0])
+        assertEquals(96, guardados[1])
+        assertTrue(Nucleo.separate(id, Nucleo.CALIDAD_ALTA))
+        assertFalse(Nucleo.separate(id, Nucleo.CALIDAD_ALTA))  // ya hay un trabajo
+        assertTrue(Nucleo.waitIdle(300_000))
+        val st = FloatArray(Nucleo.DATOS_SEPARAR)
+        Nucleo.separationState(st)
+        assertEquals(0f, st[0])
+        val msg = estado().getString("mensaje")
+        assertTrue(msg, msg.startsWith("Listo: Voz sin la voz"))
+        // Las pistas nuevas quedan debajo de la original.
+        val p = pistas()
+        assertEquals(6, p.length())
+        assertEquals("Voz · instrumental", p.getJSONObject(2).getString("nombre"))
+        assertEquals("Voz · voz original", p.getJSONObject(3).getString("nombre"))
+        assertEquals(12L * 48000, p.getJSONObject(2).getLong("cuadros"))
+        val inst = p.getJSONObject(2).getInt("id")
+        val voz = p.getJSONObject(3).getInt("id")
+        // Suena el instrumental; la original y la voz guía quedan en silencio.
+        val v = FloatArray(5)
+        assertTrue(Nucleo.trackParams(id, v))
+        assertEquals(1f, v[2])
+        assertTrue(Nucleo.trackParams(voz, v))
+        assertEquals(1f, v[2])
+        assertTrue(Nucleo.trackParams(inst, v))
+        assertEquals(0f, v[2])
+        val c = JSONObject(Nucleo.songJson())
+        assertTrue(c.toString(), c.getBoolean("lista"))
+        assertEquals(id, c.getInt("fuente"))
+        assertEquals(inst, c.getInt("instrumental"))
+        assertEquals(voz, c.getInt("voz"))
+        assertEquals(12, c.getJSONArray("notas").length())
+        assertEquals(80, Nucleo.songEnvelope(80).size)
+        Nucleo.separationSaved(id, Nucleo.CALIDAD_ALTA, guardados)
+        assertEquals(0, guardados[0])  // los trozos guardados ya se borraron
+        // Quitar el instrumental deshace la canción preparada.
+        assertTrue(Nucleo.removeTrack(inst))
+        assertFalse(JSONObject(Nucleo.songJson()).getBoolean("lista"))
+    }
+
+    @Test
+    fun modeloDelApkQuitaLaVoz() {
+        // El modelo de verdad viene dentro del APK sin comprimir: el núcleo lo lee directo de ahí.
+        ctx.assets.openFd("modelos/voz-kim.wvm").use { a ->
+            assertTrue(Nucleo.setVoiceModelFd(a.parcelFileDescriptor.fd, a.startOffset, a.length))
+        }
+        assertTrue(Nucleo.hasVoiceModel())
+        // 3 s: un solo trozo del modelo (el emulador es mucho más lento que un celular para esto).
+        val src = File(archivos, "corta.wav")
+        escribirWav(src, cuadros = 3 * 44100)
+        importar(src, "corta.wav")
+        val id = pistas().getJSONObject(0).getInt("id")
+        val guardados = IntArray(2)
+        Nucleo.separationSaved(id, Nucleo.CALIDAD_ALTA, guardados)
+        assertArrayEquals(intArrayOf(0, 1), guardados)
+        val t0 = SystemClock.elapsedRealtime()
+        assertTrue(Nucleo.separate(id, Nucleo.CALIDAD_ALTA))
+        assertTrue("no terminó a tiempo", Nucleo.waitIdle(20 * 60_000))
+        println("Modelo de voz en el emulador: ${(SystemClock.elapsedRealtime() - t0) / 1000.0} s para un trozo")
+        val msg = estado().getString("mensaje")
+        assertTrue(msg, msg.startsWith("Listo: corta sin la voz"))
+        assertEquals(3, pistas().length())
+        assertTrue(JSONObject(Nucleo.songJson()).getBoolean("lista"))
+    }
+
     /** Codifica un tono estéreo (L = -R) a AAC en M4A con el codificador del sistema. */
     private fun codificarAac(f: File, segundos: Int, frecuencia: Int) {
         val formato = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, frecuencia, 2).apply {

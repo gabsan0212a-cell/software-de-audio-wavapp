@@ -37,18 +37,21 @@ fun main(args: Array<String>) {
         val scene = ImageComposeScene(ANCHO, ALTO, Density(DENS), coroutineContext = Dispatchers.Main) {
             Tema(oscuro) { PantallaMesa() }
         }
+        // Cada cuadro es una imagen de ~10 MB fuera del montón de Java: se libera enseguida (si no,
+        // esperar unos minutos llena la memoria).
         fun cuadro() = scene.render(System.nanoTime())
+        fun dibujar() = cuadro().close()
         suspend fun esperar(ms: Long) {
             val fin = System.currentTimeMillis() + ms
             while (System.currentTimeMillis() < fin) {
-                cuadro()
+                dibujar()
                 delay(16)
             }
         }
         suspend fun hasta(ms: Long, que: String, cond: () -> Boolean) {
             val fin = System.currentTimeMillis() + ms
             while (System.currentTimeMillis() < fin && !cond()) {
-                cuadro()
+                dibujar()
                 delay(16)
             }
             if (!cond()) println("AVISO: no se cumplió: $que")
@@ -61,6 +64,7 @@ fun main(args: Array<String>) {
                 val img = cuadro()
                 val f = File(salida, (if (m) "oscuro-" else "claro-") + nombre + ".png")
                 f.writeBytes(img.encodeToData(EncodedImageFormat.PNG)!!.bytes)
+                img.close()
                 println("captura ${f.name}")
             }
             oscuro = false
@@ -76,7 +80,7 @@ fun main(args: Array<String>) {
             for (k in 1..12) {
                 val f = k / 12f
                 scene.sendPointerEvent(PointerEventType.Move, Offset((x0 + (x1 - x0) * f) * DENS, (y0 + (y1 - y0) * f) * DENS))
-                cuadro()
+                dibujar()
                 delay(16)
             }
             scene.sendPointerEvent(PointerEventType.Release, Offset(x1 * DENS, y1 * DENS))
@@ -193,7 +197,7 @@ fun main(args: Array<String>) {
             while (System.currentTimeMillis() < fin) {
                 val x = 1f - (fin - System.currentTimeMillis()) / 1500f
                 Mesa.ponerVolumen(p1, -18f * x)
-                if (++k % 8 == 0) cuadro() else Mesa.sincronizar()
+                if (++k % 8 == 0) dibujar() else Mesa.sincronizar()
                 delay(16)
             }
             foto("22-grabando-movimientos", ambos = false)
@@ -333,6 +337,28 @@ fun main(args: Array<String>) {
             Vista.pestana = Vista.MEZCLA
             esperar(500)
             foto("19-con-grabacion", ambos = false)
+        }
+        if (quiere("preparar")) {
+            // El modelo real si está a mano (WAVAPP_MODELO): tarda lo suficiente para ver el avance.
+            // Si no, el mini de las pruebas (termina enseguida).
+            val modelo = System.getenv("WAVAPP_MODELO") ?: "../native/datos/mini.wvm"
+            println("modelo: $modelo -> ${Nucleo.setVoiceModel(modelo)}")
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            Mesa.sincronizar()
+            val voz = Mesa.pistas[1]
+            Vista.preparar = voz
+            esperar(800)
+            foto("33-preparar")
+            Mesa.prepararCancion(voz, Nucleo.CALIDAD_ALTA)
+            hasta(120_000, "un trozo hecho") { Mesa.separacion.hechos >= 2 || !Mesa.separacion.activa }
+            if (Mesa.separacion.activa) foto("34-preparando")
+            hasta(600_000, "canción preparada") { !Mesa.separacion.activa && !Mesa.ocupada }
+            Mesa.sincronizar()
+            esperar(800)
+            foto("35-preparada")
+            Vista.preparar = null
+            esperar(500)
+            foto("36-mezcla-preparada", ambos = false)
         }
         if (quiere("vacio")) {
             if (Mesa.reproduciendo) Mesa.reproducirPausar()

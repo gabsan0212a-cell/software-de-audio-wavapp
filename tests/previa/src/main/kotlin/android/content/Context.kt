@@ -1,5 +1,6 @@
 package android.content
 
+import android.content.res.AssetManager
 import android.database.Cursor
 import android.net.Uri
 import android.os.ParcelFileDescriptor
@@ -11,6 +12,7 @@ open class Context(private val dir: File) {
     open val filesDir: File get() = File(dir, "files").apply { mkdirs() }
     open val cacheDir: File get() = File(dir, "cache").apply { mkdirs() }
     open val contentResolver: ContentResolver = ContentResolver()
+    open val assets: AssetManager = AssetManager()
 }
 
 class ContentResolver {

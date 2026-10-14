@@ -98,6 +98,12 @@ private fun Resumen() {
                 estilo = Tipo.subtitulo,
             )
         }
+        // Quitando la voz (largo): de aquí se vuelve a la hoja para ver cómo va.
+        val sep = Mesa.separacion
+        val preparando = Mesa.pistas.firstOrNull { it.id == sep.pista }
+        if (sep.activa && preparando != null) {
+            BotonTexto("Ver cómo va", { Vista.preparar = preparando }, Modifier.padding(top = 2.dp), estilo = Tipo.subtitulo)
+        }
     }
 }
 

@@ -351,6 +351,42 @@ class PantallaTest {
         regla.runOnUiThread { Mesa.quitar(Mesa.pistas.last()) }
         regla.waitUntil(2_000) { Mesa.pistas.size == 4 }
 
+        // Preparar para cantar: le quita la voz a una pista y muestra lo que se sabe de la canción.
+        // Con el modelo mini de las pruebas (pesos al azar, pero rápido); el de verdad lo prueba MotorTest.
+        val mini = File(regla.activity.cacheDir, "modelo-mini.wvm")
+        InstrumentationRegistry.getInstrumentation().context.assets.open("mini.wvm").use { i ->
+            mini.outputStream().use { o -> i.copyTo(o) }
+        }
+        assertTrue(Nucleo.setVoiceModel(mini.path))
+        regla.runOnUiThread { Mesa.sincronizar() }
+        val voz = Mesa.pistas[1]
+        regla.onNodeWithTag("listaMezcla").performScrollToIndex(0)
+        regla.onNodeWithContentDescription("Opciones pista ${voz.id}").performClick()
+        regla.onNodeWithText("Preparar para cantar…").performClick()
+        regla.waitUntil(2_000) { Vista.preparar == voz && Mesa.modeloVoz }
+        regla.waitForIdle()
+        captura("25-preparar")
+        regla.onNodeWithText("Quitar la voz").performSemanticsAction(SemanticsActions.OnClick)
+        avanzarHasta(180_000, { "no terminó de quitar la voz: ${Mesa.estado} (fase ${Mesa.separacion.fase})" }) {
+            Mesa.cancion.lista && !Mesa.separacion.activa && !Mesa.ocupada
+        }
+        assertEquals(6, Mesa.pistas.size)
+        assertEquals(voz.id, Mesa.cancion.fuente)
+        regla.onNodeWithText("Lista para cantar").assertIsDisplayed()
+        avanzarMedidores()
+        captura("26-preparada")
+        regla.onNodeWithText("Listo").performClick()
+        regla.waitUntil(2_000) { Vista.preparar == null }
+        avanzarMedidores()
+        captura("27-mezcla-preparada")
+        // Se deja como estaba: la vuelta en modo oscuro empieza con las 4 pistas de prueba.
+        regla.runOnUiThread {
+            val c = Mesa.cancion
+            Mesa.pistas.filter { it.id == c.instrumental || it.id == c.voz }.forEach { Mesa.quitar(it) }
+            if (voz.mute) Mesa.alternarMute(voz)
+        }
+        regla.waitUntil(2_000) { Mesa.pistas.size == 4 && !voz.mute && !Mesa.cancion.lista }
+
         if (Mesa.reproduciendo) regla.onNodeWithContentDescription("Pausar").performClick()
         regla.waitUntil(5_000) { !Mesa.reproduciendo }
         regla.onNodeWithContentDescription("Detener").performClick()

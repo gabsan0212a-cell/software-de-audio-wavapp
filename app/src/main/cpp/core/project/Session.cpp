@@ -132,6 +132,28 @@ Json sessionToJson(const ProjectModel &p) {
     in.set("escuchaDb", step(p.monitorDb, 0.5));
     in.set("eq", eqToJson(p.input));
     j.set("entrada", std::move(in));
+    if (p.song.ready()) {
+        const SongModel &c = p.song;
+        Json cj = Json::object();
+        cj.set("fuente", c.sourceId);
+        cj.set("instrumental", c.instrumentalId);
+        cj.set("voz", c.vocalId);
+        cj.set("tonica", c.key);
+        cj.set("menor", c.minor);
+        cj.set("claridad", step(c.keyScore, 0.01f));
+        cj.set("bpm", step(c.bpm, 0.01f));
+        auto lista = [](const std::vector<float> &v, float paso) {
+            Json a = Json::array();
+            for (float x : v) a.push(step(x, paso));
+            return a;
+        };
+        cj.set("pulsos", lista(c.beats, 0.001f));
+        cj.set("inicios", lista(c.vocalStart, 0.01f));
+        cj.set("finales", lista(c.vocalEnd, 0.01f));
+        cj.set("envolvente", lista(c.envelope, 0.01f));
+        cj.set("notas", lista(std::vector<float>(c.notes.begin(), c.notes.end()), 0.001f));
+        j.set("cancion", std::move(cj));
+    }
     return j;
 }
 
@@ -189,5 +211,27 @@ bool sessionFromJson(const Json &j, ProjectModel &p) {
     p.inputGainDb = static_cast<float>(in["gananciaDb"].asDouble(0));
     p.monitorDb = static_cast<float>(in["escuchaDb"].asDouble(0));
     eqFromJson(in["eq"], p.input);
+    const Json &cj = j["cancion"];
+    if (cj.isObject() && cj["instrumental"].asInt(0) > 0) {
+        SongModel &c = p.song;
+        c.sourceId = static_cast<int>(cj["fuente"].asInt(0));
+        c.instrumentalId = static_cast<int>(cj["instrumental"].asInt(0));
+        c.vocalId = static_cast<int>(cj["voz"].asInt(0));
+        const int key = static_cast<int>(cj["tonica"].asInt(-1));
+        c.key = key >= 0 && key < 12 ? key : -1;
+        c.minor = cj["menor"].asBool(false);
+        c.keyScore = static_cast<float>(cj["claridad"].asDouble(0));
+        c.bpm = std::max(0.0f, static_cast<float>(cj["bpm"].asDouble(0)));
+        auto lista = [](const Json &a, std::vector<float> &v) {
+            for (size_t k = 0; k < a.size(); ++k) v.push_back(static_cast<float>(a[k].asDouble(0)));
+        };
+        lista(cj["pulsos"], c.beats);
+        lista(cj["inicios"], c.vocalStart);
+        lista(cj["finales"], c.vocalEnd);
+        if (c.vocalEnd.size() != c.vocalStart.size()) c.vocalStart.clear(), c.vocalEnd.clear();
+        lista(cj["envolvente"], c.envelope);
+        const Json &notas = cj["notas"];
+        for (size_t k = 0; k < 12 && k < notas.size(); ++k) c.notes[k] = static_cast<float>(notas[k].asDouble(0));
+    }
     return true;
 }

@@ -3,6 +3,13 @@
     <!-- Grabar y escucharse en vivo (micrófono del celular, de los audífonos o interfaz USB). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- Quitar la voz de una canción tarda: la app sigue trabajando con un aviso, aunque se apague
+         la pantalla (servicio en primer plano y procesador despierto). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <application
         android:label="WavApp"
         android:theme="@android:style/Theme.Material.NoActionBar">
@@ -16,5 +23,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".TrabajoLargo"
+            android:exported="false"
+            android:foregroundServiceType="dataSync|mediaProcessing" />
     </application>
 </manifest>

@@ -12,9 +12,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -28,8 +30,10 @@
 #include "dsp/Equalizer.h"
 #include "dsp/Limiter.h"
 #include "dsp/Loudness.h"
+#include "dsp/Pitch.h"
 #include "dsp/Resampler.h"
 #include "dsp/Reverb.h"
+#include "dsp/SongAnalysis.h"
 #include "engine/Automation.h"
 #include "engine/Effects.h"
 #include "engine/Exporter.h"
@@ -3466,6 +3470,300 @@ TEST(separadorSigueDondeQuedo) {
         },
         [&](const float *, const float *, int) { return false; }, opt);
     CHECK(!err.empty() && err != "Cancelado");
+}
+
+
+// ---------------------------------------------------------------- tono y análisis de la canción
+TEST(tonoYin) {
+    PitchDetector d(48000, 2048, 70.0f, 1000.0f);
+    std::vector<float> x(static_cast<size_t>(d.needed()));
+    auto llenar = [&](const std::function<float(int)> &g) {
+        for (int i = 0; i < d.needed(); ++i) x[static_cast<size_t>(i)] = g(i);
+        return d.detect(x.data());
+    };
+    PitchDetector::Result r = llenar([](int i) { return 0.5f * std::sin(2.0f * float(M_PI) * 220.0f * i / 48000.0f); });
+    CHECK_NEAR(r.hz, 220.0, 0.3);
+    CHECK(r.clarity > 0.95f);
+    // Diente de sierra (muchos armónicos): la fundamental, no una octava arriba ni abajo.
+    r = llenar([](int i) {
+        const double ph = 110.0 * i / 48000.0;
+        return static_cast<float>(0.6 * (2.0 * (ph - std::floor(ph)) - 1.0));
+    });
+    CHECK_NEAR(r.hz, 110.0, 0.6);
+    // Voz grave (Mi2, 82 Hz) con el segundo armónico más fuerte que la fundamental.
+    r = llenar([](int i) {
+        const double t = i / 48000.0;
+        return static_cast<float>(0.15 * std::sin(2 * M_PI * 82.4 * t) + 0.4 * std::sin(2 * M_PI * 164.8 * t) +
+                                  0.2 * std::sin(2 * M_PI * 247.2 * t) + 0.1 * std::sin(2 * M_PI * 329.6 * t));
+    });
+    CHECK_NEAR(r.hz, 82.4, 0.6);
+    // Ruido y silencio: sin tono.
+    uint32_t semilla = 1;
+    r = llenar([&](int) {
+        semilla = semilla * 1664525u + 1013904223u;
+        return static_cast<float>(semilla >> 8) / 16777216.0f - 0.5f;
+    });
+    CHECK(r.hz == 0.0f);
+    r = llenar([](int) { return 0.0f; });
+    CHECK(r.hz == 0.0f);
+    CHECK_NEAR(hzToMidi(440.0f), 69.0, 1e-5);
+    CHECK_NEAR(midiToHz(57.0f), 220.0, 1e-3);
+}
+
+TEST(tonalidadPerfiles) {
+    const float mayor[12] = {6.35f, 2.23f, 3.48f, 2.33f, 4.38f, 4.09f, 2.52f, 5.19f, 2.39f, 3.66f, 2.29f, 2.88f};
+    const float menor[12] = {6.33f, 2.68f, 3.52f, 5.38f, 2.60f, 3.53f, 2.54f, 4.75f, 3.98f, 2.69f, 3.34f, 3.17f};
+    std::array<float, 12> perfil{};
+    for (int p = 0; p < 12; ++p) perfil[static_cast<size_t>(p)] = mayor[((p - 7) % 12 + 12) % 12];  // Sol mayor
+    int key = -1;
+    bool minor = true;
+    float score = 0;
+    song::keyFromProfile(perfil, key, minor, score);
+    CHECK(key == 7 && !minor && score > 0.99f);
+    for (int p = 0; p < 12; ++p) perfil[static_cast<size_t>(p)] = menor[((p - 6) % 12 + 12) % 12];  // Fa# menor
+    song::keyFromProfile(perfil, key, minor, score);
+    CHECK(key == 6 && minor);
+    perfil.fill(0.0f);
+    song::keyFromProfile(perfil, key, minor, score);
+    CHECK(key == -1);
+    CHECK((song::scaleNotes(9, true) == std::array<int, 7>{9, 11, 0, 2, 4, 5, 7}));
+    CHECK((song::scaleNotes(0, false) == std::array<int, 7>{0, 2, 4, 5, 7, 9, 11}));
+}
+
+// Una canción de prueba en La menor a 100 BPM: acordes, bajo, bombo en cada pulso y platillo en
+// corcheas; la "voz" canta notas de la escala de 2 a 6 s y de 8 a 12 s.
+static void cancionDePrueba(std::unique_ptr<MappedAudio> &inst, std::unique_ptr<MappedAudio> &voz, int segundos = 20) {
+    const int sr = 48000;
+    const int64_t n = static_cast<int64_t>(segundos) * sr;
+    const int acordes[4][3] = {{57, 60, 64}, {62, 65, 69}, {52, 56, 59}, {57, 60, 64}};
+    const int bajos[4] = {45, 50, 40, 45};
+    const double pulso = 0.6;
+    std::vector<float> l(static_cast<size_t>(n)), r(static_cast<size_t>(n));
+    uint32_t semilla = 7;
+    for (int64_t i = 0; i < n; ++i) {
+        const double t = static_cast<double>(i) / sr;
+        const int a = static_cast<int>(t / (4 * pulso)) % 4;
+        double v = 0;
+        for (int k = 0; k < 3; ++k) {
+            const double f = 440.0 * std::pow(2.0, (acordes[a][k] - 69) / 12.0);
+            for (int h = 1; h <= 4; ++h) v += 0.08 / h * std::sin(2 * M_PI * f * h * t);
+        }
+        v += 0.2 * std::sin(2 * M_PI * 440.0 * std::pow(2.0, (bajos[a] - 69) / 12.0) * t);
+        const double tb = std::fmod(t, pulso);
+        v += 0.6 * std::sin(2 * M_PI * (50 + 100 * std::exp(-tb * 30)) * tb) * std::exp(-tb * 25);
+        const double tc = std::fmod(t, pulso / 2);
+        semilla = semilla * 1664525u + 1013904223u;
+        const double ruido = static_cast<double>(semilla >> 8) / 16777216.0 - 0.5;
+        l[static_cast<size_t>(i)] = static_cast<float>(v + 0.15 * ruido * std::exp(-tc * 80));
+        r[static_cast<size_t>(i)] = static_cast<float>(v + 0.1 * ruido * std::exp(-tc * 80));
+    }
+    inst = genTrack("inst.wav", 2, n, [&](int64_t f, int c) { return c ? r[static_cast<size_t>(f)] : l[static_cast<size_t>(f)]; });
+    const int notas[8] = {69, 72, 76, 74, 71, 68, 69, 76};
+    voz = genTrack("voz.wav", 1, n, [&](int64_t f, int) {
+        const double t = static_cast<double>(f) / sr;
+        if (!((t >= 2 && t < 6) || (t >= 8 && t < 12))) return 0.0f;
+        const int k = static_cast<int>(t / 0.5) % 8;
+        const double hz = 440.0 * std::pow(2.0, (notas[k] - 69) / 12.0);
+        double s = 0;  // con un poco de vibrato (modulando la fase)
+        for (int h = 1; h <= 6; ++h) s += 0.3 / h * std::sin(2 * M_PI * hz * h * t + h * 0.3 * std::sin(2 * M_PI * 5.5 * t));
+        const double dentro = std::fmod(t, 0.5);
+        return static_cast<float>(s * std::min(1.0, dentro / 0.03) * std::min(1.0, (0.5 - dentro) / 0.03));
+    });
+}
+
+TEST(analisisCancion) {
+    std::unique_ptr<MappedAudio> inst, voz;
+    cancionDePrueba(inst, voz);
+    CHECK(inst && voz);
+    if (!inst || !voz) return;
+    SongInfo info;
+    float ultimo = -1.0f;
+    bool subio = true;
+    CHECK(analyzeSong(inst.get(), voz.get(), info, nullptr, [&](float p) {
+        if (p < ultimo - 1e-6f) subio = false;
+        ultimo = p;
+    }));
+    CHECK(subio && ultimo == 1.0f);
+    std::printf("  tonalidad %d %s (%.2f), %.1f BPM, %zu pulsos, %zu partes con voz\n", info.key,
+                info.minor ? "menor" : "mayor", info.keyScore, info.bpm, info.beats.size(), info.vocalStart.size());
+    CHECK(info.key == 9 && info.minor);  // La menor
+    CHECK_NEAR(info.bpm, 100.0, 2.0);
+    // Pulsos cada 0.6 s, sobre los golpes del bombo.
+    CHECK(info.beats.size() >= 25);
+    int fuera = 0;
+    for (size_t i = 0; i < info.beats.size(); ++i) {
+        const double resto = std::fmod(info.beats[i] + 0.3, 0.6) - 0.3;
+        if (std::fabs(resto) > 0.04) ++fuera;
+        if (i > 0 && std::fabs(info.beats[i] - info.beats[i - 1] - 0.6) > 0.05) ++fuera;
+    }
+    CHECK(fuera <= 2);
+    // La voz: dos partes, 2–6 s y 8–12 s.
+    CHECK(info.vocalStart.size() == 2);
+    if (info.vocalStart.size() == 2) {
+        CHECK_NEAR(info.vocalStart[0], 2.0, 0.2);
+        CHECK_NEAR(info.vocalEnd[0], 6.0, 0.2);
+        CHECK_NEAR(info.vocalStart[1], 8.0, 0.2);
+        CHECK_NEAR(info.vocalEnd[1], 12.0, 0.2);
+    }
+    CHECK(info.envelope.size() == 200);
+    CHECK(info.envelope[40] > 0.5f && info.envelope[70] < 0.05f);
+    // Las notas de la voz: La es la más usada; Fa# (fuera de la escala) casi nada.
+    CHECK(info.notes[9] == 1.0f && info.notes[6] < 0.05f);
+    // Cancelar a la mitad.
+    std::atomic<bool> cancel{false};
+    SongInfo otra;
+    CHECK(!analyzeSong(inst.get(), voz.get(), otra, &cancel, [&](float p) {
+        if (p > 0.2f) cancel.store(true);
+    }));
+    // Sin voz o sin instrumental también funciona.
+    SongInfo solo;
+    CHECK(analyzeSong(inst.get(), nullptr, solo));
+    CHECK(solo.vocalStart.empty() && solo.bpm > 90 && solo.key >= 0);
+    CHECK(analyzeSong(nullptr, voz.get(), solo));
+    CHECK(solo.bpm == 0.0f && solo.vocalStart.size() == 2 && solo.key == 9);
+}
+
+
+// ---------------------------------------------------------------- preparar la canción en el Studio
+static Json leerSesion(const std::string &dir) {
+    std::ifstream in(dir + "/sesion.json", std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    std::string e;
+    return Json::parse(ss.str(), e);
+}
+
+TEST(estudioSepararVoz) {
+    const std::string dir = nuevaCarpeta("separar");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.clearProject();
+    // Una canción de 20 s en estéreo (con el modelo mini se separa rápido, aunque al azar).
+    const std::string wav = tmpPath("larga.wav");
+    {
+        WavSpec spec;
+        spec.format = 3;
+        spec.bits = 32;
+        makeWav(wav, spec, 48000 * 20, [](int64_t f, int c) {
+            const double t = f / 48000.0;
+            return 0.3 * std::sin(2 * M_PI * (c ? 330.0 : 220.0) * t) + 0.2 * std::sin(2 * M_PI * 3.1 * t) * std::sin(2 * M_PI * 880.0 * t);
+        });
+    }
+    CHECK(s.importFiles({abrir(wav)}, {"Paraíso.wav"}) && s.waitIdle(60000));
+    CHECK(s.trackCount() == 1);
+    const int id = idDe(s, 0);
+
+    // Sin modelo no se puede.
+    CHECK(!s.hasVoiceModel());
+    CHECK(!s.separate(id, Studio::kSepHigh));
+    CHECK(estado(s)["mensaje"].asString().find("modelo") != std::string::npos);
+    CHECK(!s.setVoiceModel(tmpPath("no-existe.wvm")) && !s.hasVoiceModel());
+    CHECK(s.setVoiceModel(datos("mini.wvm")) && s.hasVoiceModel());
+    int32_t guardados[2];
+    s.separationSaved(id, Studio::kSepHigh, guardados);
+    CHECK(guardados[0] == 0 && guardados[1] > 100);  // 20 s a 16 kHz en trozos de 4096 con traslape 2
+    const int total = guardados[1];
+    CHECK(!s.separate(999, Studio::kSepHigh));
+
+    // Se cancela a la mitad: lo calculado queda guardado.
+    CHECK(s.separate(id, Studio::kSepHigh));
+    CHECK(!s.separate(id, Studio::kSepHigh));  // ya hay un trabajo
+    float st[Studio::kSepStateCount];
+    const auto t0 = std::chrono::steady_clock::now();
+    do {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        s.separationState(st);
+    } while (st[2] < 5 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(60));
+    CHECK(st[0] == 2.0f && st[3] == static_cast<float>(total) && st[5] == static_cast<float>(id));
+    CHECK(st[1] > 0.0f && st[1] < 1.0f);
+    s.cancelJob();
+    CHECK(s.waitIdle(60000));
+    s.separationState(st);
+    CHECK(st[0] == 0.0f);
+    CHECK(s.trackCount() == 1);
+    CHECK(estado(s)["mensaje"].asString().find("Cancelado") != std::string::npos);
+    s.separationSaved(id, Studio::kSepHigh, guardados);
+    CHECK(guardados[0] >= 5 && guardados[0] < total && guardados[1] == total);
+    int32_t otra[2];
+    s.separationSaved(id, Studio::kSepMax, otra);  // otra calidad: nada guardado, el doble de trozos
+    CHECK(otra[0] == 0 && otra[1] > total + total / 2);
+
+    // Ahora completa (sigue donde quedó).
+    CHECK(s.separate(id, Studio::kSepHigh));
+    CHECK(s.waitIdle(300000));
+    s.separationState(st);
+    CHECK(st[0] == 0.0f);
+    std::printf("  %s\n", estado(s)["mensaje"].asString().c_str());
+    Json ps = pistas(s);
+    CHECK(ps.size() == 3);
+    CHECK(ps[1]["nombre"].asString() == "Paraíso · instrumental" && ps[2]["nombre"].asString() == "Paraíso · voz original");
+    const int instId = static_cast<int>(ps[1]["id"].asInt()), vozId = static_cast<int>(ps[2]["id"].asInt());
+    float par[Studio::kTrackParamCount];
+    CHECK(s.trackParams(id, par) && par[2] == 1.0f);       // la original, en silencio
+    CHECK(s.trackParams(vozId, par) && par[2] == 1.0f);    // la voz guía, en silencio
+    CHECK(s.trackParams(instId, par) && par[2] == 0.0f);   // el instrumental suena
+    CHECK(ps[1]["canales"].asInt() == 2 && ps[1]["cuadros"].asInt() == 48000 * 20);
+    s.separationSaved(id, Studio::kSepHigh, guardados);
+    CHECK(guardados[0] == 0);  // los trozos guardados ya se borraron
+
+    // Instrumental + voz = la original (el instrumental es lo que queda sin la voz).
+    CHECK(s.saveNow());
+    Json ses = leerSesion(dir);
+    std::string fOrig, fInst, fVoz;
+    for (size_t i = 0; i < ses["pistas"].size(); ++i) {
+        const Json &t = ses["pistas"][i];
+        const int tid = static_cast<int>(t["id"].asInt());
+        if (tid == id) fOrig = t["archivo"].asString();
+        if (tid == instId) fInst = t["archivo"].asString();
+        if (tid == vozId) fVoz = t["archivo"].asString();
+    }
+    std::string e;
+    auto ao = MappedAudio::open(dir + "/audio/" + fOrig, e), ai = MappedAudio::open(dir + "/audio/" + fInst, e),
+         av = MappedAudio::open(dir + "/audio/" + fVoz, e);
+    CHECK(ao && ai && av);
+    if (ao && ai && av) {
+        CHECK(ai->frames() == ao->frames() && av->frames() == ao->frames() && av->channels() == 2);
+        double peor = 0, voz = 0;
+        for (int64_t k = 0; k < ao->frames() * 2; ++k) {
+            peor = std::max(peor, std::fabs(static_cast<double>(ai->data()[k]) + av->data()[k] - ao->data()[k]));
+            voz = std::max(voz, std::fabs(static_cast<double>(av->data()[k])));
+        }
+        CHECK(peor < 1e-5);
+        CHECK(voz > 1e-4 && std::isfinite(voz));
+    }
+
+    // La canción preparada (y su análisis) queda en la sesión.
+    std::string je;
+    Json c = Json::parse(s.songJson(), je);
+    CHECK(c["lista"].asBool() && c["fuente"].asInt() == id && c["instrumental"].asInt() == instId &&
+          c["voz"].asInt() == vozId);
+    CHECK(c["notas"].size() == 12);
+    CHECK(s.songEnvelope(50).size() == 50);
+    {
+        Studio s2;
+        s2.open(dir, dir);
+        CHECK(s2.waitIdle(30000));
+        Json c2 = Json::parse(s2.songJson(), je);
+        CHECK(c2["lista"].asBool() && c2["instrumental"].asInt() == instId && c2["voz"].asInt() == vozId);
+        CHECK(c2["tonica"].asInt() == c["tonica"].asInt() && std::fabs(c2["bpm"].asDouble() - c["bpm"].asDouble()) < 0.02);
+        CHECK(c2["partes"].size() == c["partes"].size());
+    }
+    // Quitar la voz guía no deshace la canción; quitar el instrumental, sí.
+    CHECK(s.removeTrack(vozId));
+    c = Json::parse(s.songJson(), je);
+    CHECK(c["lista"].asBool() && c["voz"].asInt() == 0);
+    CHECK(s.removeTrack(instId));
+    c = Json::parse(s.songJson(), je);
+    CHECK(!c["lista"].asBool());
+
+    // Sin lugar para dos pistas más, no empieza.
+    s.clearProject();
+    CHECK(s.loadDemo() && s.waitIdle(30000));
+    for (int k = 0; k < 2; ++k) CHECK(s.loadDemo() && s.waitIdle(30000));
+    CHECK(s.trackCount() == 12);
+    CHECK(!s.separate(idDe(s, 0), Studio::kSepHigh));
+    CHECK(estado(s)["mensaje"].asString().find("lugares") != std::string::npos);
 }
 
 // ---------------------------------------------------------------- main

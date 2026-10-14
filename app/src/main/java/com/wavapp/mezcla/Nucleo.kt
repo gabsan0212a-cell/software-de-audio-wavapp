@@ -38,6 +38,9 @@ object Nucleo {
     /** Cuántos ajustes tienen los efectos de una pista (ver los FX_ de abajo). */
     val FX_PARAMS = c[19]
     private val MED_COMPRESOR = c[20]
+    /** Versión de la canción preparada para cantar (y de cómo va la separación). */
+    val VER_CANCION = c[21]
+    val DATOS_SEPARAR = c[22]
     /** "Sin dato" en los valores de LUFS. */
     const val SIN_DATO = -200f
 
@@ -74,6 +77,10 @@ object Nucleo {
     const val AUTO_APAGADA = 0
     const val AUTO_LEER = 1
     const val AUTO_GRABAR = 2
+
+    // Calidad al quitar la voz (igual a Studio::SepQuality): alta, o máxima (el doble de tiempo).
+    const val CALIDAD_ALTA = 0
+    const val CALIDAD_MAXIMA = 1
 
     // Ajustes de los efectos de una pista (iguales a fx::Param del núcleo).
     const val FX_COMP = 0
@@ -274,4 +281,26 @@ object Nucleo {
     /** ["Voz", "Voz con eco", ...] */
     external fun fxPresetsJson(): String
     external fun applyFxPreset(id: Int, index: Int): Boolean
+
+    // ---------- Preparar una canción para cantar en vivo (quitarle la voz con IA)
+    /** El modelo de voz en un archivo. false si no es válido. */
+    external fun setVoiceModel(path: String): Boolean
+    /** El modelo dentro del APK (asset sin comprimir): [length] bytes desde [offset]. */
+    external fun setVoiceModelFd(fd: Int, offset: Long, length: Long): Boolean
+    external fun hasVoiceModel(): Boolean
+    /**
+     * Quita la voz de la pista en segundo plano (puede tardar bastante) y deja el instrumental y la
+     * voz original como pistas nuevas; después analiza la canción. false si no se puede empezar.
+     */
+    external fun separate(id: Int, quality: Int): Boolean
+    /** [trozos ya guardados de una separación interrumpida, trozos en total]. */
+    external fun separationSaved(id: Int, quality: Int, out: IntArray)
+    /** Cancela el trabajo en curso (separar o exportar). */
+    external fun cancelJob()
+    /** [fase (0 nada, 1 preparando, 2 quitando la voz, 3 armando, 4 analizando), progreso, trozos hechos, trozos, segundos que faltan, pista]. */
+    external fun separationState(out: FloatArray)
+    /** {"lista","fuente","instrumental","voz","tonica","menor","claridad","bpm","pulsos","primerPulso","escala","notas","partes"} */
+    external fun songJson(): String
+    /** La voz original a lo largo de la canción, en [cols] columnas de 0 a 1. */
+    external fun songEnvelope(cols: Int): FloatArray
 }

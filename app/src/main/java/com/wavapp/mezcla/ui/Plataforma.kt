@@ -26,8 +26,8 @@ import androidx.compose.ui.platform.LocalView
 import com.wavapp.mezcla.Mesa
 
 // Lo que obliga Android (y nada más): botón "atrás", pantalla encendida, selector de archivos,
-// color de los íconos de la barra de estado, imágenes desde píxeles, permiso del micrófono y
-// qué entradas y salidas de audio hay conectadas.
+// color de los íconos de la barra de estado, imágenes desde píxeles, permisos (micrófono y
+// avisos) y qué entradas y salidas de audio hay conectadas.
 
 @Composable
 internal fun AlRegresar(activo: Boolean, accion: () -> Unit) = BackHandler(activo, accion)
@@ -97,6 +97,23 @@ internal fun recordarPermisoMicrofono(): PermisoMicrofono {
     // Se revisa cada vez (por si se dio en Ajustes y se volvió a la app).
     val concedido = context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     return PermisoMicrofono(concedido, respuesta == false && !concedido) { pedir.launch(Manifest.permission.RECORD_AUDIO) }
+}
+
+/**
+ * Android 13+: pide permiso para mostrar avisos (el de un trabajo largo, como quitar la voz). Si
+ * no se da, el trabajo sigue igual, solo que sin aviso visible.
+ */
+@Composable
+internal fun recordarPermisoAvisos(): () -> Unit {
+    val context = LocalContext.current
+    val pedir = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    return {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            pedir.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 }
 
 /** Entradas de audio conectadas y por dónde sale el sonido; se actualiza al conectar o quitar algo. */

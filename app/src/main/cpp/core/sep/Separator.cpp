@@ -66,10 +66,31 @@ std::string readText(const std::string &path) {
     return s;
 }
 
+std::string fullKey(const std::string &key, int64_t length, int chunk, int overlap) {
+    return key + "|" + std::to_string(chunk) + "|" + std::to_string(overlap) + "|" + std::to_string(length);
+}
+
 }  // namespace
 
 int Separator::chunkCount(int64_t length, int chunk, int overlap) {
     return length <= 0 || chunk <= 0 ? 0 : makePlan(length, chunk, overlap).chunks;
+}
+
+int Separator::savedChunks(const std::string &cacheDir, const std::string &cacheKey, int64_t length, int chunk,
+                           int overlap) {
+    if (cacheDir.empty() || length <= 0 || chunk <= 0) return 0;
+    const Plan p = makePlan(length, chunk, overlap);
+    if (readText(cacheDir + "/clave") != fullKey(cacheKey, length, chunk, p.overlap)) return 0;
+    const long bytes = static_cast<long>(2 * sizeof(float)) * chunk;
+    int n = 0;
+    for (int k = 0; k < p.chunks; ++k) {
+        FILE *f = std::fopen((cacheDir + "/" + std::to_string(k) + ".f32").c_str(), "rb");
+        if (!f) continue;
+        const bool ok = std::fseek(f, 0, SEEK_END) == 0 && std::ftell(f) == bytes;
+        std::fclose(f);
+        if (ok) ++n;
+    }
+    return n;
 }
 
 std::string Separator::run(MelRoformer &model, ThreadPool &pool, int64_t length, const Reader &read,
@@ -83,8 +104,7 @@ std::string Separator::run(MelRoformer &model, ThreadPool &pool, int64_t length,
     auto chunkPath = [&](int k) { return opt.cacheDir + "/" + std::to_string(k) + ".f32"; };
     const bool cache = !opt.cacheDir.empty();
     if (cache) {
-        const std::string key = opt.cacheKey + "|" + std::to_string(C) + "|" + std::to_string(p.overlap) + "|" +
-                                std::to_string(length);
+        const std::string key = fullKey(opt.cacheKey, length, C, p.overlap);
         const std::string keyPath = opt.cacheDir + "/clave";
         if (readText(keyPath) != key) {
             for (int k = 0;; ++k) {  // los trozos van numerados desde 0

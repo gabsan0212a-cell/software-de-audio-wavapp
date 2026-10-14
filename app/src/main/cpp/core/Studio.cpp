@@ -16,11 +16,13 @@
 #include <random>
 #include <sstream>
 
+#include "dsp/SongAnalysis.h"
 #include "engine/Exporter.h"
 #include "io/Json.h"
 #include "io/MappedAudio.h"
 #include "project/Edit.h"
 #include "project/Session.h"
+#include "sep/Separator.h"
 
 namespace {
 
@@ -120,6 +122,9 @@ Studio::Studio(DecodeFunction decoder) : mDecoder(std::move(decoder)) {
 }
 
 Studio::~Studio() {
+    mCancelExport.store(true);  // un trabajo largo (separar la voz) termina pronto
+    mJobs.waitIdle(60000);
+    if (mVoiceFd >= 0) ::close(mVoiceFd);
     stopBackground();
     if (mInput.recording()) mInput.stopRecording();  // el archivo se limpia al abrir la próxima vez
     mMixer.setLiveInput(nullptr);
@@ -551,11 +556,13 @@ void Studio::removeAllLocked(bool deleteFiles) {
         if (deleteFiles) std::remove((mAudioDir + "/" + t.file).c_str());
     }
     mProject.tracks.clear();
+    mProject.song = SongModel();
     mGesture.active = false;
     mAutoGesture.active = false;
     mTouch = AutoTouch();
     mMixer.setAnalysisSource(-1);
     bump(kVerTracks);
+    bump(kVerSong);
 }
 
 // ---------------------------------------------------------------- pistas
@@ -813,6 +820,14 @@ void Studio::jobRestore() {
         }
         ::closedir(d);
     }
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        if (pm.song.ready() && findLocked(pm.song.instrumentalId)) {
+            mProject.song = std::move(pm.song);
+            if (mProject.song.vocalId && !findLocked(mProject.song.vocalId)) mProject.song.vocalId = 0;
+        }
+    }
+    bump(kVerSong);
     mRestoring.store(false);
     endJob(missing > 0 ? std::to_string(missing) + " pista(s) no se encontraron" : "Mezcla recuperada");
 }
@@ -828,6 +843,10 @@ bool Studio::removeTrack(int id) {
         mMixer.takeTrack(slot);  // con un fundido corto si está sonando
         file = mAudioDir + "/" + it->file;
         mProject.tracks.erase(it);
+        if (id == mProject.song.instrumentalId) mProject.song = SongModel();
+        if (id == mProject.song.vocalId) mProject.song.vocalId = 0;
+        if (id == mProject.song.sourceId) mProject.song.sourceId = 0;
+        bump(kVerSong);
         if (mGesture.active && mGesture.id == id) mGesture.active = false;
         if (mAutoGesture.active && mAutoGesture.id == id) mAutoGesture.active = false;
         if (mTouch.active && mTouch.id == id) mTouch = AutoTouch();
@@ -2126,6 +2145,501 @@ std::vector<float> Studio::songLoudnessCurve(int cols) const {
         size_t b = n * static_cast<size_t>(c + 1) / static_cast<size_t>(cols);
         if (b <= a) b = std::min(n, a + 1);
         for (size_t i = a; i < b; ++i) out[static_cast<size_t>(c)] = std::max(out[static_cast<size_t>(c)], v[i]);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- separar la voz (preparar para cantar)
+
+namespace {
+
+const char *const kNoteNames[12] = {"Do", "Do#", "Re", "Mi♭", "Mi", "Fa", "Fa#", "Sol", "La♭", "La", "Si♭", "Si"};
+
+std::string keyName(int key, bool minor) {
+    return key < 0 || key > 11 ? "" : std::string(kNoteNames[key]) + (minor ? " menor" : " mayor");
+}
+
+std::string durationText(double s) {
+    if (s < 60) return "menos de un minuto";
+    const int m = static_cast<int>(std::lround(s / 60));
+    if (m < 60) return "unos " + std::to_string(m) + " min";
+    return "más de " + std::to_string(m / 60) + " h " + std::to_string(m % 60) + " min";
+}
+
+// Borra lo que haya en la carpeta (no las subcarpetas) y la carpeta.
+void removeDir(const std::string &dir) {
+    if (DIR *d = ::opendir(dir.c_str())) {
+        while (dirent *e = ::readdir(d)) {
+            const std::string n = e->d_name;
+            if (n != "." && n != "..") std::remove((dir + "/" + n).c_str());
+        }
+        ::closedir(d);
+    }
+    ::rmdir(dir.c_str());
+}
+
+// Solo revisa la cabecera (no carga los pesos).
+bool voiceHeader(const ModelFile &f, std::string &name, int &chunk, int &overlap, int &rate) {
+    const Json &h = f.header();
+    const Json &c = h["config"];
+    if (h["modelo"].asString() != "mel_band_roformer" || c["chunk_size"].asInt(0) <= 0) return false;
+    name = h["nombre"].asString("modelo");
+    chunk = static_cast<int>(c["chunk_size"].asInt());
+    overlap = static_cast<int>(c["num_overlap"].asInt(2));
+    rate = static_cast<int>(c["sample_rate"].asInt(44100));
+    return rate > 0 && overlap > 0;
+}
+
+}  // namespace
+
+bool Studio::setVoiceModel(const std::string &path) {
+    std::string err, name;
+    int chunk = 0, overlap = 2, rate = 44100;
+    auto f = ModelFile::open(path, err);
+    if (!f || !voiceHeader(*f, name, chunk, overlap, rate)) return false;
+    {
+        std::lock_guard<std::mutex> lk(mVoiceMutex);
+        if (mVoiceFd >= 0) ::close(mVoiceFd);
+        mVoiceFd = -1;
+        mVoicePath = path;
+        mVoiceName = name;
+        mVoiceChunk = chunk;
+        mVoiceOverlap = overlap;
+        mVoiceRate = rate;
+    }
+    bump(kVerSong);
+    return true;
+}
+
+bool Studio::setVoiceModelFd(int fd, int64_t offset, int64_t length) {
+    const int own = ::fcntl(fd, F_DUPFD_CLOEXEC, 0);
+    if (own < 0) return false;
+    std::string err, name;
+    int chunk = 0, overlap = 2, rate = 44100;
+    auto f = ModelFile::openFd(own, offset, length, err);
+    if (!f || !voiceHeader(*f, name, chunk, overlap, rate)) {
+        ::close(own);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(mVoiceMutex);
+        if (mVoiceFd >= 0) ::close(mVoiceFd);
+        mVoiceFd = own;
+        mVoiceOffset = offset;
+        mVoiceLength = length;
+        mVoicePath.clear();
+        mVoiceName = name;
+        mVoiceChunk = chunk;
+        mVoiceOverlap = overlap;
+        mVoiceRate = rate;
+    }
+    bump(kVerSong);
+    return true;
+}
+
+bool Studio::hasVoiceModel() const {
+    std::lock_guard<std::mutex> lk(mVoiceMutex);
+    return !mVoiceName.empty();
+}
+
+std::unique_ptr<ModelFile> Studio::openVoiceModel(std::string &error) const {
+    std::lock_guard<std::mutex> lk(mVoiceMutex);
+    if (!mVoicePath.empty()) return ModelFile::open(mVoicePath, error);
+    if (mVoiceFd >= 0) return ModelFile::openFd(mVoiceFd, mVoiceOffset, mVoiceLength, error);
+    error = "no está en esta versión";
+    return nullptr;
+}
+
+std::string Studio::separationKey(const std::string &file, int64_t frames, int quality) const {
+    std::lock_guard<std::mutex> lk(mVoiceMutex);
+    return file + "|" + std::to_string(frames) + "|" + mVoiceName + "|" + std::to_string(quality);
+}
+
+void Studio::separationSaved(int id, int quality, int32_t *out) const {
+    out[0] = out[1] = 0;
+    std::string file;
+    int64_t frames = 0;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        const TrackModel *t = findLocked(id);
+        if (!t) return;
+        file = t->file;
+        frames = t->frames;
+    }
+    int chunk, overlap, rate;
+    {
+        std::lock_guard<std::mutex> lk(mVoiceMutex);
+        if (mVoiceName.empty()) return;
+        chunk = mVoiceChunk;
+        overlap = mVoiceOverlap * (quality == kSepMax ? 2 : 1);
+        rate = mVoiceRate;
+    }
+    // La separación trabaja a la frecuencia del modelo.
+    const int64_t length = Resampler::outputFrames(frames, kRate, rate);
+    out[1] = Separator::chunkCount(length, chunk, overlap);
+    out[0] = Separator::savedChunks(mCacheDir + "/separar", separationKey(file, frames, quality), length, chunk, overlap);
+}
+
+bool Studio::separate(int id, int quality) {
+    quality = quality == kSepMax ? kSepMax : kSepHigh;
+    std::string file, name;
+    bool room;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        const TrackModel *t = findLocked(id);
+        if (!t) return false;
+        file = t->file;
+        name = t->name;
+        room = mProject.tracks.size() + 2 <= static_cast<size_t>(kMaxTracks);
+    }
+    if (!hasVoiceModel()) {
+        setMessage("Esta versión no trae el modelo para quitar la voz");
+        return false;
+    }
+    if (!room) {
+        setMessage("Para quitar la voz hacen falta dos lugares libres (máximo 12 pistas)");
+        return false;
+    }
+    if (!beginJob("Preparando la canción…")) return false;
+    mCancelExport.store(false);
+    mSepTrack.store(id);
+    mSepDone.store(0);
+    mSepTotal.store(0);
+    mSepEta.store(-1.0f);
+    mSepPhase.store(1);
+    bump(kVerSong);
+    mJobs.post([this, id, file, name, quality] { jobSeparate(id, file, name, quality); });
+    return true;
+}
+
+void Studio::separationState(float *out) const {
+    out[0] = static_cast<float>(mSepPhase.load());
+    out[1] = mSepPhase.load() ? std::max(0.0f, mProgress.load()) : 0.0f;
+    out[2] = static_cast<float>(mSepDone.load());
+    out[3] = static_cast<float>(mSepTotal.load());
+    out[4] = mSepEta.load();
+    out[5] = static_cast<float>(mSepTrack.load());
+}
+
+void Studio::jobSeparate(int id, std::string file, std::string name, int quality) {
+    auto finish = [&](const std::string &msg) {
+        mSepPhase.store(0);
+        bump(kVerSong);
+        endJob(msg);
+    };
+    const std::string tmpIn = mCacheDir + "/separar-entrada.wav";
+    const std::string cacheDir = mCacheDir + "/separar";
+    std::string err;
+    std::unique_ptr<ModelFile> mf = openVoiceModel(err);
+    std::unique_ptr<MelRoformer> model;
+    try {
+        if (mf) model = MelRoformer::load(*mf, err);
+    } catch (const std::bad_alloc &) {
+        err = "no hay memoria suficiente";
+    }
+    if (!model) return finish("No se pudo abrir el modelo de voz: " + err);
+    const int rate = model->config().sampleRate;
+    const int overlap = model->config().overlap * (quality == kSepMax ? 2 : 1);
+    auto src = MappedAudio::open(mAudioDir + "/" + file, err);
+    if (!src) return finish("No se pudo leer la pista: " + err);
+    const int64_t frames = src->frames();
+    const int ch = src->channels();
+
+    // 1) La pista a la frecuencia del modelo y en estéreo (archivo temporal).
+    {
+        WavWriter w;
+        if (!w.open(tmpIn, 2, rate)) return finish("No hay espacio para preparar la canción");
+        Resampler rs(2, kRate, rate);
+        std::vector<float> in, out;
+        constexpr int64_t kBlock = 65536;
+        bool ok = true;
+        for (int64_t f = 0; f < frames && ok; f += kBlock) {
+            if (mCancelExport.load()) {
+                w.close();
+                std::remove(tmpIn.c_str());
+                return finish("Cancelado");
+            }
+            const int64_t n = std::min(kBlock, frames - f);
+            in.resize(static_cast<size_t>(n) * 2);
+            const float *d = src->data() + f * ch;
+            for (int64_t i = 0; i < n; ++i) {
+                in[static_cast<size_t>(2 * i)] = d[i * ch];
+                in[static_cast<size_t>(2 * i + 1)] = d[i * ch + (ch == 2 ? 1 : 0)];
+            }
+            out.clear();
+            rs.process(in.data(), static_cast<size_t>(n), out);
+            if (!out.empty()) ok = w.write(out.data(), out.size() / 2);
+            mProgress.store(0.02f * static_cast<float>(f + n) / static_cast<float>(frames));
+        }
+        out.clear();
+        rs.finish(out);
+        if (ok && !out.empty()) ok = w.write(out.data(), out.size() / 2);
+        if (!w.close() || !ok) {
+            std::remove(tmpIn.c_str());
+            return finish("No hay espacio para preparar la canción");
+        }
+    }
+    auto input = MappedAudio::open(tmpIn, err);
+    if (!input) return finish("No se pudo preparar la canción: " + err);
+
+    // 2) Quitar la voz trozo por trozo. La voz vuelve a 48 kHz y el instrumental es lo que queda
+    //    de la pista original sin esa voz (así no pierde nada de su calidad).
+    mSepPhase.store(2);
+    bump(kVerSong);
+    ::mkdir(cacheDir.c_str(), 0700);
+    const std::string vocFile = newFileName("voz"), instFile = newFileName("instrumental");
+    const std::string vocPath = mAudioDir + "/" + vocFile, instPath = mAudioDir + "/" + instFile;
+    WavWriter wv, wi;
+    if (!wv.open(vocPath, ch, kRate) || !wi.open(instPath, ch, kRate)) {
+        wv.close();
+        wi.close();
+        std::remove(vocPath.c_str());
+        std::remove(instPath.c_str());
+        std::remove(tmpIn.c_str());
+        return finish("No hay espacio para guardar el resultado");
+    }
+    Resampler up(2, rate, kRate);
+    int64_t written = 0;
+    std::vector<float> outV, outI, inter, up48;
+    auto emit = [&](const std::vector<float> &v48) -> bool {  // voz intercalada en estéreo, a 48 kHz
+        const int64_t n = std::min<int64_t>(static_cast<int64_t>(v48.size() / 2), frames - written);
+        if (n <= 0) return true;
+        outV.resize(static_cast<size_t>(n * ch));
+        outI.resize(static_cast<size_t>(n * ch));
+        const float *s = src->data() + written * ch;
+        for (int64_t i = 0; i < n; ++i) {
+            const float vl = v48[static_cast<size_t>(2 * i)], vr = v48[static_cast<size_t>(2 * i + 1)];
+            if (ch == 2) {
+                outV[static_cast<size_t>(2 * i)] = vl;
+                outV[static_cast<size_t>(2 * i + 1)] = vr;
+                outI[static_cast<size_t>(2 * i)] = s[2 * i] - vl;
+                outI[static_cast<size_t>(2 * i + 1)] = s[2 * i + 1] - vr;
+            } else {
+                const float v = 0.5f * (vl + vr);
+                outV[static_cast<size_t>(i)] = v;
+                outI[static_cast<size_t>(i)] = s[i] - v;
+            }
+        }
+        written += n;
+        return wv.write(outV.data(), static_cast<size_t>(n)) && wi.write(outI.data(), static_cast<size_t>(n));
+    };
+    Separator::Options opt;
+    opt.overlap = overlap;
+    opt.cacheDir = cacheDir;
+    opt.cacheKey = separationKey(file, frames, quality);
+    opt.cancel = &mCancelExport;
+    auto last = std::chrono::steady_clock::now();
+    double computeSecs = 0;
+    int computed = 0, lastReused = 0;
+    opt.progress = [&](int done, int total, int reused) {
+        const auto now = std::chrono::steady_clock::now();
+        if (reused == lastReused) {  // calculado ahora (no leído de lo guardado)
+            computeSecs += std::chrono::duration<double>(now - last).count();
+            ++computed;
+        }
+        lastReused = reused;
+        last = now;
+        const float eta = computed > 0 ? static_cast<float>((total - done) * computeSecs / computed) : -1.0f;
+        mSepDone.store(done);
+        mSepTotal.store(total);
+        mSepEta.store(done == total ? 0.0f : eta);
+        mProgress.store(0.02f + 0.93f * static_cast<float>(done) / static_cast<float>(total));
+        std::string text = "Quitando la voz · trozo " + std::to_string(done) + " de " + std::to_string(total);
+        if (eta >= 0 && done < total) text += " · faltan " + durationText(eta);
+        setJobText(text);
+        bump(kVerSong);
+    };
+    mSepTotal.store(Separator::chunkCount(input->frames(), model->chunk(), overlap));
+    std::string e;
+    {
+        ThreadPool pool;
+        e = Separator::run(*model, pool, input->frames(),
+            [&](int64_t from, int n, float *l, float *r) {
+                const float *d = input->data() + from * 2;
+                for (int i = 0; i < n; ++i) {
+                    l[i] = d[2 * i];
+                    r[i] = d[2 * i + 1];
+                }
+            },
+            [&](const float *l, const float *r, int n) {
+                inter.resize(static_cast<size_t>(n) * 2);
+                for (int i = 0; i < n; ++i) {
+                    inter[static_cast<size_t>(2 * i)] = l[i];
+                    inter[static_cast<size_t>(2 * i + 1)] = r[i];
+                }
+                up48.clear();
+                up.process(inter.data(), static_cast<size_t>(n), up48);
+                return emit(up48);
+            }, opt);
+    }
+    if (e.empty()) {
+        up48.clear();
+        up.finish(up48);
+        if (!emit(up48)) e = "no hay espacio";
+        // Si al volver a 48 kHz faltó algún cuadro, la voz termina en silencio.
+        if (e.empty() && written < frames && !emit(std::vector<float>(static_cast<size_t>(frames - written) * 2, 0.0f)))
+            e = "no hay espacio";
+    }
+    const bool closed = wv.close() & wi.close();
+    model.reset();
+    mf.reset();
+    input.reset();
+    std::remove(tmpIn.c_str());
+    if (!e.empty() || !closed || written != frames) {
+        std::remove(vocPath.c_str());
+        std::remove(instPath.c_str());
+        if (e == "Cancelado") return finish("Cancelado: lo que ya se calculó queda guardado para seguir después");
+        return finish("No se pudo quitar la voz: " + (e.empty() ? std::string("no hay espacio") : e));
+    }
+
+    // 3) Las pistas nuevas, debajo de la original (con sus mismos cortes y volumen).
+    mSepPhase.store(3);
+    setJobText("Armando las pistas…");
+    bump(kVerSong);
+    auto va = MappedAudio::open(vocPath, err);
+    auto ia = MappedAudio::open(instPath, err);
+    if (!va || !ia) {
+        std::remove(vocPath.c_str());
+        std::remove(instPath.c_str());
+        return finish("No se pudo abrir el resultado: " + err);
+    }
+    std::vector<float> vPeaks = computePeaks(*va, kPeakBucket), iPeaks = computePeaks(*ia, kPeakBucket);
+    int instId = 0, vocId = 0;
+    std::string addErr;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        const TrackModel *orig = findLocked(id);
+        const std::string info = std::string(ch == 2 ? "estéreo" : "mono") + " · 48 kHz · sin la voz (IA)";
+        auto make = [&](const std::string &suffix, const std::string &f, std::vector<float> peaks) {
+            TrackModel t;
+            t.id = mProject.nextId++;
+            t.name = name + " · " + suffix;
+            t.file = f;
+            if (orig) {
+                t.volDb = orig->volDb;
+                t.pan = orig->pan;
+                t.regions = orig->regions;
+                t.hasRegions = true;
+            }
+            t.peaks = std::move(peaks);
+            return t;
+        };
+        TrackModel ti = make("instrumental", instFile, std::move(iPeaks));
+        ti.info = info;
+        TrackModel tv = make("voz original", vocFile, std::move(vPeaks));
+        tv.info = std::string(ch == 2 ? "estéreo" : "mono") + " · 48 kHz · la voz de la canción (IA)";
+        tv.mute = true;  // guía: se prende si hace falta
+        instId = ti.id;
+        vocId = tv.id;
+        addErr = addTrackLocked(std::move(ti), std::move(ia));
+        if (addErr.empty()) addErr = addTrackLocked(std::move(tv), std::move(va));
+        if (addErr.empty()) {
+            // Debajo de la original, que queda en silencio.
+            auto pos = std::find_if(mProject.tracks.begin(), mProject.tracks.end(), [id](const TrackModel &t) { return t.id == id; });
+            if (pos != mProject.tracks.end()) {
+                pos->mute = true;
+                applyTrackLocked(*pos);
+                bump(verParams(pos->slot));
+                std::rotate(pos + 1, mProject.tracks.end() - 2, mProject.tracks.end());
+            }
+            mProject.song = SongModel();
+            mProject.song.sourceId = id;
+            mProject.song.instrumentalId = instId;
+            mProject.song.vocalId = vocId;
+            bump(kVerTracks);
+        }
+    }
+    if (!addErr.empty()) {
+        removeTrack(instId);
+        std::remove(vocPath.c_str());
+        std::remove(instPath.c_str());
+        return finish("No se pudieron agregar las pistas: " + addErr);
+    }
+    // Se guarda ya: si la app se cierra ahora, las pistas nuevas no se pierden.
+    markDirty();
+    save();
+    removeDir(cacheDir);  // ya no hacen falta los trozos guardados
+
+    // 4) Lo que se sabe de la canción: tonalidad, tempo y dónde canta la voz original.
+    mSepPhase.store(4);
+    setJobText("Analizando la canción…");
+    bump(kVerSong);
+    SongInfo info;
+    auto ia2 = MappedAudio::open(instPath, err);
+    auto va2 = MappedAudio::open(vocPath, err);
+    const bool analyzed = analyzeSong(ia2.get(), va2.get(), info, &mCancelExport,
+                                      [&](float p) { mProgress.store(0.95f + 0.05f * p); });
+    if (analyzed) {
+        std::lock_guard<std::mutex> lk(mModel);
+        SongModel &s = mProject.song;
+        if (s.instrumentalId == instId) {
+            s.key = info.key;
+            s.minor = info.minor;
+            s.keyScore = info.keyScore;
+            s.bpm = info.bpm;
+            s.beats = std::move(info.beats);
+            s.vocalStart = std::move(info.vocalStart);
+            s.vocalEnd = std::move(info.vocalEnd);
+            s.envelope = std::move(info.envelope);
+            s.notes = info.notes;
+        }
+    }
+    markDirty();
+    save();
+    std::string msg = "Listo: " + name + " sin la voz";
+    if (analyzed && info.key >= 0) msg += " · " + keyName(info.key, info.minor);
+    if (analyzed && info.bpm > 0) msg += " · " + std::to_string(static_cast<int>(std::lround(info.bpm))) + " BPM";
+    if (!analyzed) msg += " (análisis cancelado)";
+    finish(msg);
+}
+
+std::string Studio::songJson() const {
+    std::lock_guard<std::mutex> lk(mModel);
+    const SongModel &s = mProject.song;
+    Json o = Json::object();
+    o.set("lista", s.ready());
+    if (!s.ready()) return o.dump();
+    o.set("fuente", s.sourceId);
+    o.set("instrumental", s.instrumentalId);
+    o.set("voz", s.vocalId);
+    o.set("tonica", s.key);
+    o.set("menor", s.minor);
+    o.set("claridad", s.keyScore);
+    o.set("bpm", s.bpm);
+    o.set("pulsos", static_cast<int>(s.beats.size()));
+    o.set("primerPulso", s.beats.empty() ? -1.0f : s.beats.front());
+    Json escala = Json::array();
+    if (s.key >= 0)
+        for (int n : song::scaleNotes(s.key, s.minor)) escala.push(n);
+    o.set("escala", std::move(escala));
+    Json notas = Json::array();
+    for (float n : s.notes) notas.push(n);
+    o.set("notas", std::move(notas));
+    Json partes = Json::array();
+    for (size_t i = 0; i < s.vocalStart.size() && i < s.vocalEnd.size(); ++i) {
+        Json p = Json::array();
+        p.push(s.vocalStart[i]);
+        p.push(s.vocalEnd[i]);
+        partes.push(std::move(p));
+    }
+    o.set("partes", std::move(partes));
+    return o.dump();
+}
+
+std::vector<float> Studio::songEnvelope(int cols) const {
+    std::lock_guard<std::mutex> lk(mModel);
+    const std::vector<float> &env = mProject.song.envelope;
+    std::vector<float> out(static_cast<size_t>(std::max(cols, 0)), 0.0f);
+    if (env.empty() || cols <= 0) return out;
+    // Del principio al fin de la canción (el largo de la mezcla), el máximo de cada columna.
+    const double seconds = std::max(static_cast<double>(mMixer.length()) / kRate,
+                                    static_cast<double>(env.size()) / song::kEnvelopeRate);
+    for (int c = 0; c < cols; ++c) {
+        const size_t a = static_cast<size_t>(seconds * c / cols * song::kEnvelopeRate);
+        const size_t b = std::max(a + 1, static_cast<size_t>(seconds * (c + 1) / cols * song::kEnvelopeRate));
+        float m = 0.0f;
+        for (size_t i = a; i < b && i < env.size(); ++i) m = std::max(m, env[i]);
+        out[static_cast<size_t>(c)] = m;
     }
     return out;
 }

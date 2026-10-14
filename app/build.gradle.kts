@@ -15,8 +15,8 @@ android {
         applicationId = "com.wavapp.mezcla"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.10.0"
+        versionCode = 15
+        versionName = "0.11.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
@@ -60,6 +60,13 @@ android {
         prefab = true
         compose = true
     }
+
+    // El modelo para quitar la voz (assets/modelos, lo baja el CI) va sin comprimir: el núcleo lo
+    // lee directo del APK, sin copiarlo.
+    androidResources { noCompress += "wvm" }
+
+    // Las pruebas en el emulador usan también los modelos chicos de las pruebas nativas.
+    sourceSets { getByName("androidTest") { assets.srcDir("../tests/native/datos") } }
 
     externalNativeBuild {
         cmake {

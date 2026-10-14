@@ -20,7 +20,9 @@ grandes, acento rojo, colores por pista y regiones de color. Claro u oscuro seg�
 3. Instálalo. Las versiones nuevas se instalan encima, sin desinstalar.
 4. ¿Algo salió mal? Cada versión queda también en Releases como `vX.Y.Z` para regresar a una anterior.
 
-El APK solo se publica si pasan todas las pruebas.
+El APK solo se publica si pasan todas las pruebas. Desde la 0.11.0 pesa unos 470 MB: trae
+adentro el modelo de inteligencia artificial que le quita la voz a las canciones (funciona sin
+internet).
 
 ## Etapas
 - [x] 0. App mínima: tono de prueba + compilación en la nube
@@ -52,6 +54,14 @@ El APK solo se publica si pasan todas las pruebas.
 - [x] 9. Efectos por pista: compresor, delay (eco, con ping-pong) y reverb, con presets ("Voz",
       "Voz con eco", "Batería", "Bajo", "Guitarra"...). Suenan igual al exportar
 - [ ] 10. Guardar/abrir proyectos (por ahora la mezcla actual se guarda sola)
+- [x] 11. Preparar una canción para cantarla en vivo (menú de la pista → **Preparar para
+      cantar…**): le quita la voz con inteligencia artificial (Mel-Band RoFormer de Kim, el mismo
+      modelo que usan los separadores de escritorio, corriendo en C++ dentro del celular). Quedan
+      el instrumental y la voz original como guía; después saca la tonalidad, el tempo, los pulsos
+      y dónde canta la voz. Tarda (de 20 minutos a una hora en un celular): sigue con la pantalla
+      apagada y, si se interrumpe, continúa donde quedó
+- [ ] 12. Voz en vivo con auto-tune y audio de baja latencia (interfaz USB y consola)
+- [ ] 13. Pantalla "En vivo" y grabar la presentación (1.0.0)
 
 Sin plugins VST en Android.
 
@@ -77,18 +87,31 @@ Sin plugins VST en Android.
     (caídas y picos de los medidores) y `Decoder.h` (lo que debe dar la plataforma).
   - `project/`: `Model` (el proyecto), `Session` (sesion.json) y `Edit` (mover, recortar,
     fundidos, cortar, imán).
+  - `sep/`: quitar la voz. `ModelFile` (el modelo `.wvm`, mapeado en memoria directo del APK),
+    `MelRoformer` (la red, igual a la original en PyTorch: Eigen y todos los núcleos con
+    `ThreadPool`), `Stft` y `Separator` (la canción en trozos de 8 s que se enciman y se unen
+    con fundidos; cada trozo se guarda para seguir si se interrumpe).
+  - `dsp/Pitch` (tono con YIN) y `dsp/SongAnalysis` (tonalidad con perfiles de Krumhansl,
+    tempo y pulsos, dónde canta la voz).
+- `app/src/main/cpp/third_party/eigen/`: Eigen 3.4 (álgebra lineal, licencia MPL2).
+- `tools/modelos/` y `.github/workflows/modelos.yml`: convierten el modelo original (PyTorch) al
+  formato `.wvm` y generan las referencias con las que se compara el C++; se publican en
+  Releases → `modelos`. El código de terceros corre en un trabajo sin permisos de escritura, con
+  huellas fijas. El CI baja el modelo a `app/src/main/assets/modelos/` (no va en git) y lo mete
+  sin comprimir en el APK.
 - `app/src/main/cpp/android/`: lo de la plataforma: `AudioOutput` y `AudioInput` (Oboe), `MediaDecoder`
   (MP3, AAC, FLAC, OGG, Opus... con MediaCodec desde C++) y `jni_bridge.cpp` (el puente).
 - `app/src/main/java/.../`: **solo pantalla**. `Nucleo.kt` (el puente), `Mesa.kt` (espejo del
-  estado del núcleo para Compose), `Analisis.kt` y `Edicion.kt` (lo que recuerda cada panel)
-  y `ui/` (Compose, solo `foundation`: sin Material).
+  estado del núcleo para Compose), `Analisis.kt` y `Edicion.kt` (lo que recuerda cada panel),
+  `TrabajoLargo.kt` (lo que obliga Android para que quitar la voz siga con la pantalla apagada:
+  servicio en primer plano con su aviso) y `ui/` (Compose, solo `foundation`: sin Material).
   - `Tema.kt` (colores y tipografía de iOS), `Iconos.kt` (íconos dibujados con rutas),
     `Componentes.kt` (botones, píldoras, interruptor, segmentado, deslizadores, tarjetas) y
     `Superpuestos.kt` (hojas, menús de acciones, alertas, barra de arriba).
   - `Pantalla.kt` (pestañas y mini reproductor), `MezclaTab.kt`, `Reproductor.kt`,
     `Ecualizador.kt`, `Efectos.kt` (la hoja del botón FX), `AnalisisPanel.kt`, `Volumen.kt`
     (LUFS), `EdicionPanel.kt` (pedazos y carriles de automatización), `Automatizacion.kt` (la hoja
-    del botón A), `GrabarTab.kt` y `Exportar.kt`.
+    del botón A), `GrabarTab.kt`, `Exportar.kt` y `Preparar.kt` (preparar para cantar).
   - `Plataforma.kt`: lo único que obliga Android en la pantalla (atrás, pantalla encendida,
     selector de archivos, barra de estado).
 
@@ -96,6 +119,8 @@ Sin plugins VST en Android.
 - `tests/native/run.sh`: pruebas del núcleo en Linux con ASan, UBSan y TSan (incluye el
   Studio completo: sesión, importar, editar, deshacer, exportar, varios hilos a la vez).
 - `tests/check_jni.py`: que Kotlin y C++ coincidan en el puente (nombres y tipos).
+- `tests/native/modelo-real.sh`: el modelo de voz de verdad en C++ comparado con PyTorch
+  (cada capa y la canción completa); lo corre el CI.
 - `tests/previa/previa.sh`: vista previa de la pantalla en Linux (Compose de escritorio con
   el núcleo real): capturas en claro y oscuro sin esperar al emulador. Solo para desarrollar.
 - `app/src/androidTest/`: pruebas en un emulador Android (audio real, importación, pantalla en

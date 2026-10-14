@@ -34,6 +34,16 @@
   envíos estéreo que se suman después del volumen y el paneo. Rangos y escalas vienen de `fxInfo`.
 - LUFS: `dsp/Loudness` (BS.1770 / EBU R128). El mezclador manda bloques de 100 ms de lo que sale;
   `Studio::loudness` hace las cuentas; `measureSong` y la exportación miden fuera de tiempo real.
+- Quitar la voz: `core/sep/` (`ModelFile` .wvm mapeado, `MelRoformer` con Eigen + `ThreadPool`,
+  `Stft`, `Separator` con trozos guardados para seguir) + `Studio::separate` (trabajo largo: deja
+  "· instrumental" y "· voz original" debajo; luego `dsp/SongAnalysis` saca tonalidad, BPM, pulsos
+  y dónde canta, y queda en `ProjectModel::song`). `dsp/Pitch` (YIN) sirve también para el
+  auto-tune. Android: `TrabajoLargo` (servicio en primer plano) y `ui/Preparar.kt`.
+- El modelo: `tools/modelos/` lo convierte en `modelos.yml` (release `modelos`). El código de
+  terceros (repo de Kim, checkpoint) corre solo en el trabajo de solo lectura, con
+  `weights_only=True` y huellas SHA-256 fijas; nunca en trabajos con permisos de escritura. El CI
+  baja `voz-kim.wvm` (huella fija) a `app/src/main/assets/modelos/` (no va en git, sin comprimir
+  en el APK). `bash tests/native/modelo-real.sh <carpeta>` compara el C++ con PyTorch.
 
 ## Cómo se trabaja
 - El dueño no tiene computadora: usa Android + GitHub. Todo se compila en GitHub Actions; el

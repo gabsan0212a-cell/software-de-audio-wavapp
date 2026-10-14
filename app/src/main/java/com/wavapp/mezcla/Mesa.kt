@@ -160,6 +160,34 @@ class Volumen {
     var curva by mutableStateOf(FloatArray(0))
 }
 
+/** La canción preparada para cantar en vivo (al quitarle la voz), como la tiene el núcleo. */
+class Cancion {
+    var lista by mutableStateOf(false)
+    var fuente by mutableIntStateOf(0)        // la pista de la que salió
+    var instrumental by mutableIntStateOf(0)
+    var voz by mutableIntStateOf(0)           // la voz original (guía); 0 = se quitó
+    var tonica by mutableIntStateOf(-1)       // 0 = Do ... 11 = Si; -1 = no se sabe
+    var menor by mutableStateOf(false)
+    var claridad by mutableFloatStateOf(0f)   // qué tan clara es la tonalidad (0..1)
+    var bpm by mutableFloatStateOf(0f)
+    var pulsos by mutableIntStateOf(0)
+    var escala by mutableStateOf(IntArray(0))
+    var notas by mutableStateOf(FloatArray(0))  // cuánto usa la voz cada nota (0..1)
+    /** Dónde canta la voz original: (inicio, fin) en segundos. */
+    var partes by mutableStateOf(listOf<Pair<Float, Float>>())
+}
+
+/** Cómo va el trabajo de quitar la voz (lo lleva el núcleo). */
+class Separacion {
+    var fase by mutableIntStateOf(0)  // 0 nada, 1 preparando, 2 quitando la voz, 3 armando las pistas, 4 analizando
+    var progreso by mutableFloatStateOf(0f)
+    var hechos by mutableIntStateOf(0)
+    var total by mutableIntStateOf(0)
+    var faltan by mutableFloatStateOf(-1f)  // segundos; -1 = todavía no se sabe
+    var pista by mutableIntStateOf(0)
+    val activa: Boolean get() = fase != 0
+}
+
 /** La entrada en vivo (micrófono o interfaz), como la tiene el núcleo. */
 class Entrada {
     var abierta by mutableStateOf(false)
@@ -261,6 +289,15 @@ object Mesa {
     val infoFx: FloatArray by lazy { Nucleo.fxInfo() }
     private var moviendo = false
 
+    /** La canción preparada para cantar y cómo va la separación de la voz. */
+    val cancion = Cancion()
+    val separacion = Separacion()
+    /** Esta compilación trae el modelo para quitar la voz. */
+    var modeloVoz by mutableStateOf(false)
+        private set
+    private var vCancion = -1
+    private val bufSeparar = FloatArray(Nucleo.DATOS_SEPARAR)
+
     /** Diagnóstico de la salida de audio (frecuencia, búfer, cortes), una vez por segundo. */
     var salida by mutableStateOf("")
         private set
@@ -291,6 +328,7 @@ object Mesa {
         Nucleo.init(context.filesDir.path, context.cacheDir.path)
         if (iniciada) return
         iniciada = true
+        cargarModeloVoz(context)
         sincronizar()
         // Lo que termina en segundo plano (importar, exportar, abrir la sesión) se ve aunque la
         // pantalla esté quieta.
@@ -333,6 +371,8 @@ object Mesa {
             if (releerAuto) { p.vAuto = va; leerAuto(p) }
         }
         if (pistas.isNotEmpty()) leerAutoAhora()
+        val vc = versiones[Nucleo.VER_CANCION]
+        if (vc != vCancion) { vCancion = vc; leerCancion() }
         leerVolumen()
         reproduciendo = Nucleo.isPlaying()
         posicion = Nucleo.positionSeconds()
@@ -452,6 +492,39 @@ object Mesa {
         v.cancionDiferencia = bufCancion[8]
     }
 
+    /** La canción preparada y cómo va la separación de la voz (cambian juntas de versión). */
+    private fun leerCancion() {
+        Nucleo.separationState(bufSeparar)
+        val s = separacion
+        s.fase = bufSeparar[0].toInt()
+        s.progreso = bufSeparar[1]
+        s.hechos = bufSeparar[2].toInt()
+        s.total = bufSeparar[3].toInt()
+        s.faltan = bufSeparar[4]
+        s.pista = bufSeparar[5].toInt()
+        modeloVoz = Nucleo.hasVoiceModel()
+        val o = JSONObject(Nucleo.songJson())
+        val c = cancion
+        c.lista = o.optBoolean("lista")
+        c.fuente = o.optInt("fuente")
+        c.instrumental = o.optInt("instrumental")
+        c.voz = o.optInt("voz")
+        c.tonica = o.optInt("tonica", -1)
+        c.menor = o.optBoolean("menor")
+        c.claridad = o.optDouble("claridad", 0.0).toFloat()
+        c.bpm = o.optDouble("bpm", 0.0).toFloat()
+        c.pulsos = o.optInt("pulsos")
+        val e = o.optJSONArray("escala")
+        c.escala = IntArray(e?.length() ?: 0) { e!!.getInt(it) }
+        val n = o.optJSONArray("notas")
+        c.notas = FloatArray(n?.length() ?: 0) { n!!.getDouble(it).toFloat() }
+        val pa = o.optJSONArray("partes")
+        c.partes = List(pa?.length() ?: 0) {
+            val x = pa!!.getJSONArray(it)
+            x.getDouble(0).toFloat() to x.getDouble(1).toFloat()
+        }
+    }
+
     private fun leerEntrada() {
         Nucleo.inputState(bufEntrada)
         val e = entrada
@@ -545,6 +618,37 @@ object Mesa {
         sincronizar()
     }
 
+    // ------------------------------------------------------------------ preparar para cantar
+
+    /**
+     * Quita la voz de la pista con el modelo (en el núcleo). Es largo: sigue en segundo plano con
+     * un aviso del sistema, aunque se apague la pantalla.
+     */
+    fun prepararCancion(p: Pista, calidad: Int) {
+        if (ocupada) return
+        if (Nucleo.separate(p.id, calidad)) appContext?.let { TrabajoLargo.empezar(it) }
+        sincronizar()
+    }
+
+    fun cancelarTrabajo() { Nucleo.cancelJob(); sincronizar() }
+
+    /** [trozos ya guardados, trozos en total] de una separación que quedó a medias. */
+    fun guardadosSeparacion(p: Pista, calidad: Int): IntArray = IntArray(2).also { Nucleo.separationSaved(p.id, calidad, it) }
+
+    /** La voz original a lo largo de la canción (para dibujar dónde canta). */
+    fun envolventeVoz(columnas: Int): FloatArray = Nucleo.songEnvelope(columnas)
+
+    /** El modelo viene dentro del APK sin comprimir: el núcleo lo lee directo del archivo. */
+    private fun cargarModeloVoz(context: Context) {
+        modeloVoz = try {
+            context.assets.openFd("modelos/voz-kim.wvm").use { a ->
+                Nucleo.setVoiceModelFd(a.parcelFileDescriptor.fd, a.startOffset, a.length)
+            }
+        } catch (e: Exception) {
+            Nucleo.hasVoiceModel()  // esta compilación no lo trae (o ya estaba puesto)
+        }
+    }
+
     // ------------------------------------------------------------------ automatización
 
     fun ponerModoAuto(p: Pista, modo: Int) { Nucleo.setAutoMode(p.id, modo); sincronizar() }
@@ -630,7 +734,8 @@ object Mesa {
     }
 
     /** ¿Hay algo moviéndose en pantalla (audio, entrada, un trabajo o medidores bajando)? */
-    fun activa(): Boolean = reproduciendo || ocupada || moviendo || entrada.abierta
+    // Quitar la voz tarda mucho: su avance basta leerlo unas veces por segundo (ahorra batería).
+    fun activa(): Boolean = reproduciendo || (ocupada && !separacion.activa) || moviendo || entrada.abierta
 
     /** Se llama en cada cuadro de pantalla: posición, medidores y análisis. */
     fun tick(ahoraMs: Long) {

@@ -23,6 +23,8 @@
 #include "engine/Mixer.h"
 #include "project/Model.h"
 
+class ModelFile;
+
 // El corazón de la app. Todo lo técnico vive aquí: el proyecto (pistas, EQ, pedazos,
 // automatización, master),
 // la mezcla, importar y decodificar, exportar, la sesión, la edición con deshacer/rehacer,
@@ -46,9 +48,11 @@ public:
     enum Version { kVerTracks = 0, kVerMaster, kVerHistory, kVerStatus, kVerBackground, kVerFirstSlot };
     // Por cada espacio del mezclador: parámetros, EQ, pedazos, automatización y efectos.
     static constexpr int kVersPerSlot = 5;
-    // Al final: la entrada en vivo (ganancia, escucha y su EQ).
+    // Al final: la entrada en vivo (ganancia, escucha y su EQ) y la canción preparada para cantar
+    // (separar la voz y lo que se sabe de la canción).
     static constexpr int kVerInput = kVerFirstSlot + kVersPerSlot * kMaxTracks;
-    static constexpr int kVersionCount = kVerInput + 1;
+    static constexpr int kVerSong = kVerInput + 1;
+    static constexpr int kVersionCount = kVerSong + 1;
     // El EQ de la entrada en vivo se maneja con las mismas funciones del EQ, con este id.
     static constexpr int kInputId = 0;
     // inputState(): [abierta, canales, ganancia dB, escucha, volumen de escucha dB,
@@ -174,6 +178,36 @@ public:
     void songLoudness(float *out) const;  // kSongLoudCount valores
     // Corto plazo a lo largo de la canción en `cols` columnas (el máximo de cada una).
     std::vector<float> songLoudnessCurve(int cols) const;
+
+    // ---------- Preparar una canción para cantarla en vivo (quitarle la voz con IA)
+    // El modelo lo pone la plataforma: un archivo, o un asset sin comprimir del APK (`length`
+    // bytes desde `offset` en `fd`; el Studio se queda con su propia copia del descriptor).
+    // false si no es un modelo válido.
+    bool setVoiceModel(const std::string &path);
+    bool setVoiceModelFd(int fd, int64_t offset, int64_t length);
+    bool hasVoiceModel() const;
+    // Calidad al separar: alta (traslape 2, como el original) o máxima (traslape 4: el doble de
+    // trozos y de tiempo; las uniones entre trozos quedan aún más limpias).
+    enum SepQuality { kSepHigh = 0, kSepMax = 1 };
+    // Quita la voz de la pista (fuera de tiempo real; en un celular tarda de varios minutos a
+    // más de media hora) y deja dos pistas nuevas debajo: el instrumental y la voz original
+    // (guía, en silencio). La original queda en silencio. Después analiza la canción
+    // (tonalidad, tempo, dónde canta la voz). Si se interrumpe, al repetirlo sigue donde quedó.
+    // false si no se puede empezar (el motivo queda en el mensaje).
+    bool separate(int id, int quality);
+    // [trozos ya guardados de una separación interrumpida de esa pista, trozos en total].
+    void separationSaved(int id, int quality, int32_t *out) const;
+    void cancelJob() { mCancelExport.store(true); }
+    // separationState(): [fase, progreso 0..1, trozos hechos, trozos, segundos que faltan
+    // (-1 = no se sabe), pista que se separa]. Fase: 0 nada, 1 preparando, 2 quitando la voz,
+    // 3 armando las pistas, 4 analizando la canción.
+    static constexpr int kSepStateCount = 6;
+    void separationState(float *out) const;
+    // La canción preparada: {"lista","fuente","instrumental","voz","tonica","menor","claridad",
+    // "bpm","pulsos","primerPulso","escala":[7],"notas":[12],"partes":[[inicio, fin], ...]}.
+    std::string songJson() const;
+    // La voz original a lo largo de la canción, en `cols` columnas (0..1, el máximo de cada una).
+    std::vector<float> songEnvelope(int cols) const;
 
     // ---------- Transporte
     void play();
@@ -338,6 +372,9 @@ private:
     void setJobText(const std::string &text);
     void endJob(const std::string &message);
     void jobImport(std::vector<int> fds, std::vector<std::string> names);
+    void jobSeparate(int id, std::string file, std::string name, int quality);
+    std::unique_ptr<ModelFile> openVoiceModel(std::string &error) const;
+    std::string separationKey(const std::string &file, int64_t frames, int quality) const;
     void jobDemo();
     void jobRestore();
     std::string importOne(int fd, const std::string &name, const std::string &dst, ImportInfo &info,
@@ -392,6 +429,16 @@ private:
     int64_t mSongChanges = 0;
     LoudnessReport mSongReport;
     std::atomic<int64_t> mChanges{0};  // cambios al proyecto (para saber si la medición ya no vale)
+
+    // Separar la voz: dónde está el modelo y cómo va el trabajo.
+    mutable std::mutex mVoiceMutex;
+    std::string mVoicePath;
+    int mVoiceFd = -1;
+    int64_t mVoiceOffset = 0, mVoiceLength = 0;
+    std::string mVoiceName;  // nombre del modelo (de su cabecera); "" = no hay modelo
+    int mVoiceChunk = 0, mVoiceOverlap = 2, mVoiceRate = 44100;
+    std::atomic<int> mSepPhase{0}, mSepDone{0}, mSepTotal{0}, mSepTrack{0};
+    std::atomic<float> mSepEta{-1.0f};
 
     // Hilo de la pantalla
     Analyzer mAnalyzer{kRate};

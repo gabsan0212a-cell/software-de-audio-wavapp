@@ -5,3 +5,5 @@ local.properties
 .idea/
 *.iml
 tests/previa/capturas/
+# El modelo de voz (~450 MB) no va en git: el CI lo baja del release "modelos".
+app/src/main/assets/modelos/

@@ -30,6 +30,9 @@ public:
     };
 
     static int chunkCount(int64_t length, int chunk, int overlap);
+    // Cuántos trozos de esa misma separación ya están guardados en `cacheDir` (para seguir).
+    static int savedChunks(const std::string &cacheDir, const std::string &cacheKey, int64_t length, int chunk,
+                           int overlap);
     // "" si salió bien; si no, el motivo ("Cancelado", sin espacio...).
     static std::string run(MelRoformer &model, ThreadPool &pool, int64_t length, const Reader &read,
                            const Writer &write, const Options &opt);

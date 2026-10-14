@@ -69,14 +69,16 @@ JNI(jintArray, outputInfo)(JNIEnv *env, jobject) {
 //  espectrograma, frecuencia del proyecto, pedazos máx., versión de la entrada, datos de la
 //  entrada, id del EQ de la entrada, primera versión por espacio, versiones por espacio, datos de
 //  automationNow por espacio, datos de trackParams, datos de masterState, de loudness y de
-//  songLoudness, parámetros de efectos, primer medidor de compresor]
+//  songLoudness, parámetros de efectos, primer medidor de compresor, versión de la canción
+//  preparada, datos de separationState]
 JNI(jintArray, constants)(JNIEnv *env, jobject) {
     const int32_t v[] = {kMaxTracks, kMaxBands, MeterBallistics::kCount, AnalysisView::kStatCount,
                          Studio::kVersionCount, Studio::kSpectrogramCols, Studio::kSpectrogramRows, Studio::kRate,
                          kMaxRegions, Studio::kVerInput, Studio::kInputStateCount, Studio::kInputId,
                          Studio::kVerFirstSlot, Studio::kVersPerSlot, Studio::kAutoNowCount,
                          Studio::kTrackParamCount, Studio::kMasterStateCount, Studio::kLoudCount,
-                         Studio::kSongLoudCount, fx::kCount, MeterBallistics::kCompressor};
+                         Studio::kSongLoudCount, fx::kCount, MeterBallistics::kCompressor, Studio::kVerSong,
+                         Studio::kSepStateCount};
     const jsize n = static_cast<jsize>(sizeof v / sizeof v[0]);
     jintArray a = env->NewIntArray(n);
     env->SetIntArrayRegion(a, 0, n, v);
@@ -352,3 +354,29 @@ JNI(jstring, fxPresetsJson)(JNIEnv *env, jobject) { return jstr(env, Studio::fxP
 JNI(jboolean, applyFxPreset)(JNIEnv *, jobject, jint id, jint index) {
     return gStudio.applyFxPreset(id, index) ? JNI_TRUE : JNI_FALSE;
 }
+
+// ---------- Preparar una canción para cantar en vivo (quitarle la voz con IA)
+JNI(jboolean, setVoiceModel)(JNIEnv *env, jobject, jstring path) {
+    return gStudio.setVoiceModel(str(env, path)) ? JNI_TRUE : JNI_FALSE;
+}
+// El modelo dentro del APK (asset sin comprimir); el núcleo se queda con su propia copia del descriptor.
+JNI(jboolean, setVoiceModelFd)(JNIEnv *, jobject, jint fd, jlong offset, jlong length) {
+    return gStudio.setVoiceModelFd(fd, offset, length) ? JNI_TRUE : JNI_FALSE;
+}
+JNI(jboolean, hasVoiceModel)(JNIEnv *, jobject) { return gStudio.hasVoiceModel() ? JNI_TRUE : JNI_FALSE; }
+JNI(jboolean, separate)(JNIEnv *, jobject, jint id, jint quality) {
+    return gStudio.separate(id, quality) ? JNI_TRUE : JNI_FALSE;
+}
+JNI(void, separationSaved)(JNIEnv *env, jobject, jint id, jint quality, jintArray out) {
+    int32_t v[2];
+    gStudio.separationSaved(id, quality, v);
+    env->SetIntArrayRegion(out, 0, std::min<jsize>(2, env->GetArrayLength(out)), v);
+}
+JNI(void, cancelJob)(JNIEnv *, jobject) { gStudio.cancelJob(); }
+JNI(void, separationState)(JNIEnv *env, jobject, jfloatArray out) {
+    float v[Studio::kSepStateCount];
+    gStudio.separationState(v);
+    env->SetFloatArrayRegion(out, 0, std::min<jsize>(Studio::kSepStateCount, env->GetArrayLength(out)), v);
+}
+JNI(jstring, songJson)(JNIEnv *env, jobject) { return jstr(env, gStudio.songJson()); }
+JNI(jfloatArray, songEnvelope)(JNIEnv *env, jobject, jint cols) { return floats(env, gStudio.songEnvelope(cols)); }

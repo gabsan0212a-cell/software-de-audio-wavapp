@@ -6,6 +6,8 @@
 #include "dsp/Equalizer.h"
 
 namespace {
+
+constexpr int kVoiceVersion = 2;  // ajustes de la voz en vivo (ver la migración al leer)
 // Los valores se guardan redondeados a su paso (así el archivo queda limpio: 1.4 y no 1.39999998).
 double step(double v, double s) { return std::round(v / s) * s; }
 
@@ -133,6 +135,7 @@ Json sessionToJson(const ProjectModel &p) {
     in.set("eq", eqToJson(p.input));
     Json voz = Json::object();
     for (int k = 0; k < vfx::kCount; ++k) voz.set(vfx::info(k).key, static_cast<double>(p.voice[static_cast<size_t>(k)]));
+    voz.set("version", kVoiceVersion);
     in.set("voz", std::move(voz));
     j.set("entrada", std::move(in));
     if (p.song.ready()) {
@@ -217,6 +220,13 @@ bool sessionFromJson(const Json &j, ProjectModel &p) {
     const Json &voz = in["voz"];
     for (int k = 0; k < vfx::kCount; ++k)
         p.voice[static_cast<size_t>(k)] = vfx::clampValue(k, static_cast<float>(voz[vfx::info(k).key].asDouble(vfx::info(k).def)));
+    // Antes de la versión 2 la afinación por omisión (20 ms) y la de "Paraíso" (12 ms) casi no se
+    // notaban: se pasan a las nuevas (5 y 4 ms). Lo que se haya puesto a mano se queda.
+    if (voz.isObject() && voz["version"].asInt(1) < 2) {
+        float &speed = p.voice[static_cast<size_t>(vfx::kTuneSpeed)];
+        if (speed == 20.0f) speed = vfx::info(vfx::kTuneSpeed).def;
+        else if (speed == 12.0f) speed = 4.0f;
+    }
     const Json &cj = j["cancion"];
     if (cj.isObject() && cj["instrumental"].asInt(0) > 0) {
         SongModel &c = p.song;

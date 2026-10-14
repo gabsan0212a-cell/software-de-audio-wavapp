@@ -121,7 +121,8 @@ Sin plugins VST en Android.
     saltando períodos completos con fundido: 1 a 6 ms de retraso), `dsp/AutoTune` (la nota de la
     escala más cercana y la velocidad de corrección), `dsp/VoiceDynamics` (filtro de graves,
     compuerta y de-esser), `dsp/Doubler` y `engine/VoiceFx` (la cadena completa, sus ajustes y
-    presets).
+    presets). `dsp/DriftFifo` une el reloj de la entrada (p. ej. un micrófono USB) con el de la
+    salida sin cortes.
 - `app/src/main/cpp/third_party/eigen/`: Eigen 3.4 (álgebra lineal, licencia MPL2).
 - `tools/modelos/` y `.github/workflows/modelos.yml`: convierten el modelo original (PyTorch) al
   formato `.wvm` y generan las referencias con las que se compara el C++; se publican en
@@ -146,11 +147,16 @@ Sin plugins VST en Android.
     cantar en vivo).
   - `Plataforma.kt`: lo único que obliga Android en la pantalla (atrás, pantalla encendida,
     selector de archivos, barra de estado).
+  - `Errores.kt` y `android/Fallas.cpp`: si la app se cierra por un error (de la pantalla o del
+    núcleo), queda anotado y la próxima vez la app ofrece copiarlo para mandarlo.
+  - `src/main/baseline-prof.txt` + `profileinstaller`: Android precompila la pantalla al instalar.
 
 ## Pruebas
 - `tests/native/run.sh`: pruebas del núcleo en Linux con ASan, UBSan y TSan (incluye el
   Studio completo: sesión, importar, editar, deshacer, exportar, varios hilos a la vez).
 - `tests/check_jni.py`: que Kotlin y C++ coincidan en el puente (nombres y tipos).
+- `tests/android/compilar.sh`: que compile la parte de Android del núcleo (con encabezados mínimos
+  de Oboe y Android) sin esperar al CI.
 - `tests/native/modelo-real.sh`: el modelo de voz de verdad en C++ comparado con PyTorch
   (cada capa y la canción completa); lo corre el CI.
 - `tests/previa/previa.sh`: vista previa de la pantalla en Linux (Compose de escritorio con

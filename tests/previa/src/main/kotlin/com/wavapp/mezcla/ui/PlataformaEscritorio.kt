@@ -1,6 +1,9 @@
 package com.wavapp.mezcla.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asComposeImageBitmap
 import org.jetbrains.skia.Bitmap
@@ -27,6 +30,12 @@ internal fun recordarGuardarMezcla(): () -> Unit = {}
 
 @Composable
 internal fun recordarGuardarPresentacion(): () -> Unit = {}
+
+/** En la vista previa no hay reportes de errores, salvo el de prueba de la escena "error". */
+var errorDePrueba by mutableStateOf<String?>(null)
+
+@Composable
+internal fun recordarUltimoError(): UltimoError = UltimoError(errorDePrueba) { errorDePrueba = null }
 
 internal fun imagenDePixeles(px: IntArray, ancho: Int, alto: Int): ImageBitmap {
     val bmp = Bitmap()

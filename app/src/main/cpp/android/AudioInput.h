@@ -15,10 +15,10 @@ class LiveInput;
 // frecuencia, Oboe convierte.
 //
 // Normalmente se lee "a la par" de la salida (full duplex): la entrada no tiene hilo propio; en
-// cada ráfaga de la salida se vacía lo que llegó a una reserva propia, se procesa y suena en esa
-// misma ráfaga. Es el menor retraso posible para cantar en vivo. La reserva guarda una ráfaga de
-// colchón (más si llegan a faltar muestras) y tira lo que se junte de más (el retraso no crece).
-// Si en un aparato así no llega nada, se vuelve a abrir con su propio hilo (como antes).
+// cada ráfaga de la salida se vacía lo que llegó y pasa directo al núcleo, se procesa y suena en
+// esa misma ráfaga. Es el menor retraso posible para cantar en vivo. La reserva de la escucha
+// (DriftFifo, en el núcleo) une los dos relojes (p. ej. un micrófono USB y la salida del celular)
+// sin huecos ni saltos. Si en un aparato así no llega nada, se vuelve a abrir con su propio hilo.
 class AudioInput : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback {
 public:
     static constexpr int kSampleRate = 48000;
@@ -42,8 +42,8 @@ public:
 
     // ---------- Hilo de la salida: vacía lo que llegó y pasa al núcleo `frames` cuadros.
     void pull(int frames);
-    // [modo (0 cerrada, 1 a la par, 2 con hilo propio), segundos leídos, veces que faltaron
-    //  muestras, cuadros tirados por retraso de más, reserva (ráfagas), ráfaga, capacidad]
+    // [modo (0 cerrada, 1 a la par, 2 con hilo propio), segundos leídos, veces que faltó audio en
+    //  la escucha, saltos (sobraba mucho), margen de la reserva (cuadros), ráfaga, capacidad]
     static constexpr int kInfoCount = 7;
     void info(int32_t *out);
 
@@ -53,9 +53,8 @@ public:
 private:
     bool openStream(int deviceId, int channels, oboe::InputPreset preset, bool pull);
 
-    static constexpr int kMaxCushion = 4;     // ráfagas de reserva como máximo
     static constexpr int kCapacity = 4096;    // lo que se le pide a la entrada (85 ms)
-    static constexpr int kFifoFrames = 8192;  // la reserva propia
+    static constexpr int kReadFrames = 2048;  // de a cuánto se lee
 
     LiveInput &mLive;
     std::mutex mMutex;
@@ -64,12 +63,9 @@ private:
     int mDevice = 0, mChannelsWanted = 1;
 
     // Hilo de la salida (modo a la par)
-    std::vector<float> mFifo, mTmp;
+    std::vector<float> mTmp;
     int mChannels = 1;
-    int64_t mFifoRead = 0, mFifoWrite = 0;  // cuadros
-    bool mPriming = true;
-    int mCushion = 1;
     int64_t mOutFrames = 0;  // cuadros que pidió la salida desde que se abrió
 
-    std::atomic<int64_t> mPulled{0}, mUnderruns{0}, mDropped{0};
+    std::atomic<int64_t> mPulled{0};
 };

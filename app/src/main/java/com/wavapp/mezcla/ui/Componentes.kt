@@ -64,6 +64,8 @@ import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -89,6 +91,33 @@ fun Texto(
     BasicText(
         texto, modifier, if (alineacion == null) estilo.copy(color = color) else estilo.copy(color = color, textAlign = alineacion),
         overflow = TextOverflow.Ellipsis, maxLines = lineas,
+    )
+}
+
+/**
+ * Como `coerceIn`, pero nunca falla: si no hay espacio (el rango queda al revés, p. ej. un pedazo
+ * muy angosto en pantalla) da el punto medio. `coerceIn` cierra la app en ese caso.
+ */
+fun Float.entre(minimo: Float, maximo: Float): Float =
+    if (maximo < minimo) (minimo + maximo) / 2f else coerceIn(minimo, maximo)
+
+/**
+ * Un texto que cambia en cada cuadro (un tiempo con milésimas): se lee y se dibuja al dibujar,
+ * sin recomponer. Ocupa lo que ocupe [plantilla] (el texto más ancho que puede tener).
+ */
+@Composable
+fun TextoAlDibujar(texto: () -> String, estilo: TextStyle, color: Color, plantilla: String, modifier: Modifier = Modifier) {
+    val medidor = rememberTextMeasurer()
+    val conColor = estilo.copy(color = color)
+    val tam = remember(conColor, plantilla) { medidor.measure(plantilla, conColor).size }
+    val dens = LocalDensity.current
+    Spacer(
+        modifier
+            .size(with(dens) { tam.width.toDp() }, with(dens) { tam.height.toDp() })
+            .drawBehind {
+                val t = medidor.measure(texto(), conColor)
+                drawText(t, topLeft = Offset((size.width - t.size.width) / 2f, 0f))
+            },
     )
 }
 

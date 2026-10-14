@@ -140,7 +140,7 @@ fun MedidoresMaster(modifier: Modifier = Modifier) {
             for (db in listOf(-48, -24, -12, -6, -3, 0)) {
                 val t = medidor.measure(if (db == 0) "0" else "$db".replace('-', '−'), estilo)
                 val x = etiqueta + uMed(db.toFloat()) * ancho - t.size.width / 2f
-                drawText(t, topLeft = Offset(x.coerceIn(etiqueta - 4.dp.toPx(), size.width - luz - t.size.width), 0f))
+                drawText(t, topLeft = Offset(x.entre(etiqueta - 4.dp.toPx(), size.width - luz - t.size.width), 0f))
             }
         }
     }

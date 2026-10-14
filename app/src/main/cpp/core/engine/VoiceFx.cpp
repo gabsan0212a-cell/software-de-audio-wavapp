@@ -12,7 +12,7 @@ const Info kInfo[kCount] = {
     {"encendida", 0, 1, 0, 1, false},
     {"autotune", 0, 1, 1, 1, false},
     {"afinar", 0, 1, 1, 0.01, false},               // cuánto corrige (0..1)
-    {"velocidad", 0, 400, 20, 1, false},            // ms (0 = robot)
+    {"velocidad", 0, 400, 5, 1, false},             // ms (0 = robot); al empezar ya se nota
     {"tonica", 0, 11, 9, 1, false},                 // si la escala no es la de la canción
     {"escala", 0, 3, 0, 1, false},                  // ScaleChoice
     {"registro", 0, 2, 1, 1, false},                // grave, media, aguda
@@ -52,7 +52,7 @@ Preset make(const char *name, std::initializer_list<std::pair<int, float>> chang
 const std::vector<Preset> &presets() {
     static const std::vector<Preset> list = {
         // Como la canción: afinación rápida pero no robot, doblaje, eco de 1/8 con punto y reverb.
-        make("Paraíso", {{kTuneAmount, 1}, {kTuneSpeed, 12}, {kGateThreshold, -52}, {kDeessThreshold, -30},
+        make("Paraíso", {{kTuneAmount, 1}, {kTuneSpeed, 4}, {kGateThreshold, -52}, {kDeessThreshold, -30},
                          {kCompThreshold, -22}, {kCompRatio, 4}, {kCompMakeup, 6}, {kDoublerOn, 1},
                          {kDoublerMix, 0.28f}, {kDelayOn, 1}, {kDelayBeats, 1}, {kDelayFeedback, 0.3f},
                          {kDelayMix, 0.14f}, {kReverbOn, 1}, {kReverbMix, 0.24f}, {kReverbDecay, 2.2f}}),

@@ -4,6 +4,7 @@
 #include <android/log.h>
 
 #include <algorithm>
+#include <climits>
 
 #include "engine/LiveInput.h"
 
@@ -22,15 +23,9 @@ int AudioInput::start(int deviceId, int channels, bool pull) {
     mLost.store(false);
     mStuck.store(false);
     mPull.store(pull);
-    mFifo.assign(static_cast<size_t>(kFifoFrames) * 2, 0.0f);
-    mTmp.assign(static_cast<size_t>(kFifoFrames) * 2, 0.0f);
-    mFifoRead = mFifoWrite = 0;
-    mPriming = true;
-    mCushion = 1;
+    mTmp.assign(static_cast<size_t>(kReadFrames) * 2, 0.0f);
     mOutFrames = 0;
     mPulled.store(0);
-    mUnderruns.store(0);
-    mDropped.store(0);
     // "VoicePerformance" (Android 10+) es para escucharse en vivo: el menor retraso y sin el
     // procesamiento de voz. Si el aparato no lo acepta, "VoiceRecognition" (sin control
     // automático de volumen en casi todos los celulares).
@@ -103,77 +98,32 @@ void AudioInput::pull(int frames) {
     std::unique_lock<std::mutex> lk(mMutex, std::try_to_lock);
     if (!lk.owns_lock() || !mStream) return;
     oboe::AudioStream *s = mStream.get();
-    const int ch = mChannels;
-    const int burst = std::max(1, s->getFramesPerBurst());
-    auto at = [&](int64_t frame) { return static_cast<size_t>((frame % kFifoFrames) * ch); };
-
-    // 1) Todo lo que llegó, a la reserva propia (sin esperar). Si se llena, se tira lo más viejo.
+    // Todo lo que llegó, directo al núcleo (sin esperar). La reserva de la escucha (DriftFifo, en
+    // el núcleo) une el reloj de la entrada con el de la salida: sin huecos ni saltos.
     for (int vueltas = 0; vueltas < 8; ++vueltas) {
-        int64_t level = mFifoWrite - mFifoRead;
-        if (level > kFifoFrames - burst) {
-            const int64_t drop = level - (kFifoFrames - burst);
-            mFifoRead += drop;
-            mDropped.fetch_add(drop, std::memory_order_relaxed);
-            level -= drop;
-        }
-        const int want = static_cast<int>(kFifoFrames - level);
-        auto r = s->read(mTmp.data(), want, 0);
+        auto r = s->read(mTmp.data(), kReadFrames, 0);
         const int got = r ? r.value() : 0;
         if (got <= 0) break;
-        for (int f = 0; f < got; ++f) {
-            float *dst = &mFifo[at(mFifoWrite + f)];
-            const float *src = &mTmp[static_cast<size_t>(f) * ch];
-            for (int c = 0; c < ch; ++c) dst[c] = src[c];
-        }
-        mFifoWrite += got;
+        mLive.push(mTmp.data(), got, mChannels);
         mPulled.fetch_add(got, std::memory_order_relaxed);
-        if (got < want) break;  // no hay más
+        if (got < kReadFrames) break;  // no hay más
     }
     // Abierta 2 s y no llegó nada: esta forma no sirve en este aparato.
     mOutFrames += frames;
     if (mOutFrames > 2LL * kSampleRate && mPulled.load(std::memory_order_relaxed) == 0) mStuck.store(true);
-
-    // 2) Colchón y retraso: se junta un colchón antes de empezar; lo de más se tira.
-    frames = std::min(frames, kFifoFrames / 2);
-    const int cushion = std::min(mCushion * burst, kFifoFrames / 4);
-    int64_t level = mFifoWrite - mFifoRead;
-    if (mPriming) {
-        if (level < frames + cushion) return;
-        mPriming = false;
-    }
-    const int64_t extra = level - (frames + cushion + burst);
-    if (extra > 0) {
-        mFifoRead += extra;
-        mDropped.fetch_add(extra, std::memory_order_relaxed);
-        level -= extra;
-    }
-
-    // 3) Al núcleo.
-    const int n = static_cast<int>(std::min<int64_t>(frames, level));
-    for (int f = 0; f < n; ++f) {
-        const float *src = &mFifo[at(mFifoRead + f)];
-        float *dst = &mTmp[static_cast<size_t>(f) * ch];
-        for (int c = 0; c < ch; ++c) dst[c] = src[c];
-    }
-    mFifoRead += n;
-    if (n > 0) mLive.push(mTmp.data(), n, ch);
-    if (n < frames) {
-        // Faltaron muestras: vuelve a juntar el colchón, ahora una ráfaga más grande (así un
-        // aparato con ráfagas de entrada largas encuentra solo su punto).
-        mPriming = true;
-        if (mCushion < kMaxCushion) ++mCushion;
-        mUnderruns.fetch_add(1, std::memory_order_relaxed);
-    }
 }
 
 void AudioInput::info(int32_t *out) {
     std::lock_guard<std::mutex> lk(mMutex);
     const bool open = mOpen.load() && mStream;
+    int64_t underruns = 0, skips = 0;
+    int level = 0, safety = 0;
+    mLive.monitorStats(underruns, skips, level, safety);
     out[0] = open ? (mPull.load() ? 1 : 2) : 0;
     out[1] = static_cast<int32_t>(mPulled.load() / kSampleRate);
-    out[2] = static_cast<int32_t>(std::min<int64_t>(mUnderruns.load(), INT32_MAX));
-    out[3] = static_cast<int32_t>(std::min<int64_t>(mDropped.load(), INT32_MAX));
-    out[4] = mCushion;
+    out[2] = static_cast<int32_t>(std::min<int64_t>(underruns, INT32_MAX));
+    out[3] = static_cast<int32_t>(std::min<int64_t>(skips, INT32_MAX));
+    out[4] = safety;
     out[5] = open ? mStream->getFramesPerBurst() : 0;
     out[6] = open ? mStream->getBufferCapacityInFrames() : 0;
 }

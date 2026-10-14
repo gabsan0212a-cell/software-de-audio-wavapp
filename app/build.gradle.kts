@@ -15,8 +15,8 @@ android {
         applicationId = "com.wavapp.mezcla"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "1.0.0"
+        versionCode = 18
+        versionName = "1.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
@@ -90,6 +90,10 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.activity:activity-compose:1.9.3")
+    // Instala los perfiles base (los de Compose y el de la app, src/main/baseline-prof.txt) aunque
+    // el APK no venga de la Play Store: Android precompila ese código y la pantalla va más fluida
+    // desde la primera vez.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     androidTestImplementation(composeBom)

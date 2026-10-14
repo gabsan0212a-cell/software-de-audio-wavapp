@@ -88,12 +88,24 @@ jobs:
           # El modelo va adentro y sin comprimir (el núcleo lo lee directo del APK).
           unzip -v wavapp.apk assets/modelos/voz-kim.wvm | tee modelo-en-apk.txt
           grep -q ' Stored ' modelo-en-apk.txt
+          # Los símbolos del núcleo (la biblioteca sin recortar) para leer los reportes de fallas
+          # de esta versión: cada "+0x..." del reporte se traduce a función y línea.
+          mkdir -p simbolos
+          for so in $(find app/build/intermediates/cxx -path '*/obj/*' -name libwavapp.so); do
+            abi=$(basename "$(dirname "$so")")
+            mkdir -p "simbolos/$abi" && cp "$so" "simbolos/$abi/"
+          done
+          [ -n "$(ls -A simbolos)" ] || echo "No se encontró la biblioteca sin recortar" > simbolos/LEEME.txt
+          ls -lR simbolos
+          (cd simbolos && zip -qr ../simbolos-nucleo.zip .)
       - id: version
         run: echo "version=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: wavapp-apk
-          path: wavapp.apk
+          path: |
+            wavapp.apk
+            simbolos-nucleo.zip
           compression-level: 0  # casi todo es el modelo, que no se comprime
 
   emulador:
@@ -187,5 +199,6 @@ jobs:
           # Una por versión, para poder regresar a una anterior. Si se vuelve a publicar la
           # misma versión, se reemplaza completa (etiqueta incluida) con el commit nuevo.
           gh release delete "v$VERSION" -y --cleanup-tag || true
-          gh release create "v$VERSION" wavapp.apk --target "$GITHUB_SHA" \
+          # Con los símbolos del núcleo (para leer reportes de fallas; no hace falta descargarlos).
+          gh release create "v$VERSION" wavapp.apk simbolos-nucleo.zip --target "$GITHUB_SHA" \
             --title "WavApp $VERSION" --notes "$NOTAS"

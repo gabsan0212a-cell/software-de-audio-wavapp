@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import com.wavapp.mezcla.Errores
 import com.wavapp.mezcla.Mesa
 
 // Lo que obliga Android (y nada más): botón "atrás", pantalla encendida, selector de archivos,
@@ -92,6 +93,17 @@ internal fun recordarGuardarPresentacion(): () -> Unit {
         if (uri != null) Mesa.guardarPresentacion(context, uri)
     }
     return remember(guardar) { { guardar.launch(Mesa.nombrePresentacion()) } }
+}
+
+/** El reporte de la última vez que la app se cerró por un error (lo anota [Errores]). */
+@Composable
+internal fun recordarUltimoError(): UltimoError {
+    val context = LocalContext.current
+    var texto by remember { mutableStateOf(Errores.leer(context)) }
+    return UltimoError(texto) {
+        Errores.borrar(context)
+        texto = null
+    }
 }
 
 /** Imagen a partir de píxeles ARGB (el espectrograma). */

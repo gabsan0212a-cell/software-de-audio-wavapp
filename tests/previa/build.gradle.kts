@@ -20,7 +20,7 @@ kotlin {
     // Todo el Kotlin de la app menos lo que es solo de Android (aquí lo reemplazan los
     // archivos de src/main/kotlin).
     sourceSets["main"].kotlin.srcDir("../../app/src/main/java")
-    sourceSets["main"].kotlin.exclude("**/MainActivity.kt", "**/ui/Plataforma.kt", "**/TrabajoLargo.kt")
+    sourceSets["main"].kotlin.exclude("**/MainActivity.kt", "**/ui/Plataforma.kt", "**/TrabajoLargo.kt", "**/Errores.kt")
 }
 
 tasks.register<JavaExec>("previa") {

@@ -12,6 +12,7 @@ import com.wavapp.mezcla.ui.Tema
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        Errores.instalar(applicationContext)  // si algo falla, queda anotado para mandarlo
         // Barras del sistema transparentes: la pantalla se dibuja detrás (la barra de pestañas
         // llega hasta abajo, como en iOS).
         enableEdgeToEdge(navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT))

@@ -21,6 +21,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -360,9 +362,10 @@ private fun Grabador(modifier: Modifier) {
                 if (e.grabando) {
                     BotonTexto("Descartar", { Mesa.descartarGrabacion() }, color = p.rojo, estilo = Tipo.subtitulo)
                 } else {
+                    val noEstaAlInicio by remember { derivedStateOf { Mesa.posicion > 0.0 } }
                     BotonTexto(
                         "Al inicio", { Mesa.saltar(0.0) }, estilo = Tipo.subtitulo,
-                        habilitado = Mesa.posicion > 0.0 && Mesa.pistas.isNotEmpty(),
+                        habilitado = noEstaAlInicio && Mesa.pistas.isNotEmpty(),
                     )
                 }
             }
@@ -384,11 +387,16 @@ private fun Grabador(modifier: Modifier) {
 private fun TiempoGrabador() {
     val p = LocalPaleta.current
     val e = Mesa.entrada
-    val texto = when {
-        e.grabando -> tiempoGrabado(e.segundos)
-        !e.abierta -> "Entrada cerrada"
-        Mesa.pistas.isEmpty() -> "Listo para grabar"
-        else -> "Desde " + tiempoCorto(Mesa.posicion) + " con la mezcla"
+    // El texto cambia unas veces por segundo (no en cada cuadro como la posición).
+    val texto by remember {
+        derivedStateOf {
+            when {
+                e.grabando -> tiempoGrabado(e.segundos)
+                !e.abierta -> "Entrada cerrada"
+                Mesa.pistas.isEmpty() -> "Listo para grabar"
+                else -> "Desde " + tiempoCorto(Mesa.posicion) + " con la mezcla"
+            }
+        }
     }
     Texto(
         texto, if (e.grabando) Tipo.titulo3.numeros else Tipo.subtitulo.numeros, if (e.grabando) p.texto else p.texto2,

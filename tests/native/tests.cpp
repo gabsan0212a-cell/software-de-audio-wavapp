@@ -27,6 +27,7 @@
 #include "dsp/Analyzer.h"
 #include "dsp/AutoTune.h"
 #include "dsp/Delay.h"
+#include "dsp/DriftFifo.h"
 #include "dsp/Dynamics.h"
 #include "dsp/Equalizer.h"
 #include "dsp/Limiter.h"
@@ -4456,6 +4457,257 @@ TEST(cuentaParaEntrar) {
     CHECK(s.removeTrack(4));
     s.songCue(q);
     CHECK(q[0] == Studio::kCueNone && q[3] == 0.0f);
+}
+
+// Edición al azar sobre pistas largas (como una canción de verdad): nada se rompe y los pedazos
+// siempre son válidos, también pidiendo la onda con valores raros (lo que hace la pantalla).
+TEST(edicionAlAzar) {
+    const std::string dir = nuevaCarpeta("edicion-azar");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.clearProject();
+    const std::string a = tmpPath("larga-mono.wav"), b = tmpPath("larga-estereo.wav");
+    const int64_t largo[2] = {48000LL * 200, 48000LL * 150};
+    {
+        WavSpec spec;
+        spec.channels = 1;
+        makeWav(a, spec, largo[0], [](int64_t f, int) { return 0.3 * std::sin(f * 0.01); });
+    }
+    {
+        WavSpec spec;
+        makeWav(b, spec, largo[1], [](int64_t f, int c) { return 0.2 * std::sin(f * (c ? 0.02 : 0.03)); });
+    }
+    CHECK(s.importFiles({abrir(a), abrir(b)}, {"Canción.wav", "Otra.wav"}) && s.waitIdle(120000));
+    CHECK(s.trackCount() == 2);
+    const int ids[2] = {idDe(s, 0), idDe(s, 1)};
+    std::mt19937 rng(1234);
+    auto azar = [&](int64_t lo, int64_t hi) { return std::uniform_int_distribution<int64_t>(lo, hi)(rng); };
+    int fallas = 0;
+    for (int k = 0; k < 6000; ++k) {
+        const int id = ids[azar(0, 1)];
+        const int n = static_cast<int>(s.regions(id).size());
+        const int i = static_cast<int>(azar(-1, n));  // a veces fuera de rango
+        switch (azar(0, 11)) {
+            case 0:
+            case 1:  // arrastre: mover, recortar o fundidos
+                if (s.editBegin(id, i, static_cast<int>(azar(1, 5)))) {
+                    for (int d = 0; d < 4; ++d) s.editDrag(azar(-48000LL * 60, 48000LL * 60), azar(0, 4800));
+                    s.editEnd();
+                }
+                break;
+            case 2:
+                s.seek(static_cast<double>(azar(0, 48000LL * 220)) / 48000.0);
+                s.cut(azar(0, 3) == 0 ? -1 : id, i);
+                break;
+            case 3: s.deleteRegion(id, i); break;
+            case 4: s.nudgeRegion(id, i, static_cast<int>(azar(-5000, 5000))); break;
+            case 5: s.setRegionFade(id, i, azar(0, 1) == 1, azar(-100, 48000LL * 30)); break;
+            case 6: s.undo(); break;
+            case 7: s.redo(); break;
+            case 8:
+                if (azar(0, 20) == 0) s.restoreRegions(id);
+                break;
+            default: {  // la onda para dibujar
+                const int64_t from = azar(-48000, 48000LL * 220), to = from + azar(-100, 48000LL * 100);
+                (void)s.regionWave(id, i, from, to, static_cast<int>(azar(-5, 2000)));
+                break;
+            }
+        }
+        for (int t = 0; t < 2; ++t) {
+            const std::vector<Region> rr = s.regions(ids[t]);
+            for (size_t q = 0; q < rr.size(); ++q) {
+                const Region &g = rr[q];
+                const bool ok = g.length > 0 && g.start >= 0 && g.src >= 0 && g.src + g.length <= largo[t] &&
+                                g.fadeIn >= 0 && g.fadeOut >= 0 && g.fadeIn + g.fadeOut <= g.length;
+                if (!ok && fallas++ < 5)
+                    std::printf("  pedazo inválido (vuelta %d): pista %d #%zu inicio %lld origen %lld largo %lld fundidos %lld/%lld\n",
+                                k, t, q, static_cast<long long>(g.start), static_cast<long long>(g.src),
+                                static_cast<long long>(g.length), static_cast<long long>(g.fadeIn),
+                                static_cast<long long>(g.fadeOut));
+            }
+        }
+    }
+    CHECK(fallas == 0);
+    // Y la mezcla sigue sonando con todo eso.
+    std::vector<float> out(2 * 480);
+    s.seek(0);
+    s.play();
+    for (int k = 0; k < 50; ++k) s.mixer().process(out.data(), 480, 2);
+    for (float v : out) CHECK(std::isfinite(v));
+}
+
+// Que se note: con la velocidad con que empieza la voz en vivo, una nota desafinada (+25 cents)
+// con vibrato de ±40 cents queda pegada a la nota (lo que hace que el auto-tune se oiga). Con la
+// de antes (20 ms) el vibrato pasaba a medias y casi no se notaba.
+TEST(autoTuneSeNota) {
+    std::vector<double> hz(4 * 48000);
+    for (size_t i = 0; i < hz.size(); ++i)
+        hz[i] = 329.63 * std::exp2((25.0 + 40.0 * std::sin(2 * M_PI * 5.5 * i / 48000.0)) / 1200.0);
+    const std::vector<float> v = vozSintetica(hz);
+    const float porOmision = vfx::info(vfx::kTuneSpeed).def;
+    CHECK(porOmision <= 5.0f);
+    for (float velocidad : {porOmision, 20.0f}) {
+        AutoTune at(48000);
+        TuneSettings s;
+        s.key = 11;  // Si menor (tiene Mi)
+        s.scale = kScaleMinor;
+        s.speedMs = velocidad;
+        std::vector<float> y = v;
+        for (size_t i = 0; i < y.size(); i += 64) at.process(y.data() + i, 64, s, false);
+        // Ventanas de 10 ms cada 2.5 ms (el tono de lo que sale en cada momento).
+        PitchDetector det(48000, 480, 60.0f, 1000.0f);
+        int total = 0, cerca = 0;
+        double suma = 0;
+        for (size_t i = 48000; i + det.needed() < y.size(); i += 120) {
+            const float h = det.detect(y.data() + i, 0.15f).hz;
+            const double c = h > 0 ? std::fabs(centsEntre(h, 329.63)) : 1200.0;
+            ++total;
+            suma += std::min(c, 100.0);
+            cerca += c <= 10.0;
+        }
+        std::printf("  %.0f ms: a ≤10 cents %.0f %%, desvío medio %.1f cents\n", velocidad, 100.0 * cerca / total, suma / total);
+        if (velocidad == porOmision) {
+            CHECK(cerca >= total * 9 / 10);
+            CHECK(suma / total < 7.0);
+        } else {
+            CHECK(cerca < total * 8 / 10);
+        }
+    }
+}
+
+// Las sesiones de antes de la versión 2 de la voz: la afinación que casi no se notaba (20 ms por
+// omisión, 12 ms en "Paraíso") pasa a la nueva; lo que se puso a mano se queda.
+TEST(sesionVozVieja) {
+    for (const auto &[guardada, esperada] : std::vector<std::pair<double, float>>{{20, 5}, {12, 4}, {33, 33}}) {
+        const std::string dir = nuevaCarpeta("voz-vieja-" + std::to_string(static_cast<int>(guardada)));
+        const std::string json = R"({"version":1,"siguienteId":1,"pistas":[],"entrada":{"voz":{"encendida":1,"velocidad":)" +
+                                 std::to_string(guardada) + "}}}";
+        FILE *f = std::fopen((dir + "/sesion.json").c_str(), "wb");
+        std::fputs(json.c_str(), f);
+        std::fclose(f);
+        Studio s;
+        s.open(dir, dir);
+        CHECK(s.waitIdle(30000));
+        CHECK(s.voiceFxState()[vfx::kTuneSpeed] == esperada);
+        CHECK(s.voiceFxState()[vfx::kOn] == 1.0f);
+        CHECK(s.saveNow());
+        CHECK(leerSesion(dir)["entrada"]["voz"]["version"].asInt() == 2);
+    }
+    // Ya en la versión 2, 20 ms (puesto a mano) se respeta.
+    const std::string dir = nuevaCarpeta("voz-v2");
+    const char *json = R"({"version":1,"siguienteId":1,"pistas":[],"entrada":{"voz":{"velocidad":20,"version":2}}})";
+    FILE *f = std::fopen((dir + "/sesion.json").c_str(), "wb");
+    std::fputs(json, f);
+    std::fclose(f);
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    CHECK(s.voiceFxState()[vfx::kTuneSpeed] == 20.0f);
+}
+
+// ---------------------------------------------------------------- relojes de la entrada y la salida
+
+// Simula la entrada (con su propio reloj, en ráfagas) y la salida (que pide de a 64 cuadros, 3
+// por ráfaga de 192): un seno limpio debe salir sin faltas, saltos ni chasquidos.
+struct SimRelojes {
+    DriftFifo fifo{2, 8192};
+    double entradaHz = 48000, fase = 0;
+    int rafagaEntrada = 240;
+    int64_t entregados = 0;  // cuadros de entrada ya entregados
+    double maxSegunda = 0;   // peor "segunda diferencia" (un chasquido la dispara)
+    float prev[2] = {0, 0}, prev2[2] = {0, 0};
+    int64_t muestras = 0;
+    int maxNivel = 0;
+    // Corre `segundos` de la salida. `traba`: momento (s) en que la entrada se detiene `trabaMs`.
+    // `pausa`: momento en que la salida deja de pedir `pausaMs` (la entrada sigue llegando).
+    void correr(double segundos, double traba = -1, double trabaMs = 0, double pausa = -1, double pausaMs = 0) {
+        std::vector<float> rafaga, out(2 * 64);
+        const int64_t total = static_cast<int64_t>(segundos * 48000 / 192);
+        for (int64_t k = 0; k < total; ++k) {
+            const double t = (k + 1) * 192 / 48000.0;  // hora (reloj de la salida)
+            // La entrada entrega cada ráfaga cuando su reloj la completa (salvo durante la traba).
+            for (;;) {
+                const double listo = (entregados + rafagaEntrada) / entradaHz;
+                if (listo > t) break;
+                if (traba >= 0 && listo > traba && t < traba + trabaMs / 1000) break;
+                rafaga.resize(static_cast<size_t>(2 * rafagaEntrada));
+                for (int i = 0; i < rafagaEntrada; ++i) {
+                    const float v = static_cast<float>(0.5 * std::sin(fase));
+                    fase += 2 * M_PI * 440 / entradaHz;
+                    rafaga[2 * i] = v;
+                    rafaga[2 * i + 1] = -v;
+                }
+                fifo.push(rafaga.data(), rafagaEntrada);
+                entregados += rafagaEntrada;
+            }
+            if (pausa >= 0 && t > pausa && t < pausa + pausaMs / 1000) continue;  // la salida no pide
+            for (int b = 0; b < 3; ++b) {
+                fifo.pull(out.data(), 64);
+                for (int i = 0; i < 64; ++i) {
+                    for (int c = 0; c < 2; ++c) {
+                        const float v = out[2 * i + c];
+                        if (muestras > 2) maxSegunda = std::max(maxSegunda, std::fabs(static_cast<double>(v) - 2 * prev[c] + prev2[c]));
+                        prev2[c] = prev[c];
+                        prev[c] = v;
+                    }
+                    ++muestras;
+                }
+                maxNivel = std::max(maxNivel, fifo.level());
+            }
+        }
+    }
+};
+
+TEST(relojesDistintos) {
+    // Un seno de 0.5 a 440 Hz cambia su segunda diferencia en ~0.0017 por muestra: un chasquido
+    // (un salto o un hueco) la lleva a más de 0.05.
+    for (double ppm : {150.0, -150.0, 0.0}) {
+        SimRelojes s;
+        s.entradaHz = 48000 * (1 + ppm * 1e-6);
+        s.correr(600);  // 10 minutos
+        std::printf("  %+.0f ppm: faltas %lld, saltos %lld, velocidad %.6f, reserva máx %d, 2.ª dif %.4f\n", ppm,
+                    static_cast<long long>(s.fifo.underruns()), static_cast<long long>(s.fifo.skips()), s.fifo.ratio(),
+                    s.maxNivel, s.maxSegunda);
+        CHECK(s.fifo.underruns() == 0 && s.fifo.skips() == 0);
+        CHECK(s.maxSegunda < 0.01);  // el fundido de entrada da ~0.005; un chasquido, más de 0.05
+        // El retraso no crece (sin corregir, 150 ppm en 10 min serían 4320 cuadros de más).
+        CHECK(s.maxNivel < 64 + 2 * 240 + 192 + 64);
+        CHECK(s.fifo.level() < 64 + 240 + 192 + 64);
+    }
+    // Ráfagas grandes de la entrada (como algunos celulares: 20 ms) y relojes distintos.
+    {
+        SimRelojes s;
+        s.entradaHz = 48000 * (1 + 120e-6);
+        s.rafagaEntrada = 960;
+        s.correr(300);
+        std::printf("  ráfagas de 960: faltas %lld, saltos %lld, reserva máx %d, 2.ª dif %.4f\n",
+                    static_cast<long long>(s.fifo.underruns()), static_cast<long long>(s.fifo.skips()), s.maxNivel, s.maxSegunda);
+        CHECK(s.fifo.underruns() == 0 && s.fifo.skips() == 0 && s.maxSegunda < 0.01);
+        CHECK(s.maxNivel < 64 + 2 * 960 + 192 + 64);
+    }
+    // La entrada se traba 15 ms: baja a silencio con fundido (sin chasquido) y se recupera sola.
+    {
+        SimRelojes s;
+        s.correr(30, 10.0, 15.0);
+        std::printf("  traba de 15 ms: faltas %lld, saltos %lld, reserva %d (margen %d), 2.ª dif %.4f\n",
+                    static_cast<long long>(s.fifo.underruns()), static_cast<long long>(s.fifo.skips()), s.fifo.level(),
+                    s.fifo.safety(), s.maxSegunda);
+        CHECK(s.fifo.underruns() == 1 && s.fifo.safety() == 96);
+        CHECK(s.maxSegunda < 0.02);
+        CHECK(s.fifo.level() < 96 + 240 + 192 + 64);
+    }
+    // La salida se traba 80 ms y la entrada sigue llegando (sobran 80 ms): salta con fundido
+    // cruzado y vuelve al mínimo.
+    {
+        SimRelojes s;
+        s.correr(20, -1, 0, 5.0, 80.0);
+        std::printf("  80 ms de más: faltas %lld, saltos %lld, reserva %d, 2.ª dif %.4f\n",
+                    static_cast<long long>(s.fifo.underruns()), static_cast<long long>(s.fifo.skips()), s.fifo.level(), s.maxSegunda);
+        CHECK(s.fifo.skips() == 1 && s.fifo.underruns() == 0);
+        CHECK(s.maxSegunda < 0.02);
+        CHECK(s.fifo.level() < 64 + 240 + 192 + 64);
+    }
 }
 
 int main(int argc, char **argv) {

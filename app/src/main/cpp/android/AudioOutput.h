@@ -14,7 +14,8 @@ class Mixer;
 // El proyecto trabaja a 48 kHz; si el celular usa otra frecuencia, Oboe convierte.
 // Tras unos segundos sin sonar la salida se duerme (ahorra batería) y start() la despierta.
 // Con la entrada abierta, en cada ráfaga primero lee la entrada (full duplex) y no se duerme.
-// En modo en vivo usa el búfer más chico seguro (2 ráfagas) y lo agranda solo si hay cortes.
+// En modo en vivo usa el búfer más chico seguro (2 ráfagas, al menos ~5 ms) y lo agranda solo si
+// hay cortes (también fuera del modo en vivo); lo aprendido se queda mientras la salida esté abierta.
 // Le avisa al sistema cuánto trabajo hace cada ráfaga (ADPF) para que el procesador no baje
 // de velocidad en medio de la canción.
 class AudioOutput : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback {
@@ -49,7 +50,7 @@ private:
     std::atomic<bool> mLiveMode{false};
     // Hilo de audio
     int64_t mIdleFrames = 0;
-    int mBursts = 0, mLiveBursts = 2;
+    int mBursts = 0, mNormalBursts = 4, mLiveBursts = 2;
     bool mWasLive = false;
     int64_t mTuneFrames = 0;
     int32_t mLastXruns = 0;

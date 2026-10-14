@@ -177,6 +177,27 @@ class PantallaTest {
         regla.waitUntil(2_000) { p0.pedazos == original }
         assertEquals(12.0, Mesa.duracion, 0.001)
 
+        // Un pedazo muy angosto en pantalla (como uno corto en una canción larga) se elige y se
+        // dibuja con sus agarraderas sin que se cierre la app.
+        regla.runOnUiThread {
+            Edicion.seleccion = Edicion.Seleccion(p0.id, 0)
+            Mesa.saltar(6.0)
+            Edicion.cortarEnCursor()
+            Mesa.saltar(6.1)
+            Edicion.cortarEnCursor()
+        }
+        regla.waitUntil(2_000) { p0.pedazos.size == 3 }
+        val angosto = p0.pedazos.indexOfFirst { it.largo == 4800L }
+        assertTrue("pedazos ${p0.pedazos}", angosto >= 0)
+        regla.runOnUiThread { Edicion.seleccion = Edicion.Seleccion(p0.id, angosto) }
+        avanzarMedidores()
+        regla.onNodeWithTag("carril-${p0.id}").captureToImage()
+        regla.runOnUiThread {
+            Edicion.deshacer()
+            Edicion.deshacer()
+        }
+        regla.waitUntil(2_000) { p0.pedazos == original }
+
         // Automatización dibujada: tocar el carril pone un punto, arrastrarlo lo mueve, dos toques
         // lo quitan, y todo se puede deshacer.
         regla.onAllNodesWithText("Volumen").onFirst().performClick()

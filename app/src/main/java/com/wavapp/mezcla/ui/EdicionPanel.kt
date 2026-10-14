@@ -144,7 +144,8 @@ private fun TiempoEdicion(modifier: Modifier) {
     Box(
         modifier.clip(RoundedCornerShape(8.dp)).background(pal.tarjeta).padding(horizontal = 12.dp, vertical = 5.dp),
     ) {
-        Texto(tiempoFino(Mesa.posicion), Tipo.encabezado.numeros, pal.texto, lineas = 1)
+        // Cambia en cada cuadro (milésimas): se dibuja sin recomponer.
+        TextoAlDibujar({ tiempoFino(Mesa.posicion) }, Tipo.encabezado.numeros, pal.texto, "88:88.888")
     }
 }
 
@@ -393,7 +394,7 @@ private fun Carril(p: Pista) {
             if (pz.fadeIn > 0) drawLine(pal.texto, Offset(x0, h), Offset(xi, 0f), grosor)
             if (pz.fadeOut > 0) drawLine(pal.texto, Offset(xo, 0f), Offset(x1, h), grosor)
             for (x in listOf(xi, xo)) {
-                val c = Offset(x.coerceIn(x0 + 7.dp.toPx(), x1 - 7.dp.toPx()), 8.dp.toPx())
+                val c = Offset(x.entre(x0 + 7.dp.toPx(), x1 - 7.dp.toPx()), 8.dp.toPx())
                 drawCircle(Color.White, 6.dp.toPx(), c)
                 drawCircle(pal.texto, 6.dp.toPx(), c, style = Stroke(2.dp.toPx()))
             }
@@ -627,7 +628,7 @@ private fun CarrilAuto(p: Pista, param: Int) {
             drawCircle(trazo, 7.dp.toPx(), c)
             drawCircle(Color.White, 2.5.dp.toPx(), c)
             val t = medidor.measure(textoAuto(param, curva.valores[sel]), estiloValor)
-            val tx = (c.x - t.size.width / 2f).coerceIn(2.dp.toPx(), w - t.size.width - 2.dp.toPx())
+            val tx = (c.x - t.size.width / 2f).entre(2.dp.toPx(), w - t.size.width - 2.dp.toPx())
             val ty = if (c.y - 10.dp.toPx() - t.size.height > 0) c.y - 10.dp.toPx() - t.size.height else c.y + 10.dp.toPx()
             drawRoundRect(
                 fondo.copy(alpha = 0.92f), Offset(tx - 4.dp.toPx(), ty - 1.dp.toPx()),

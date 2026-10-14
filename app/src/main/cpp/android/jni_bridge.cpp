@@ -8,6 +8,7 @@
 
 #include "AudioInput.h"
 #include "AudioOutput.h"
+#include "Fallas.h"
 #include "MediaDecoder.h"
 #include "Studio.h"
 #include "dsp/AnalysisView.h"
@@ -60,7 +61,11 @@ jfloatArray floats(JNIEnv *env, const std::vector<float> &v) {
 
 // ---------- Ciclo de vida
 JNI(void, init)(JNIEnv *env, jobject, jstring filesDir, jstring cacheDir) {
-    gStudio.open(str(env, filesDir), str(env, cacheDir));
+    const std::string files = str(env, filesDir);
+#ifdef __ANDROID__
+    instalarFallas(files + "/ultimo-error.txt");  // si el núcleo se cae, queda anotado dónde
+#endif
+    gStudio.open(files, str(env, cacheDir));
 }
 JNI(jboolean, start)(JNIEnv *, jobject) {
     gStudio.startBackground();
@@ -263,8 +268,8 @@ JNI(jint, inputStart)(JNIEnv *, jobject, jint deviceId, jint channels) {
     }
     return ch;
 }
-// [modo (0 cerrada, 1 a la par de la salida, 2 con hilo propio), segundos leídos, faltas,
-//  cuadros tirados, reserva (ráfagas), ráfaga, capacidad]
+// [modo (0 cerrada, 1 a la par de la salida, 2 con hilo propio), segundos leídos, faltas de audio
+//  en la escucha, saltos, margen de la reserva (cuadros), ráfaga, capacidad]
 JNI(jintArray, inputInfo)(JNIEnv *env, jobject) {
     int32_t v[AudioInput::kInfoCount];
     gInput.info(v);

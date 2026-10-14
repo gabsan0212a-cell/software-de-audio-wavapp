@@ -7,6 +7,7 @@
 #include <thread>
 #include <vector>
 
+#include "dsp/DriftFifo.h"
 #include "dsp/Equalizer.h"
 #include "engine/Ring.h"
 #include "engine/VoiceFx.h"
@@ -70,6 +71,9 @@ public:
 
     // ---------- Hilo de salida (lo llama el mezclador). Devuelve si sumó algo.
     bool mixMonitor(float *l, float *r, int n);
+    // Cómo va la reserva de la escucha (cualquier hilo): veces que faltó audio, saltos, cuadros
+    // guardados ahora y el margen que aprendió.
+    void monitorStats(int64_t &underruns, int64_t &skips, int &level, int &safety) const;
 
 private:
     static constexpr int kBlock = 256;
@@ -89,12 +93,15 @@ private:
     std::atomic<bool> mMonitor{false};
     std::atomic<float> mMonitorGain{1.0f};
     std::atomic<float> mPeakL{0.0f}, mPeakR{0.0f};
-    std::atomic<int> mLastPush{256};
 
-    // Escucha: de la entrada a la salida (estéreo intercalado).
+    // Escucha: de la entrada a la salida (estéreo intercalado). La reserva DriftFifo une los dos
+    // relojes en el hilo de salida.
     SpscRing mMonitorRing{1 << 14};
+    DriftFifo mMonFifo{2, 8192};  // hilo de salida
     bool mWasMonitoring = false;  // hilo de salida
     float mMonGainS = 0.0f;       // hilo de salida
+    std::atomic<int64_t> mMonUnderruns{0}, mMonSkips{0};
+    std::atomic<int> mMonLevel{0}, mMonSafety{0};
 
     // Grabación
     SpscRing mRecRing{1 << 20};

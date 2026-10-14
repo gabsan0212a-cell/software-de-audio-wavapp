@@ -2,6 +2,8 @@
 
 #include <android/log.h>
 
+#include <algorithm>
+
 #include "AudioInput.h"
 #include "engine/Mixer.h"
 
@@ -12,9 +14,12 @@
 AudioOutput::~AudioOutput() { stop(); }
 
 namespace {
-constexpr int kIdleSeconds = 5;   // sin sonar este tiempo, la salida se duerme
-constexpr int kNormalBursts = 4;  // búfer de siempre (~8 ms): aguanta mejor los picos de trabajo
-constexpr int kMaxLiveBursts = 6;
+constexpr int kIdleSeconds = 5;     // sin sonar este tiempo, la salida se duerme
+constexpr int kNormalBursts = 4;    // búfer de siempre (~8 ms): aguanta mejor los picos de trabajo
+constexpr int kMaxBursts = 8;       // hasta aquí crece si hay cortes
+constexpr int kMinLiveFrames = 256; // en vivo nunca menos de ~5 ms (con ráfagas chicas, 2 no alcanzan)
+
+int minLiveBursts(int burst) { return std::max(2, (kMinLiveFrames + std::max(1, burst) - 1) / std::max(1, burst)); }
 }
 
 bool AudioOutput::start() {
@@ -56,11 +61,14 @@ bool AudioOutput::openStream() {
         mStream.reset();
         return false;
     }
-    // El callback todavía no corre: su estado se puede poner aquí.
+    // El callback todavía no corre: su estado se puede poner aquí. Lo aprendido (cuántas ráfagas
+    // hacen falta sin cortes) vale mientras la salida siga abierta en este aparato.
     mBursts = kNormalBursts;
-    mLiveBursts = 2;
+    mNormalBursts = kNormalBursts;
+    mLiveBursts = minLiveBursts(mStream->getFramesPerBurst());
     mWasLive = false;
     mTuneFrames = 0;
+    mLastXruns = 0;
     mStream->setBufferSizeInFrames(mStream->getFramesPerBurst() * kNormalBursts);
     // ADPF: el sistema ve cuánto tarda cada ráfaga y sube la velocidad del procesador a tiempo.
     mStream->setPerformanceHintEnabled(true);
@@ -108,26 +116,27 @@ int AudioOutput::latencyFrames() {
 
 void AudioOutput::tuneBuffer(oboe::AudioStream *stream, int numFrames) {
     const bool live = mLiveMode.load(std::memory_order_relaxed);
-    if (live && !mWasLive) {  // entra al modo en vivo: desde lo mínimo
-        mLiveBursts = 2;
+    if (live != mWasLive) {  // cambia de modo: los cortes de antes no cuentan para este
         mTuneFrames = 0;
         auto x = stream->getXRunCount();
-        mLastXruns = x ? x.value() : 0;
+        mLastXruns = x ? x.value() : mLastXruns;
     }
     mWasLive = live;
-    if (live) {
-        // Cada medio segundo: si hubo cortes, una ráfaga más (hasta 6).
-        mTuneFrames += numFrames;
-        if (mTuneFrames >= stream->getSampleRate() / 2) {
-            mTuneFrames = 0;
-            auto x = stream->getXRunCount();
-            if (x) {
-                if (x.value() > mLastXruns && mLiveBursts < kMaxLiveBursts) ++mLiveBursts;
-                mLastXruns = x.value();
+    // Cada medio segundo: si hubo cortes, una ráfaga más (hasta 8) en el modo en que esté. No
+    // vuelve a bajar: lo aprendido sigue para la próxima vez (al entrar de nuevo al escenario).
+    mTuneFrames += numFrames;
+    if (mTuneFrames >= stream->getSampleRate() / 2) {
+        mTuneFrames = 0;
+        auto x = stream->getXRunCount();
+        if (x) {
+            if (x.value() > mLastXruns) {
+                int &b = live ? mLiveBursts : mNormalBursts;
+                if (b < kMaxBursts) ++b;
             }
+            mLastXruns = x.value();
         }
     }
-    const int want = live ? mLiveBursts : kNormalBursts;
+    const int want = live ? mLiveBursts : mNormalBursts;
     if (want != mBursts) {
         stream->setBufferSizeInFrames(stream->getFramesPerBurst() * want);
         mBursts = want;

@@ -9,14 +9,14 @@ namespace {
 constexpr float kThreshold = 0.18f;   // YIN: primera bajada debajo de esto
 constexpr float kMinClarity = 0.55f;
 constexpr int kOnFrames = 2;           // análisis seguidos con nota para prender
-constexpr int kOffFrames = 3;          // ... y sin nota para apagar
+constexpr int kOffFrames = 5;          // ... y sin nota para apagar (análisis cada ~2 ms)
 
 }  // namespace
 
 PitchTracker::PitchTracker(int sampleRate) : mRate(sampleRate) {
     mFactor = std::max(1, (sampleRate + 8000) / 16000);
     mDecRate = sampleRate / mFactor;
-    mHop = std::max(8, static_cast<int>(std::lround(0.004 * mDecRate)));
+    mHop = std::max(8, static_cast<int>(std::lround(0.002 * mDecRate)));
     // Pasa-bajos Butterworth de 4.º orden antes de quedarse con 1 de cada mFactor muestras.
     const double fc = std::min(3500.0, 0.42 * mDecRate);
     const double qs[2] = {0.54119610, 1.30656296};
@@ -65,6 +65,7 @@ void PitchTracker::reset() {
 
 bool PitchTracker::process(const float *x, int n) {
     bool fresh = false;
+    int at = 0;  // muestra del bloque en la que se hizo la última estimación
     const int need = mWindow + mMaxLag + 1;
     for (int i = 0; i < n; ++i) {
         const float y = mLp[1].run(mLp[0].run(x[i]));
@@ -79,7 +80,13 @@ bool PitchTracker::process(const float *x, int n) {
             mSinceHop = 0;
             analyze();
             fresh = true;
+            at = i;
         }
+    }
+    if (fresh) {
+        // El centro de la ventana: la mitad de la ventana (a ~16 kHz) más el retraso del
+        // pasa-bajos (~8 muestras), contado desde el final del bloque.
+        mLastAge = static_cast<float>(n - 1 - at) + 0.5f * static_cast<float>(mLastW * mFactor) + 8.0f;
     }
     // Números diminutos en los filtros vuelven lento el cálculo en algunos procesadores.
     for (Biquad &b : mLp) {
@@ -93,6 +100,7 @@ void PitchTracker::analyze() {
     // Con nota, la ventana es de ~3 períodos (responde más rápido en notas agudas); sin nota,
     // la más larga (para encontrar también las graves).
     const int W = mVoiced ? std::clamp(static_cast<int>(3.0f * mDecRate / mHz), mMinWindow, mWindow) : mWindow;
+    mLastW = W;
     const float *a = mHist.data() + mFill - W;  // los W más nuevos
     // Nivel de lo analizado.
     double e2 = 0.0;

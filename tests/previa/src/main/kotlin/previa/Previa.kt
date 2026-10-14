@@ -151,6 +151,15 @@ fun main(args: Array<String>) {
             Edicion.cortarEnCursor()
             esperar(300)
             foto("8-edicion")
+            // Un pedazo de 0.1 s elegido (muy angosto en pantalla): antes cerraba la app.
+            Mesa.saltar(6.1)
+            Edicion.cortarEnCursor()
+            val angosto = p0.pedazos.indexOfFirst { it.largo == 4800L }
+            println("pedazo angosto: $angosto de ${p0.pedazos.size}")
+            if (angosto >= 0) Edicion.seleccion = Edicion.Seleccion(p0.id, angosto)
+            esperar(400)
+            foto("8b-edicion-angosto", ambos = false)
+            Edicion.deshacer()
             Edicion.deshacer()
             Edicion.seleccion = null
         }
@@ -449,6 +458,18 @@ fun main(args: Array<String>) {
             Mesa.prenderVoz(false, false)
             Mesa.ponerEscucha(false)
             esperar(600)
+        }
+        if (quiere("error")) {
+            // El aviso de la vez anterior que la app se cerró por un error.
+            com.wavapp.mezcla.ui.errorDePrueba =
+                "WavApp 1.0.1 (18) · Android 14 (API 34) · samsung SM-A546E · arm64-v8a\n" +
+                    "La pantalla (Kotlin) se cerró por un error en el hilo \"main\":\n" +
+                    "java.lang.IllegalArgumentException: Cannot coerce value to an empty range: maximum 10.5 is less than minimum 18.375.\n" +
+                    "\tat kotlin.ranges.RangesKt___RangesKt.coerceIn(_Ranges.kt:1)"
+            esperar(700)
+            foto("47-error")
+            com.wavapp.mezcla.ui.errorDePrueba = null
+            esperar(400)
         }
         if (quiere("vacio")) {
             if (Mesa.reproduciendo) Mesa.reproducirPausar()

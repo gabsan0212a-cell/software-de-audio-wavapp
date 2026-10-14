@@ -22,14 +22,24 @@
 - Pestañas abajo (Mezcla, Grabar, Editar, Análisis), mini reproductor que abre el reproductor a
   pantalla completa, hojas que suben desde abajo, menús de acciones y alertas de iOS.
 - Lo que cambia en cada cuadro (posición, medidores) se lee al dibujar, no al componer.
+- Nunca `coerceIn` con límites calculados en la pantalla (cierra la app si el rango queda al
+  revés, p. ej. un pedazo angosto): usar `entre` de `ui/Componentes.kt`.
+- Errores: `Errores.kt` (Kotlin) y `android/Fallas.cpp` (núcleo, señales y excepciones) anotan el
+  último cierre en `ultimo-error.txt`; al abrir, la pantalla lo ofrece para copiarlo. Los símbolos
+  del núcleo de cada versión van en el release `vX.Y.Z` (`simbolos-nucleo.zip`) para traducir las
+  posiciones del reporte (`addr2line -fe libwavapp.so 0x...`).
 - Lo que obliga Android en la pantalla va solo en `ui/Plataforma.kt` (también el permiso del
   micrófono y la lista de entradas/salidas de audio).
 - Grabación: `core/engine/LiveInput` (entrada → ganancia → se graba → EQ → escucha/análisis) y
   `android/AudioInput` (Oboe). El EQ de la entrada usa las funciones del EQ con `Studio::kInputId`.
   La entrada no tiene callback propio: `AudioOutput` la lee en el suyo (`AudioInput::pull`, full
-  duplex con reserva de una ráfaga). La escucha entra al bus antes del master (pasa por el limitador).
+  duplex: pasa todo lo que llegó al núcleo). La escucha pasa por `dsp/DriftFifo` (une el reloj de la
+  entrada con el de la salida ajustando la velocidad ±0.3 %: sin huecos ni saltos aunque la entrada
+  sea otro aparato) y entra al bus antes del master (pasa por el limitador). `AudioOutput` agranda
+  el búfer si hay cortes (en vivo desde 2 ráfagas y ≥ ~5 ms) y recuerda lo aprendido.
 - Voz en vivo: `core/engine/VoiceFx` (ajustes `vfx::Param`, presets) dentro de `LiveInput`:
-  graves → compuerta → `dsp/AutoTune` (`PitchTracker` + `PitchShifter`) → EQ de la entrada →
+  graves → compuerta → `dsp/AutoTune` (`PitchTracker` cada ~2 ms + predicción del tono del audio
+  que sale, `PitchShifter`) → EQ de la entrada →
   de-esser → compresor → volumen → doblaje y envíos de delay (a tiempo con el BPM de la canción) y
   reverb. La escala "de la canción" y el tempo los pone `Studio::applySongToVoiceLocked`. En modo
   en vivo `AudioOutput` usa 2 ráfagas de búfer (sube si hay cortes) y ADPF. Pantalla: `ui/VozEnVivo.kt`.
@@ -63,7 +73,9 @@
 - Etapas pequeñas: diseño, código, pruebas, corregir y volver a probar.
 - Comunicarse en español. Informar solo cuando algo esté listo o cuando haga falta que el
   dueño intervenga.
-- Antes de subir: `bash tests/native/run.sh` y `python3 tests/check_jni.py`. Si cambia la
+- Antes de subir: `bash tests/native/run.sh` y `python3 tests/check_jni.py`. Si cambia
+  `app/src/main/cpp/android`: `bash tests/android/compilar.sh` (compila contra encabezados mínimos
+  de Oboe y Android, aquí no hay NDK). Si cambia la
   pantalla: `bash tests/previa/previa.sh --compilar` (compila contra Compose 1.7) y
   `bash tests/previa/previa.sh` (capturas en `tests/previa/capturas`, revisarlas). El CI corre
   además la compilación del APK y las pruebas en emulador (con capturas en Releases →

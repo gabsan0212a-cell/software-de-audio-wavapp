@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -33,11 +34,13 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.wavapp.mezcla.Analisis
@@ -71,6 +74,13 @@ object Vista {
     var estereo by mutableStateOf(false)
     var ultimaGrabacion by mutableStateOf<Int?>(null)
 }
+
+/** El reporte de la vez anterior que la app se cerró por un error (null = no hubo) y cómo borrarlo. */
+class UltimoError(val texto: String?, val borrar: () -> Unit)
+
+/** Lo principal del reporte (qué error y dónde), para el aviso; completo se copia. */
+private fun resumenError(texto: String): String =
+    texto.lines().drop(1).map { it.replace('\t', ' ').trim() }.filter { it.isNotEmpty() }.take(3).joinToString("\n").take(260)
 
 private val ALTO_PESTANAS = 50.dp
 private val ALTO_MINI = 72.dp  // mini reproductor con su margen
@@ -177,6 +187,18 @@ fun PantallaMesa() {
             confirmar = "Quitar", destructiva = true,
             alConfirmar = { quitar?.let { Mesa.quitar(it) } },
             alCerrar = { Vista.aQuitar = null },
+        )
+        // La vez anterior la app se cerró por un error: el reporte, listo para copiarlo y mandarlo.
+        val fallo = recordarUltimoError()
+        val portapapeles = LocalClipboardManager.current
+        Alerta(
+            visible = fallo.texto != null,
+            titulo = "La app se cerró por un error",
+            mensaje = "Quedó anotado qué pasó. Toca Copiar y pégalo en el chat para arreglarlo.\n\n" +
+                (fallo.texto?.let(::resumenError) ?: ""),
+            confirmar = "Copiar",
+            alConfirmar = { fallo.texto?.let { portapapeles.setText(AnnotatedString(it)) } },
+            alCerrar = { fallo.borrar() },
         )
     }
 }
@@ -285,10 +307,9 @@ private fun MiniReproductor() {
 
 @Composable
 private fun TiempoMini() {
-    Texto(
-        tiempoCorto(Mesa.posicion) + " / " + tiempoCorto(Mesa.duracion), Tipo.nota.numeros, LocalPaleta.current.texto2,
-        lineas = 1,
-    )
+    // Solo cambia una vez por segundo (la posición cambia en cada cuadro).
+    val texto by remember { derivedStateOf { tiempoCorto(Mesa.posicion) + " / " + tiempoCorto(Mesa.duracion) } }
+    Texto(texto, Tipo.nota.numeros, LocalPaleta.current.texto2, lineas = 1)
 }
 
 /** Reproducir / pausar (el mismo en el mini reproductor, el reproductor y la edición). */

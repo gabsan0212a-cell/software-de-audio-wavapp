@@ -2,10 +2,12 @@
 
 #include <vector>
 
-// Sigue el tono de una voz en vivo (para el auto-tune). Baja la señal a ~16 kHz y cada ~4 ms
+// Sigue el tono de una voz en vivo (para el auto-tune). Baja la señal a ~16 kHz y cada ~2 ms
 // busca el período con YIN sobre lo más reciente: la ventana está anclada al final, así la
 // estimación describe los últimos milisegundos y no el centro de una ventana larga. Decide si
-// hay nota con histéresis (no parpadea) y no se cree un salto de octava suelto.
+// hay nota con histéresis (no parpadea) y no se cree un salto de octava suelto. Dice también a
+// qué momento corresponde cada estimación (el centro de su ventana), para que el auto-tune
+// pueda predecir el tono del audio que está corrigiendo.
 class PitchTracker {
 public:
     explicit PitchTracker(int sampleRate);
@@ -17,6 +19,9 @@ public:
     // ---------- Hilo de audio
     // Agrega `n` muestras (mono). Devuelve true si hubo una estimación nueva.
     bool process(const float *x, int n);
+    // De la última estimación nueva: cuántas muestras antes del final del bloque que se acaba de
+    // pasar está el centro de su ventana (a la frecuencia original).
+    float lastAge() const { return mLastAge; }
     bool voiced() const { return mVoiced; }
     float hz() const { return mVoiced ? mHz : 0.0f; }
     // Período de la nota en muestras de la frecuencia original (0 = sin nota).
@@ -50,6 +55,8 @@ private:
 
     bool mVoiced = false;
     float mHz = 0.0f, mClarity = 0.0f, mLevelDb = -120.0f;
+    float mLastAge = 0.0f;
+    int mLastW = 0;  // ventana de la última estimación (muestras a ~16 kHz)
     int mOnCount = 0, mOffCount = 0;
     float mPendingHz = 0.0f;  // un salto de octava espera una confirmación
 };

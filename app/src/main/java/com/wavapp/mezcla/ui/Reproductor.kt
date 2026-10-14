@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -207,13 +208,18 @@ private fun BarraTiempo() {
 
 @Composable
 private fun TiemposBarra(arrastrando: Boolean, mientras: Float) {
-    val pos = if (arrastrando) mientras * Mesa.duracion else Mesa.posicion
+    // Los textos cambian una vez por segundo (no en cada cuadro como la posición).
+    val arrastre by rememberUpdatedState(arrastrando)
+    val donde by rememberUpdatedState(mientras)
+    val textos by remember {
+        derivedStateOf {
+            val pos = if (arrastre) donde * Mesa.duracion else Mesa.posicion
+            tiempoCorto(pos) to "−" + tiempoCorto(max(0.0, Mesa.duracion - pos))
+        }
+    }
     Row(Modifier.fillMaxWidth()) {
-        Texto(tiempoCorto(pos), Tipo.leyenda.numeros.seminegrita, Blanco3, Modifier.weight(1f), lineas = 1)
-        Texto(
-            "−" + tiempoCorto(max(0.0, Mesa.duracion - pos)), Tipo.leyenda.numeros.seminegrita, Blanco3,
-            Modifier.weight(1f), lineas = 1, alineacion = TextAlign.End,
-        )
+        Texto(textos.first, Tipo.leyenda.numeros.seminegrita, Blanco3, Modifier.weight(1f), lineas = 1)
+        Texto(textos.second, Tipo.leyenda.numeros.seminegrita, Blanco3, Modifier.weight(1f), lineas = 1, alineacion = TextAlign.End)
     }
 }
 

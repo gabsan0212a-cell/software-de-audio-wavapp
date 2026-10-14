@@ -57,7 +57,6 @@ void LiveInput::readPeaks(float *lr) {
 
 void LiveInput::push(const float *in, int frames, int ch) {
     if (!mActive.load(std::memory_order_relaxed) || ch <= 0 || frames <= 0) return;
-    mLastPush.store(frames, std::memory_order_relaxed);
     const bool stereo = ch >= 2;  // con más canales se usan los dos primeros
     const float gainT = mGainTarget.load(std::memory_order_relaxed);
     const float coef = smoothCoef(0.015f, mRate);
@@ -135,30 +134,46 @@ void LiveInput::push(const float *in, int frames, int ch) {
 
 bool LiveInput::mixMonitor(float *l, float *r, int n) {
     const bool on = monitoring();
-    if (on && !mWasMonitoring) mMonitorRing.skip(mMonitorRing.available());  // lo viejo no se oye
+    if (on && !mWasMonitoring) {  // lo viejo no se oye
+        mMonitorRing.skip(mMonitorRing.available());
+        mMonFifo.reset();
+    }
     mWasMonitoring = on;
     const float gainT = on ? mMonitorGain.load(std::memory_order_relaxed) : 0.0f;
     if (!on && mMonGainS < 1e-5f) {
         mMonGainS = 0.0f;
         return false;
     }
-    // Retraso mínimo: si se juntó de más (la entrada llega en ráfagas), se tira lo más viejo.
-    const size_t keep = 2 * static_cast<size_t>(n + 2 * mLastPush.load(std::memory_order_relaxed));
-    const size_t avail = mMonitorRing.available();
-    if (avail > keep) mMonitorRing.skip(((avail - keep) / 2) * 2);
-    float buf[2 * 256];
-    n = std::min(n, 256);
-    const int got = static_cast<int>(mMonitorRing.read(buf, static_cast<size_t>(2 * n)) / 2);
+    // Todo lo que llegó de la entrada pasa a la reserva que une su reloj con el de la salida: sin
+    // huecos ni saltos aunque la entrada llegue en ráfagas o su reloj vaya un poco distinto.
+    float tmp[2 * kBlock];
+    for (;;) {
+        const size_t got = mMonitorRing.read(tmp, sizeof tmp / sizeof tmp[0]);
+        if (got == 0) break;
+        mMonFifo.push(tmp, static_cast<int>(got / 2));
+    }
+    float buf[2 * kBlock];
+    n = std::min(n, kBlock);
+    mMonFifo.pull(buf, n);
     const float coef = smoothCoef(0.010f, mRate);
     for (int i = 0; i < n; ++i) {
         mMonGainS += (gainT - mMonGainS) * coef;
-        if (i < got) {
-            l[i] += buf[2 * i] * mMonGainS;
-            r[i] += buf[2 * i + 1] * mMonGainS;
-        }
+        l[i] += buf[2 * i] * mMonGainS;
+        r[i] += buf[2 * i + 1] * mMonGainS;
     }
     if (std::fabs(gainT - mMonGainS) < 1e-7f) mMonGainS = gainT;
+    mMonUnderruns.store(mMonFifo.underruns(), std::memory_order_relaxed);
+    mMonSkips.store(mMonFifo.skips(), std::memory_order_relaxed);
+    mMonLevel.store(mMonFifo.level(), std::memory_order_relaxed);
+    mMonSafety.store(mMonFifo.safety(), std::memory_order_relaxed);
     return true;
+}
+
+void LiveInput::monitorStats(int64_t &underruns, int64_t &skips, int &level, int &safety) const {
+    underruns = mMonUnderruns.load(std::memory_order_relaxed);
+    skips = mMonSkips.load(std::memory_order_relaxed);
+    level = mMonLevel.load(std::memory_order_relaxed);
+    safety = mMonSafety.load(std::memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------- grabación

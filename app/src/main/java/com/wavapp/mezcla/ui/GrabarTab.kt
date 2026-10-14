@@ -190,7 +190,7 @@ private fun textoGanancia(db: Float): String =
 
 /** Medidor grande de la entrada: L y R (o una barra si es mono) y la luz de saturación. */
 @Composable
-private fun MedidorEntrada(modifier: Modifier) {
+internal fun MedidorEntrada(modifier: Modifier) {
     val p = LocalPaleta.current
     val e = Mesa.entrada
     Spacer(

@@ -397,8 +397,34 @@ class PantallaTest {
         regla.onNodeWithText("Lista para cantar").assertIsDisplayed()
         avanzarMedidores()
         captura("26-preparada")
-        regla.onNodeWithText("Listo").performClick()
-        regla.waitUntil(2_000) { Vista.preparar == null }
+
+        // Cantar en vivo: el escenario abre la entrada y prende la voz; se graba la presentación
+        // (lo que sale hacia la consola) y queda lista para guardarla en el teléfono.
+        regla.onNodeWithTag("cantarDesdePreparar").performSemanticsAction(SemanticsActions.OnClick)
+        regla.waitUntil(5_000) { Vista.escenario && Vista.preparar == null && Mesa.entrada.abierta && Mesa.voz.encendida }
+        regla.onNodeWithTag("escenario").assertIsDisplayed()
+        avanzarMedidores()
+        if (Mesa.cancion.partes.isNotEmpty()) assertTrue("cuenta ${Mesa.cuenta.estado}", Mesa.cuenta.estado != Nucleo.CUE_NADA)
+        captura("30-escenario")
+        regla.onNodeWithContentDescription("Grabar presentación").performClick()
+        regla.waitUntil(3_000) { Mesa.presentacion.grabando && Mesa.reproduciendo }
+        avanzarHasta(10_000, { "la presentación no avanzó: ${Mesa.presentacion.segundos} s, ${Mesa.estado}" }) {
+            Mesa.presentacion.segundos >= 2
+        }
+        captura("31-escenario-grabando")
+        regla.onNodeWithContentDescription("Detener presentación").performClick()
+        regla.waitUntil(5_000) { !Mesa.presentacion.grabando && Mesa.presentacion.lista && !Mesa.reproduciendo }
+        assertTrue(Mesa.estado, Mesa.estado.startsWith("Presentación grabada"))
+        avanzarMedidores()
+        captura("32-escenario-grabada")
+        regla.onNodeWithContentDescription("Cerrar el escenario").performClick()
+        regla.waitUntil(2_000) { !Vista.escenario }
+        regla.runOnUiThread {
+            Mesa.prenderVoz(false, false)
+            Mesa.ponerEscucha(false)
+        }
+        regla.waitUntil(2_000) { !Mesa.voz.encendida && !Mesa.entrada.escucha }
+        regla.onNodeWithTag("cantarEnVivo").assertExists()
         avanzarMedidores()
         captura("27-mezcla-preparada")
         // Se deja como estaba: la vuelta en modo oscuro empieza con las 4 pistas de prueba.

@@ -384,6 +384,72 @@ fun main(args: Array<String>) {
             esperar(500)
             foto("36-mezcla-preparada", ambos = false)
         }
+        if (quiere("escenario")) {
+            // El escenario (cantar en vivo) con la canción preparada; si no se preparó arriba, aquí
+            // con el modelo mini (rápido).
+            if (!Mesa.cancion.lista) {
+                println("modelo mini -> ${Nucleo.setVoiceModel("../native/datos/mini.wvm")}")
+                if (Mesa.reproduciendo) Mesa.reproducirPausar()
+                Mesa.sincronizar()
+                Mesa.prepararCancion(Mesa.pistas[1], Nucleo.CALIDAD_ALTA)
+                hasta(600_000, "canción preparada") { Mesa.cancion.lista && !Mesa.separacion.activa && !Mesa.ocupada }
+            }
+            println("partes con voz: ${Mesa.cancion.partes}")
+            Vista.preparar = null
+            Vista.pestana = Vista.MEZCLA
+            esperar(600)
+            foto("40-mezcla-cantar", ambos = false)
+            Vista.escenario = true
+            hasta(5000, "entrada abierta") { Mesa.entrada.abierta }
+            Mesa.aplicarPresetVoz(0)
+            Mesa.saltar(0.0)
+            if (!Mesa.reproduciendo) Mesa.reproducirPausar()
+            esperar(1200)
+            hasta(3000, "una nota en el afinador") { Mesa.voz.objetivo >= 0 }
+            foto("41-escenario")
+            // La cuenta para entrar: el instrumental 8 s más tarde (la voz entra a los 8 s).
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            Nucleo.nudgeRegion(Mesa.cancion.instrumental, 0, 8000)
+            Mesa.sincronizar()
+            Mesa.saltar(1.5)
+            esperar(800)
+            foto("44-escenario-cuenta", ambos = false)
+            Mesa.saltar(5.6)
+            esperar(800)
+            foto("45-escenario-cuenta-3", ambos = false)
+            Nucleo.undo()
+            Mesa.sincronizar()
+            Mesa.saltar(0.0)
+            Mesa.grabarPresentacion()
+            esperar(2500)
+            foto("42-escenario-grabando", ambos = false)
+            Mesa.pararPresentacion()
+            hasta(3000, "presentación lista") { Mesa.presentacion.lista }
+            esperar(600)
+            foto("43-escenario-grabada", ambos = false)
+            // En una pantalla baja (como el Nexus 6 del emulador: 659 dp sin las barras).
+            val baja = ImageComposeScene(ANCHO, (659 * DENS).toInt(), Density(DENS), coroutineContext = Dispatchers.Main) {
+                Tema(true) { PantallaMesa() }
+            }
+            try {
+                repeat(40) {
+                    baja.render(System.nanoTime()).close()
+                    dibujar()
+                    delay(16)
+                }
+                val img = baja.render(System.nanoTime())
+                val f = File(salida, "oscuro-46-escenario-bajo.png")
+                f.writeBytes(img.encodeToData(EncodedImageFormat.PNG)!!.bytes)
+                img.close()
+                println("captura ${f.name}")
+            } finally {
+                baja.close()
+            }
+            Vista.escenario = false
+            Mesa.prenderVoz(false, false)
+            Mesa.ponerEscucha(false)
+            esperar(600)
+        }
         if (quiere("vacio")) {
             if (Mesa.reproduciendo) Mesa.reproducirPausar()
             Nucleo.clearProject()

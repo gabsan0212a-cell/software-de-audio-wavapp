@@ -6,11 +6,13 @@
 #include <cerrno>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <vector>
 
-#include "engine/Mixer.h"
 #include "dsp/Resampler.h"
+#include "engine/Mixer.h"
+#include "io/MappedAudio.h"
 
 namespace {
 
@@ -134,6 +136,93 @@ void measureBlock(LoudnessFrontEnd &fe, LoudnessMeter &meter, const float *x, in
     }
 }
 
+ExportFormat normalized(const ExportFormat &in) {
+    ExportFormat fmt = in;
+    if (fmt.isFloat) fmt.bits = 32;
+    if (fmt.bits != 16 && fmt.bits != 24 && fmt.bits != 32) fmt.bits = 24;
+    if (fmt.bits == 32) fmt.isFloat = true;  // 32 bits es float
+    if (fmt.sampleRate != 44100) fmt.sampleRate = kRate;
+    return fmt;
+}
+
+// Escribe `length` cuadros estéreo a 48 kHz que da `source` (de a bloques) como WAV en `fd`, con
+// el formato pedido (remuestreo y dither incluidos), y cierra `fd`. Mide el volumen de lo escrito.
+ExportResult writeWav(int fd, int64_t length, const std::function<void(float *, int)> &source, const ExportFormat &fmt,
+                      std::atomic<float> *progress, float writeFrom, const std::atomic<bool> *cancel,
+                      const char *cancelText) {
+    ExportResult res;
+    auto fail = [&](const std::string &e) {
+        if (fd >= 0) ::close(fd);
+        res.error = e;
+        return res;
+    };
+    if (fd < 0) return fail("No se pudo crear el archivo");
+    const int64_t frames = outFrames(length, fmt.sampleRate);
+    const uint64_t dataBytes = static_cast<uint64_t>(frames) * 2 * (fmt.bits / 8);
+    if (dataBytes > 0xFFFFFFFFull - 100) return fail("Es demasiado largo para un WAV (más de 4 GB)");
+    const std::vector<uint8_t> h = header(fmt, static_cast<uint32_t>(dataBytes), static_cast<uint32_t>(frames));
+    if (!writeAll(fd, h.data(), h.size())) return fail("No se pudo escribir el archivo (¿falta espacio?)");
+
+    std::unique_ptr<Resampler> rs;
+    if (fmt.sampleRate != kRate) rs = std::make_unique<Resampler>(2, kRate, fmt.sampleRate);
+    Converter conv(fmt);
+    std::vector<float> block(kBlock * 2), resampled, ml, mr;
+    LoudnessFrontEnd fe(kRate);
+    LoudnessMeter meter;
+    std::vector<uint8_t> bytes;
+    int64_t done = 0, written = 0;
+
+    auto emit = [&](const float *x, int64_t n) -> bool {
+        n = std::min(n, frames - written);  // nunca más de lo que dice el encabezado
+        if (n <= 0) return true;
+        conv.convert(x, static_cast<size_t>(n * 2), bytes);
+        if (!writeAll(fd, bytes.data(), bytes.size())) return false;
+        written += n;
+        return true;
+    };
+
+    while (done < length) {
+        if (cancel && cancel->load()) return fail(cancelText);
+        const int n = static_cast<int>(std::min<int64_t>(kBlock, length - done));
+        source(block.data(), n);
+        measureBlock(fe, meter, block.data(), n, ml, mr, nullptr);
+        bool ok;
+        if (rs) {
+            resampled.clear();
+            rs->process(block.data(), static_cast<size_t>(n), resampled);
+            ok = emit(resampled.data(), static_cast<int64_t>(resampled.size() / 2));
+        } else {
+            ok = emit(block.data(), n);
+        }
+        if (!ok) return fail("No se pudo escribir el archivo (¿falta espacio?)");
+        done += n;
+        if (progress)
+            progress->store(writeFrom + (1.0f - writeFrom) * static_cast<float>(done) / static_cast<float>(length));
+    }
+    if (rs) {
+        resampled.clear();
+        rs->finish(resampled);
+        if (!emit(resampled.data(), static_cast<int64_t>(resampled.size() / 2)))
+            return fail("No se pudo escribir el archivo (¿falta espacio?)");
+    }
+    // Por si el remuestreo quedó corto: se completa con silencio hasta lo prometido.
+    std::fill(block.begin(), block.end(), 0.0f);
+    while (written < frames) {
+        if (!emit(block.data(), std::min<int64_t>(kBlock, frames - written)))
+            return fail("No se pudo escribir el archivo (¿falta espacio?)");
+    }
+    if (::close(fd) != 0) {
+        res.error = "No se pudo terminar de guardar el archivo";
+        return res;
+    }
+    res.frames = frames;
+    res.bytes = static_cast<int64_t>(h.size() + dataBytes);
+    res.lufs = meter.integrated();
+    res.truePeak = meter.truePeakDb();
+    if (progress) progress->store(1.0f);
+    return res;
+}
+
 }  // namespace
 
 LoudnessReport measureMix(const Mixer &live, float gainDb, bool forceLimiter, std::atomic<float> *progress,
@@ -181,11 +270,7 @@ int64_t exportBytes(int64_t frames48k, const ExportFormat &fmt) {
 ExportResult exportMix(const Mixer &live, int fd, const ExportFormat &fmtIn, std::atomic<float> *progress,
                        const std::atomic<bool> *cancel) {
     ExportResult res;
-    ExportFormat fmt = fmtIn;
-    if (fmt.isFloat) fmt.bits = 32;
-    if (fmt.bits != 16 && fmt.bits != 24 && fmt.bits != 32) fmt.bits = 24;
-    if (fmt.bits == 32) fmt.isFloat = true;  // 32 bits es float
-    if (fmt.sampleRate != 44100) fmt.sampleRate = kRate;
+    const ExportFormat fmt = normalized(fmtIn);
     if (progress) progress->store(0.0f);
 
     auto fail = [&](const std::string &e) {
@@ -217,70 +302,32 @@ ExportResult exportMix(const Mixer &live, int fd, const ExportFormat &fmtIn, std
     if (!mixer) return fail(err);
     const int64_t length = mixer->length();
     if (length <= 0) return fail("No hay pistas para exportar");
+    res = writeWav(fd, length, [&](float *b, int n) { mixer->process(b, n, 2); }, fmt, progress, writeFrom, cancel,
+                   "Exportación cancelada");
+    res.gainDb = gainDb;
+    return res;
+}
 
-    const int64_t frames = outFrames(length, fmt.sampleRate);
-    const uint64_t dataBytes = static_cast<uint64_t>(frames) * 2 * (fmt.bits / 8);
-    if (dataBytes > 0xFFFFFFFFull - 100) return fail("La mezcla es demasiado larga para un WAV (más de 4 GB)");
-    const std::vector<uint8_t> h = header(fmt, static_cast<uint32_t>(dataBytes), static_cast<uint32_t>(frames));
-    if (!writeAll(fd, h.data(), h.size())) return fail("No se pudo escribir el archivo (¿falta espacio?)");
-
-    std::unique_ptr<Resampler> rs;
-    if (fmt.sampleRate != kRate) rs = std::make_unique<Resampler>(2, kRate, fmt.sampleRate);
-    Converter conv(fmt);
-    std::vector<float> block(kBlock * 2), resampled, ml, mr;
-    LoudnessFrontEnd fe(kRate);
-    LoudnessMeter meter;
-    std::vector<uint8_t> bytes;
-    int64_t done = 0, written = 0;
-
-    auto emit = [&](const float *x, int64_t n) -> bool {
-        n = std::min(n, frames - written);  // nunca más de lo que dice el encabezado
-        if (n <= 0) return true;
-        conv.convert(x, static_cast<size_t>(n * 2), bytes);
-        if (!writeAll(fd, bytes.data(), bytes.size())) return false;
-        written += n;
-        return true;
-    };
-
-    while (done < length) {
-        if (cancel && cancel->load()) return fail("Exportación cancelada");
-        const int n = static_cast<int>(std::min<int64_t>(kBlock, length - done));
-        mixer->process(block.data(), n, 2);
-        measureBlock(fe, meter, block.data(), n, ml, mr, nullptr);
-        bool ok;
-        if (rs) {
-            resampled.clear();
-            rs->process(block.data(), static_cast<size_t>(n), resampled);
-            ok = emit(resampled.data(), static_cast<int64_t>(resampled.size() / 2));
-        } else {
-            ok = emit(block.data(), n);
-        }
-        if (!ok) return fail("No se pudo escribir el archivo (¿falta espacio?)");
-        done += n;
-        if (progress)
-            progress->store(writeFrom + (1.0f - writeFrom) * static_cast<float>(done) / static_cast<float>(length));
-    }
-    if (rs) {
-        resampled.clear();
-        rs->finish(resampled);
-        if (!emit(resampled.data(), static_cast<int64_t>(resampled.size() / 2)))
-            return fail("No se pudo escribir el archivo (¿falta espacio?)");
-    }
-    // Por si el remuestreo quedó corto: se completa con silencio hasta lo prometido.
-    std::fill(block.begin(), block.end(), 0.0f);
-    while (written < frames) {
-        if (!emit(block.data(), std::min<int64_t>(kBlock, frames - written)))
-            return fail("No se pudo escribir el archivo (¿falta espacio?)");
-    }
-    if (::close(fd) != 0) {
-        res.error = "No se pudo terminar de guardar el archivo";
+ExportResult exportRecording(const std::string &path, int fd, const ExportFormat &fmtIn, std::atomic<float> *progress,
+                             const std::atomic<bool> *cancel) {
+    ExportResult res;
+    ExportFormat fmt = normalized(fmtIn);
+    fmt.targetLufs = 0.0f;  // la presentación se guarda como sonó
+    if (progress) progress->store(0.0f);
+    std::string err;
+    auto a = MappedAudio::open(path, err);
+    if (!a || a->channels() != 2 || a->sampleRate() != kRate || a->frames() <= 0) {
+        if (fd >= 0) ::close(fd);
+        res.error = a ? "la grabación no es válida" : "no se encontró la grabación";
         return res;
     }
-    res.frames = frames;
-    res.bytes = static_cast<int64_t>(h.size() + dataBytes);
-    res.lufs = meter.integrated();
-    res.truePeak = meter.truePeakDb();
-    res.gainDb = gainDb;
-    if (progress) progress->store(1.0f);
-    return res;
+    const float *data = a->data();
+    int64_t pos = 0;
+    return writeWav(
+        fd, a->frames(),
+        [&](float *b, int n) {
+            std::copy(data + 2 * pos, data + 2 * (pos + n), b);
+            pos += n;
+        },
+        fmt, progress, 0.0f, cancel, "Cancelado");
 }

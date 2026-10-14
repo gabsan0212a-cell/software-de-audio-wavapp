@@ -84,6 +84,16 @@ internal fun recordarGuardarMezcla(): () -> Unit {
     return remember(guardar) { { guardar.launch(Mesa.nombreExportacion()) } }
 }
 
+/** Pregunta dónde guardar la presentación grabada y el núcleo la guarda ahí. */
+@Composable
+internal fun recordarGuardarPresentacion(): () -> Unit {
+    val context = LocalContext.current
+    val guardar = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/wav")) { uri ->
+        if (uri != null) Mesa.guardarPresentacion(context, uri)
+    }
+    return remember(guardar) { { guardar.launch(Mesa.nombrePresentacion()) } }
+}
+
 /** Imagen a partir de píxeles ARGB (el espectrograma). */
 internal fun imagenDePixeles(px: IntArray, ancho: Int, alto: Int): ImageBitmap =
     Bitmap.createBitmap(px, ancho, alto, Bitmap.Config.ARGB_8888).asImageBitmap()

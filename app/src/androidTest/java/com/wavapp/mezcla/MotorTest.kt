@@ -56,6 +56,7 @@ class MotorTest {
 
     @After
     fun limpiar() {
+        Nucleo.showStop()
         Nucleo.recordCancel()
         Nucleo.setMonitor(false)
         Nucleo.inputStop()
@@ -443,6 +444,42 @@ class MotorTest {
         Nucleo.setVoiceFx(Nucleo.VOZ_ENCENDIDA, 0f)
         Nucleo.setVoiceFx(Nucleo.VOZ_ESCALA, Nucleo.ESCALA_CANCION.toFloat())
         assertEquals(0f, Nucleo.voiceFxState()[Nucleo.VOZ_ENCENDIDA])
+    }
+
+    @Test
+    fun grabaLaPresentacion() {
+        cargarPrueba()
+        val st = FloatArray(Nucleo.DATOS_PRESENTACION)
+        // Lo que sale hacia la consola, desde la salida de audio de verdad.
+        Nucleo.seek(0.0)
+        assertTrue(Nucleo.showStart())
+        Nucleo.play()
+        Thread.sleep(2000)
+        Nucleo.showState(st)
+        assertEquals(1f, st[0])
+        assertTrue("cuenta lo grabado (${st[1]} s; salida ${Nucleo.outputInfo().joinToString()})", st[1] > 1.2f)
+        Nucleo.pause()
+        assertTrue(Nucleo.showStop())
+        Nucleo.showState(st)
+        assertEquals(0f, st[0])
+        assertEquals(1f, st[2])
+        assertTrue("duración ${st[3]} s", st[3] > 1.2f)
+        assertTrue(estado().getString("mensaje"), estado().getString("mensaje").startsWith("Presentación grabada"))
+        // Se guarda en el teléfono con el formato de exportar.
+        Nucleo.setExportFormat(16, 48000)
+        val salida = File(archivos, "presentacion.wav")
+        val modo = ParcelFileDescriptor.MODE_WRITE_ONLY or ParcelFileDescriptor.MODE_CREATE or
+            ParcelFileDescriptor.MODE_TRUNCATE
+        assertTrue(Nucleo.saveShow(ParcelFileDescriptor.open(salida, modo).detachFd(), "presentacion.wav"))
+        assertTrue(Nucleo.waitIdle(60_000))
+        val e = estado()
+        assertTrue(e.toString(), e.getBoolean("ultimaOk"))
+        assertTrue(e.getString("mensaje"), e.getString("mensaje").startsWith("Presentación guardada: presentacion.wav (16 bits · 48000 Hz"))
+        assertTrue("tamaño ${salida.length()}", salida.length() > 48000L * 4)
+        // Sin canción preparada no hay cuenta para entrar.
+        val cue = FloatArray(Nucleo.DATOS_CUE)
+        Nucleo.songCue(cue)
+        assertEquals(Nucleo.CUE_NADA.toFloat(), cue[0])
     }
 
     /** Codifica un tono estéreo (L = -R) a AAC en M4A con el codificador del sistema. */

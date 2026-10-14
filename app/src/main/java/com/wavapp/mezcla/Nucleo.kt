@@ -44,6 +44,9 @@ object Nucleo {
     /** Cuántos ajustes tiene la voz en vivo (ver los VOZ_ de abajo) y cuántos datos da [voiceMeters]. */
     val VOZ_PARAMS = c[23]
     val DATOS_VOZ = c[24]
+    /** Valores de [showState] y de [songCue]. */
+    val DATOS_PRESENTACION = c[25]
+    val DATOS_CUE = c[26]
     /** "Sin dato" en los valores de LUFS. */
     const val SIN_DATO = -200f
 
@@ -84,6 +87,13 @@ object Nucleo {
     // Calidad al quitar la voz (igual a Studio::SepQuality): alta, o máxima (el doble de tiempo).
     const val CALIDAD_ALTA = 0
     const val CALIDAD_MAXIMA = 1
+
+    // Para cantar en vivo, dónde va la canción (igual a Studio::Cue): sin canción, cantando,
+    // esperando la entrada, ya no hay más partes.
+    const val CUE_NADA = 0
+    const val CUE_CANTANDO = 1
+    const val CUE_ESPERANDO = 2
+    const val CUE_FIN = 3
 
     // Ajustes de los efectos de una pista (iguales a fx::Param del núcleo).
     const val FX_COMP = 0
@@ -341,6 +351,14 @@ object Nucleo {
      */
     external fun voiceMeters(out: FloatArray)
 
+    // ---------- Grabar la presentación: lo que sale hacia la consola (pista + voz en vivo)
+    external fun showStart(): Boolean
+    external fun showStop(): Boolean
+    /** [grabando, segundos grabados, hay una para guardar, sus segundos]. */
+    external fun showState(out: FloatArray)
+    /** La guarda en [fd] (WAV con el formato de exportar), en segundo plano, como exportar. */
+    external fun saveShow(fd: Int, name: String): Boolean
+
     // ---------- Preparar una canción para cantar en vivo (quitarle la voz con IA)
     /** El modelo de voz en un archivo. false si no es válido. */
     external fun setVoiceModel(path: String): Boolean
@@ -360,6 +378,11 @@ object Nucleo {
     external fun separationState(out: FloatArray)
     /** {"lista","fuente","instrumental","voz","tonica","menor","claridad","bpm","pulsos","primerPulso","escala","notas","partes"} */
     external fun songJson(): String
-    /** La voz original a lo largo de la canción, en [cols] columnas de 0 a 1. */
+    /** La voz original a lo largo de la mezcla, en [cols] columnas de 0 a 1. */
     external fun songEnvelope(cols: Int): FloatArray
+    /**
+     * Para cantar en vivo: [estado (CUE_), segundos (los que faltan para entrar o de la parte),
+     * parte (desde 0), partes, avance 0..1 (de la espera o de la parte)].
+     */
+    external fun songCue(out: FloatArray)
 }

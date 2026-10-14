@@ -66,9 +66,27 @@ internet).
       presets ("Paraíso", "Natural", "Trap (robot)"...). Afinador en pantalla. Audio de baja
       latencia: la entrada se lee a la par de la salida (full duplex), búfer mínimo que crece solo
       si hay cortes y el procesador avisado (ADPF). La voz pasa por el limitador del master
-- [ ] 13. Pantalla "En vivo" y grabar la presentación (1.0.0)
+- [x] 13. Pantalla **En vivo** (el escenario) y grabar la presentación (1.0.0): cuenta regresiva
+      para entrar a cantar, el mapa de dónde canta la voz, el afinador grande, el nivel del
+      micrófono, presets y botones grandes; graba lo que sale hacia la consola (la pista con tu voz,
+      después del master) y lo guarda en el teléfono como WAV
 
 Sin plugins VST en Android.
+
+## Cómo cantar en vivo (por ejemplo "Paraíso (daño)")
+1. **Conecta todo**: el celular a la consola (salida) y el micrófono por la interfaz USB (o los
+   audífonos con micrófono). Con la bocina del celular no te vas a escuchar (se acopla).
+2. **Prepara la canción** una sola vez: Mezcla → **Agregar archivos…** → la canción → **⋯** de la
+   pista → **Preparar para cantar…** → **Quitar la voz**. Tarda (conecta el cargador); quedan el
+   instrumental y la voz original como guía, con la tonalidad, el tempo y dónde canta la voz.
+3. Toca **Cantar en vivo** (en la hoja de la canción preparada, arriba en Mezcla o en Grabar).
+   Se abre el escenario, la voz se prende y te escuchas por la consola.
+4. Elige el preset (**Paraíso** suena como la canción) y revisa el medidor: si se pone rojo,
+   baja la ganancia en **Ajustes**. **Guía** prende la voz original por si quieres apoyarte.
+5. Toca el **botón rojo**: empieza la canción y se graba la presentación. El aro grande dice
+   cuánto falta para entrar (los últimos 3 segundos en rojo) y **¡Canta!** mientras dura cada
+   parte. Al terminar toca el cuadro rojo.
+6. **Guardar** deja la presentación en el teléfono como WAV (con el formato de exportar).
 
 ## Cómo está hecho
 - `app/src/main/cpp/core/`: **el núcleo**, C++17 sin nada de Android (se prueba en Linux).
@@ -88,7 +106,7 @@ Sin plugins VST en Android.
     fundidos y su volumen y paneo pueden seguir una automatización), `Automation` (curvas de
     automatización: escala del carril, valor en cada momento, simplificar lo grabado), `Effects`
     (los efectos de una pista: ajustes, presets; el compresor va en la señal y el delay y la reverb
-    son envíos que se suman después del volumen y el paneo), `LiveInput` (la entrada en vivo: ganancia, EQ, escucha, medidores y el grabador), `Importer` (WAV o decodificado → formato interno), `Exporter`, `Meters`
+    son envíos que se suman después del volumen y el paneo), `LiveInput` (la entrada en vivo: ganancia, EQ, escucha, medidores y el grabador), `ShowRecorder` (graba la presentación: lo que sale, con un hilo propio que escribe al disco), `Ring` (cola entre hilos sin bloqueos), `Importer` (WAV o decodificado → formato interno), `Exporter`, `Meters`
     (caídas y picos de los medidores) y `Decoder.h` (lo que debe dar la plataforma).
   - `project/`: `Model` (el proyecto), `Session` (sesion.json) y `Edit` (mover, recortar,
     fundidos, cortar, imán).
@@ -124,7 +142,8 @@ Sin plugins VST en Android.
     `Ecualizador.kt`, `Efectos.kt` (la hoja del botón FX), `AnalisisPanel.kt`, `Volumen.kt`
     (LUFS), `EdicionPanel.kt` (pedazos y carriles de automatización), `Automatizacion.kt` (la hoja
     del botón A), `GrabarTab.kt`, `VozEnVivo.kt` (afinador, presets y la hoja de ajustes de la
-    voz), `Exportar.kt` y `Preparar.kt` (preparar para cantar).
+    voz), `Exportar.kt`, `Preparar.kt` (preparar para cantar) y `Escenario.kt` (la pantalla para
+    cantar en vivo).
   - `Plataforma.kt`: lo único que obliga Android en la pantalla (atrás, pantalla encendida,
     selector de archivos, barra de estado).
 

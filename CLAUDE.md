@@ -33,6 +33,11 @@
   de-esser → compresor → volumen → doblaje y envíos de delay (a tiempo con el BPM de la canción) y
   reverb. La escala "de la canción" y el tempo los pone `Studio::applySongToVoiceLocked`. En modo
   en vivo `AudioOutput` usa 2 ráfagas de búfer (sube si hay cortes) y ADPF. Pantalla: `ui/VozEnVivo.kt`.
+- Escenario (cantar en vivo, `ui/Escenario.kt`, siempre oscuro): la cuenta para entrar la da
+  `Studio::songCue` (las partes con voz siguen los pedazos del instrumental: `songPartsLocked`);
+  la presentación la graba `core/engine/ShowRecorder` (el `Mixer` le pasa lo que sale, después del
+  master; un hilo propio escribe el WAV) y `Studio::saveShow` la guarda con el formato de exportar.
+  La salida no se duerme mientras graba.
 - Automatización: `core/engine/Automation` (curvas) + `Studio` (puntos, grabar movimientos con
   `autoTouch`, deshacer) + `Mixer` (la sigue al sonar y al exportar). La pantalla solo dibuja lo
   que da `autoLane` (posiciones 0..1 ya calculadas) y lee `automationNow` en cada cuadro.

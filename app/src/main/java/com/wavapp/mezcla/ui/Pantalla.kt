@@ -64,6 +64,7 @@ object Vista {
     var efectos by mutableStateOf<Pista?>(null)
     var preparar by mutableStateOf<Pista?>(null)
     var voz by mutableStateOf(false)
+    var escenario by mutableStateOf(false)
 
     // Grabar: qué entrada (0 = la primera de la lista), en estéreo o no, y la última toma.
     var entradaId by mutableIntStateOf(0)
@@ -86,21 +87,27 @@ fun PantallaMesa() {
         }
     }
     val entrada = Mesa.entrada
-    PantallaEncendida(Mesa.reproduciendo || entrada.grabando || entrada.escucha)
+    PantallaEncendida(
+        Mesa.reproduciendo || entrada.grabando || entrada.escucha || Vista.escenario || Mesa.presentacion.grabando,
+    )
     SideEffect {
-        Analisis.abierto = Vista.pestana == Vista.ANALISIS && !Vista.reproductor
-        Analisis.fuenteForzada = if (Vista.pestana == Vista.GRABAR && !Vista.reproductor) Nucleo.ID_ENTRADA else null
+        val tapada = Vista.reproductor || Vista.escenario
+        Analisis.abierto = Vista.pestana == Vista.ANALISIS && !tapada
+        Analisis.fuenteForzada = if (Vista.pestana == Vista.GRABAR && !tapada) Nucleo.ID_ENTRADA else null
         Edicion.abierta = Vista.pestana == Vista.EDITAR
+        Mesa.escenario = Vista.escenario
     }
     val abrirArchivos = recordarAbrirArchivos()
     val guardarMezcla = recordarGuardarMezcla()
+    val guardarPresentacion = recordarGuardarPresentacion()
     val audio = recordarAudio()
     val permiso = recordarPermisoMicrofono()
-    // La entrada se abre solo cuando hace falta: en Grabar, mientras te escuchas o grabas, o si
-    // el análisis es del micrófono. Al cambiar de entrada (o mono/estéreo) se abre de nuevo.
+    // La entrada se abre solo cuando hace falta: en Grabar o en el escenario, mientras te escuchas
+    // o grabas, o si el análisis es del micrófono. Al cambiar de entrada (o mono/estéreo) se abre
+    // de nuevo.
     val elegida = entradaElegida(audio)
     val quiere = permiso.concedido && (
-        Vista.pestana == Vista.GRABAR || entrada.escucha || entrada.grabando ||
+        Vista.pestana == Vista.GRABAR || Vista.escenario || entrada.escucha || entrada.grabando ||
             (Vista.pestana == Vista.ANALISIS && Analisis.fuenteId == Nucleo.ID_ENTRADA)
         )
     // Sin lista (algunos aparatos no la dan): la entrada del sistema, en mono.
@@ -137,6 +144,9 @@ fun PantallaMesa() {
         }
 
         Reproductor(Vista.reproductor, alCerrar = { Vista.reproductor = false }, alExportar = { Vista.exportar = true })
+        Escenario(
+            Vista.escenario, audio.salida, permiso, alCerrar = { Vista.escenario = false }, alGuardar = guardarPresentacion,
+        )
         HojaEq(Mesa.eqAbierta, alCerrar = { Mesa.eqAbierta = null })
         HojaAutomatizacion(
             Vista.automatizacion?.takeIf { it in Mesa.pistas }, alCerrar = { Vista.automatizacion = null },

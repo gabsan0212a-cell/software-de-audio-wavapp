@@ -48,5 +48,10 @@ ExportResult exportMix(const Mixer &live, int fd, const ExportFormat &fmt, std::
 LoudnessReport measureMix(const Mixer &live, float gainDb, bool forceLimiter, std::atomic<float> *progress,
                           float from, float to, const std::atomic<bool> *cancel);
 
+// Guarda una grabación (WAV float estéreo a 48 kHz, p. ej. la presentación) en `fd` con el
+// formato pedido (sin ajustar el volumen) y cierra `fd`.
+ExportResult exportRecording(const std::string &path, int fd, const ExportFormat &fmt, std::atomic<float> *progress,
+                             const std::atomic<bool> *cancel);
+
 // Tamaño aproximado del archivo, para mostrarlo antes de exportar.
 int64_t exportBytes(int64_t frames48k, const ExportFormat &fmt);

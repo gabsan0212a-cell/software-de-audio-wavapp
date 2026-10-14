@@ -30,6 +30,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         Mesa.enPantalla = false
+        // El audio se detiene: la presentación que se grababa queda guardada hasta aquí.
+        Nucleo.showStop()
         Mesa.guardarYa()
         Nucleo.pause()
         Nucleo.stop()

@@ -100,7 +100,8 @@ JNI(jintArray, constants)(JNIEnv *env, jobject) {
                          Studio::kVerFirstSlot, Studio::kVersPerSlot, Studio::kAutoNowCount,
                          Studio::kTrackParamCount, Studio::kMasterStateCount, Studio::kLoudCount,
                          Studio::kSongLoudCount, fx::kCount, MeterBallistics::kCompressor, Studio::kVerSong,
-                         Studio::kSepStateCount, vfx::kCount, VoiceFx::kMeterCount};
+                         Studio::kSepStateCount, vfx::kCount, VoiceFx::kMeterCount, Studio::kShowStateCount,
+                         Studio::kCueCount};
     const jsize n = static_cast<jsize>(sizeof v / sizeof v[0]);
     jintArray a = env->NewIntArray(n);
     env->SetIntArrayRegion(a, 0, n, v);
@@ -416,6 +417,22 @@ JNI(void, voiceMeters)(JNIEnv *env, jobject, jfloatArray out) {
     env->SetFloatArrayRegion(out, 0, n, v);
 }
 
+// ---------- Grabar la presentación (lo que sale hacia la consola)
+JNI(jboolean, showStart)(JNIEnv *, jobject) {
+    gOutput.start();  // se graba lo que sale: la salida tiene que estar corriendo
+    return gStudio.showStart() ? JNI_TRUE : JNI_FALSE;
+}
+JNI(jboolean, showStop)(JNIEnv *, jobject) { return gStudio.showStop() ? JNI_TRUE : JNI_FALSE; }
+JNI(void, showState)(JNIEnv *env, jobject, jfloatArray out) {
+    float v[Studio::kShowStateCount];
+    gStudio.showState(v);
+    const jsize n = std::min<jsize>(env->GetArrayLength(out), Studio::kShowStateCount);
+    env->SetFloatArrayRegion(out, 0, n, v);
+}
+JNI(jboolean, saveShow)(JNIEnv *env, jobject, jint fd, jstring name) {
+    return gStudio.saveShow(fd, str(env, name)) ? JNI_TRUE : JNI_FALSE;
+}
+
 // ---------- Preparar una canción para cantar en vivo (quitarle la voz con IA)
 JNI(jboolean, setVoiceModel)(JNIEnv *env, jobject, jstring path) {
     return gStudio.setVoiceModel(str(env, path)) ? JNI_TRUE : JNI_FALSE;
@@ -441,3 +458,9 @@ JNI(void, separationState)(JNIEnv *env, jobject, jfloatArray out) {
 }
 JNI(jstring, songJson)(JNIEnv *env, jobject) { return jstr(env, gStudio.songJson()); }
 JNI(jfloatArray, songEnvelope)(JNIEnv *env, jobject, jint cols) { return floats(env, gStudio.songEnvelope(cols)); }
+JNI(void, songCue)(JNIEnv *env, jobject, jfloatArray out) {
+    float v[Studio::kCueCount];
+    gStudio.songCue(v);
+    const jsize n = std::min<jsize>(env->GetArrayLength(out), Studio::kCueCount);
+    env->SetFloatArrayRegion(out, 0, n, v);
+}

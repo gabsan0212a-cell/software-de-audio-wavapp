@@ -1,6 +1,7 @@
 #include "engine/Mixer.h"
 
 #include "engine/LiveInput.h"
+#include "engine/ShowRecorder.h"
 
 #include <algorithm>
 #include <chrono>
@@ -284,6 +285,8 @@ void Mixer::play() {
 
 bool Mixer::needsOutput() const {
     if (mRolling.load(std::memory_order_relaxed)) return true;
+    const ShowRecorder *rec = mShow.load(std::memory_order_acquire);
+    if (rec && rec->recording()) return true;  // la presentación sigue grabando (también el silencio)
     const LiveInput *in = mLive.load(std::memory_order_acquire);
     return in && in->monitoring();
 }
@@ -347,6 +350,7 @@ void Mixer::process(float *out, int frames, int channels) {
             mMixL[i] = std::clamp(mMixL[i], -1.0f, 1.0f);
             mMixR[i] = std::clamp(mMixR[i], -1.0f, 1.0f);
         }
+        if (ShowRecorder *rec = mShow.load(std::memory_order_acquire)) rec->push(mMixL, mMixR, n);
         float *o = out + static_cast<size_t>(done) * channels;
         if (channels == 2) {
             for (int i = 0; i < n; ++i) {

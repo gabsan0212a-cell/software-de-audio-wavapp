@@ -55,6 +55,7 @@ fun PestanaMezcla(abajo: Dp, abrirArchivos: () -> Unit) {
             item(key = "espacio") { EspacioEncabezado() }
             item(key = "titulo") { TituloGrande("Mezcla") }
             item(key = "resumen") { Resumen() }
+            if (Mesa.cancion.lista) item(key = "cantar") { TarjetaCantar() }
             if (Mesa.pistas.isEmpty()) item(key = "vacio") { SinPistas(abrirArchivos) }
             items(Mesa.pistas, key = { it.id }) { pista ->
                 TarjetaPista(pista, Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
@@ -104,6 +105,35 @@ private fun Resumen() {
         if (sep.activa && preparando != null) {
             BotonTexto("Ver cómo va", { Vista.preparar = preparando }, Modifier.padding(top = 2.dp), estilo = Tipo.subtitulo)
         }
+    }
+}
+
+/** Con la canción preparada: abre el escenario para cantarla en vivo. */
+@Composable
+private fun TarjetaCantar() {
+    val p = LocalPaleta.current
+    val grabando = Mesa.presentacion.grabando
+    Row(
+        Modifier
+            .padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 6.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(p.tarjeta)
+            .testTag("cantarEnVivo")
+            .semantics { contentDescription = "Cantar en vivo" }
+            .pulsable(atenuado = 0.6f) { Vista.escenario = true }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AzulejoIcono(Iconos.microfono, p.acento, 44.dp)
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Texto("Cantar en vivo", Tipo.encabezado, p.texto, lineas = 1)
+            Texto(
+                if (grabando) "● Grabando la presentación" else detalleCancion(), Tipo.nota,
+                if (grabando) p.rojo else p.texto2, lineas = 1,
+            )
+        }
+        Icono(Iconos.chevronDerecha, p.texto3, tamano = 18.dp)
     }
 }
 

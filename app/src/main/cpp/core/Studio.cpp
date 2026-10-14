@@ -117,6 +117,7 @@ int64_t fileSize(const std::string &p) {
 
 Studio::Studio(DecodeFunction decoder) : mDecoder(std::move(decoder)) {
     mMixer.setLiveInput(&mInput);
+    mMixer.setShowRecorder(&mShow);
     mProject.input.name = "Micrófono";
     applyInputLocked();
 }
@@ -127,6 +128,8 @@ Studio::~Studio() {
     if (mVoiceFd >= 0) ::close(mVoiceFd);
     stopBackground();
     if (mInput.recording()) mInput.stopRecording();  // el archivo se limpia al abrir la próxima vez
+    mMixer.setShowRecorder(nullptr);
+    if (mShow.recording()) mShow.stop();
     mMixer.setLiveInput(nullptr);
 }
 
@@ -157,6 +160,11 @@ void Studio::open(const std::string &filesDir, const std::string &cacheDir) {
         mCacheDir = cacheDir.empty() ? filesDir : cacheDir;
         mSessionPath = filesDir + "/sesion.json";
         ::mkdir(mAudioDir.c_str(), 0700);
+    }
+    {
+        std::string e;
+        auto a = MappedAudio::open(showPath(), e);
+        mShowSeconds.store(a ? static_cast<double>(a->frames()) / kRate : 0.0);
     }
     {
         std::lock_guard<std::mutex> lk(mSgMutex);
@@ -509,6 +517,8 @@ void Studio::applyRegionsLocked(TrackModel &t, const std::vector<Region> &list) 
     mMixer.setRegions(t.slot, list);
     t.regions = mMixer.regions(t.slot);  // lo que el mezclador aceptó (ya ajustado)
     bump(verRegions(t.slot));
+    // Las partes con voz siguen los pedazos del instrumental: la pantalla las vuelve a leer.
+    if (t.id != 0 && t.id == mProject.song.instrumentalId) bump(kVerSong);
 }
 
 void Studio::applyMasterLocked() {
@@ -1342,6 +1352,90 @@ void Studio::inputState(float *out) const {
     out[5] = li >= 0 && lo >= 0 ? (li + lo) * 1000.0f / kRate : -1.0f;
     out[6] = mInput.recording() ? 1.0f : 0.0f;
     out[7] = static_cast<float>(mInput.recordedSeconds());
+}
+
+// ---------------------------------------------------------------- presentación
+
+std::string Studio::showPath() const { return mFilesDir + "/presentacion.wav"; }
+
+bool Studio::showStart() {
+    if (mShow.recording()) return true;
+    if (mFilesDir.empty()) return false;
+    std::string err;
+    if (!mShow.start(showPath(), err)) {
+        setMessage("No se pudo grabar la presentación: " + err);
+        return false;
+    }
+    mShowSeconds.store(0.0);
+    bump(kVerInput);
+    return true;
+}
+
+bool Studio::showStop() {
+    if (!mShow.recording()) return false;
+    const ShowRecorder::Result r = mShow.stop();
+    mShowSeconds.store(r.error.empty() ? static_cast<double>(r.frames) / kRate : 0.0);
+    if (!r.error.empty()) {
+        std::remove(r.path.c_str());
+        setMessage("No se pudo grabar la presentación: " + r.error);
+    } else {
+        const long long s = r.frames / kRate;
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "Presentación grabada (%lld:%02lld)", s / 60, s % 60);
+        std::string msg = buf;
+        if (r.dropped > 0) msg += ": el disco no alcanzó en algunos momentos";
+        setMessage(msg);
+    }
+    bump(kVerInput);
+    return r.error.empty();
+}
+
+void Studio::showState(float *out) const {
+    out[0] = mShow.recording() ? 1.0f : 0.0f;
+    out[1] = static_cast<float>(mShow.seconds());
+    const double saved = mShowSeconds.load();
+    out[2] = !mShow.recording() && saved > 0.0 ? 1.0f : 0.0f;
+    out[3] = static_cast<float>(saved);
+}
+
+bool Studio::saveShow(int fd, const std::string &name) {
+    if (mShow.recording() || mShowSeconds.load() <= 0.0 || !beginJob("Guardando la presentación…", true)) {
+        if (fd >= 0) ::close(fd);
+        return false;
+    }
+    mProgress.store(0.0f);
+    mCancelExport.store(false);
+    ExportFormat f;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        f.bits = mProject.master.exportBits;
+        f.isFloat = f.bits == 32;
+        f.sampleRate = mProject.master.exportRate;
+    }
+    const std::string path = showPath();
+    mJobs.post([this, fd, name, f, path] {
+        const ExportResult r = ::exportRecording(path, fd, f, &mProgress, &mCancelExport);
+        const bool ok = r.error.empty();
+        std::string msg;
+        if (ok) {
+            const long long s = r.frames / f.sampleRate;
+            char buf[160];
+            std::snprintf(buf, sizeof buf, " (%s · %lld:%02lld · %.1f MB", formatText(f.bits, f.sampleRate).c_str(),
+                          s / 60, s % 60, static_cast<double>(r.bytes) / 1048576.0);
+            msg = "Presentación guardada: " + name + buf;
+            if (r.lufs > kLoudnessNone) msg += " · " + signed1(r.lufs) + " LUFS";
+            msg += ")";
+        } else {
+            msg = "No se guardó la presentación: " + r.error;
+        }
+        {
+            std::lock_guard<std::mutex> lk(mStatus);
+            ++mExportCount;
+            mLastExportOk = ok;
+        }
+        endJob(msg);
+    });
+    return true;
 }
 
 // ---------------------------------------------------------------- voz en vivo
@@ -2683,29 +2777,94 @@ std::string Studio::songJson() const {
     for (float n : s.notes) notas.push(n);
     o.set("notas", std::move(notas));
     Json partes = Json::array();
-    for (size_t i = 0; i < s.vocalStart.size() && i < s.vocalEnd.size(); ++i) {
+    for (const auto &[a, b] : songPartsLocked()) {
         Json p = Json::array();
-        p.push(s.vocalStart[i]);
-        p.push(s.vocalEnd[i]);
+        p.push(static_cast<float>(a));
+        p.push(static_cast<float>(b));
         partes.push(std::move(p));
     }
     o.set("partes", std::move(partes));
     return o.dump();
 }
 
+std::vector<std::pair<double, double>> Studio::songPartsLocked() const {
+    std::vector<std::pair<double, double>> parts;
+    const SongModel &s = mProject.song;
+    const TrackModel *t = s.ready() ? findLocked(s.instrumentalId) : nullptr;
+    if (!t) return parts;
+    // El análisis está en segundos del archivo: cada parte, por cada pedazo que la toca.
+    const size_t n = std::min(s.vocalStart.size(), s.vocalEnd.size());
+    for (size_t i = 0; i < n; ++i) {
+        const double a = static_cast<double>(s.vocalStart[i]) * kRate, b = static_cast<double>(s.vocalEnd[i]) * kRate;
+        for (const Region &r : t->regions) {
+            const double lo = std::max(a, static_cast<double>(r.src));
+            const double hi = std::min(b, static_cast<double>(r.src + r.length));
+            if (hi > lo) parts.emplace_back((r.start + (lo - r.src)) / kRate, (r.start + (hi - r.src)) / kRate);
+        }
+    }
+    std::sort(parts.begin(), parts.end());
+    // Las que se tocan (un corte en medio de una parte), juntas.
+    std::vector<std::pair<double, double>> out;
+    for (const auto &p : parts) {
+        if (!out.empty() && p.first <= out.back().second + 0.05) out.back().second = std::max(out.back().second, p.second);
+        else out.push_back(p);
+    }
+    return out;
+}
+
+void Studio::songCue(float *out) const {
+    std::fill(out, out + kCueCount, 0.0f);
+    std::vector<std::pair<double, double>> parts;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        parts = songPartsLocked();
+    }
+    out[3] = static_cast<float>(parts.size());
+    if (parts.empty()) return;
+    const double t = position();
+    size_t i = 0;  // la parte en la que va, o la siguiente
+    while (i < parts.size() && parts[i].second <= t) ++i;
+    if (i == parts.size()) {
+        out[0] = kCueDone;
+        out[2] = static_cast<float>(parts.size());
+        out[4] = 1.0f;
+        return;
+    }
+    const auto [a, b] = parts[i];
+    out[2] = static_cast<float>(i);
+    if (t >= a) {
+        out[0] = kCueSinging;
+        out[1] = static_cast<float>(b - t);
+        out[4] = static_cast<float>(std::clamp((t - a) / std::max(1e-3, b - a), 0.0, 1.0));
+    } else {
+        const double from = i > 0 ? parts[i - 1].second : 0.0;
+        out[0] = kCueWaiting;
+        out[1] = static_cast<float>(a - t);
+        out[4] = static_cast<float>(std::clamp((t - from) / std::max(1e-3, a - from), 0.0, 1.0));
+    }
+}
+
 std::vector<float> Studio::songEnvelope(int cols) const {
     std::lock_guard<std::mutex> lk(mModel);
-    const std::vector<float> &env = mProject.song.envelope;
+    const SongModel &s = mProject.song;
+    const std::vector<float> &env = s.envelope;
     std::vector<float> out(static_cast<size_t>(std::max(cols, 0)), 0.0f);
-    if (env.empty() || cols <= 0) return out;
-    // Del principio al fin de la canción (el largo de la mezcla), el máximo de cada columna.
-    const double seconds = std::max(static_cast<double>(mMixer.length()) / kRate,
-                                    static_cast<double>(env.size()) / song::kEnvelopeRate);
+    const TrackModel *t = s.ready() ? findLocked(s.instrumentalId) : nullptr;
+    if (env.empty() || cols <= 0 || !t) return out;
+    // Del principio al fin de la mezcla: en cada columna, lo que suena ahí del instrumental
+    // (siguiendo sus pedazos) y el máximo de la voz original en esa parte del archivo.
+    const double total = std::max(1.0, static_cast<double>(mMixer.length()));  // cuadros
     for (int c = 0; c < cols; ++c) {
-        const size_t a = static_cast<size_t>(seconds * c / cols * song::kEnvelopeRate);
-        const size_t b = std::max(a + 1, static_cast<size_t>(seconds * (c + 1) / cols * song::kEnvelopeRate));
+        const double t0 = total * c / cols, t1 = total * (c + 1) / cols;
         float m = 0.0f;
-        for (size_t i = a; i < b && i < env.size(); ++i) m = std::max(m, env[i]);
+        for (const Region &r : t->regions) {
+            const double lo = std::max(t0, static_cast<double>(r.start)), hi = std::min(t1, static_cast<double>(r.end()));
+            if (hi <= lo) continue;
+            const double f0 = (r.src + (lo - r.start)) / kRate, f1 = (r.src + (hi - r.start)) / kRate;  // segundos del archivo
+            const size_t a = static_cast<size_t>(f0 * song::kEnvelopeRate);
+            const size_t b = std::max(a + 1, static_cast<size_t>(std::ceil(f1 * song::kEnvelopeRate)));
+            for (size_t i = a; i < b && i < env.size(); ++i) m = std::max(m, env[i]);
+        }
         out[static_cast<size_t>(c)] = m;
     }
     return out;

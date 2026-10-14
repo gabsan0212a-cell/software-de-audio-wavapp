@@ -261,8 +261,16 @@ private fun Lista(c: Cancion) {
                 Texto(tiempoCorto(Mesa.duracion), Tipo.leyenda.numeros, pal.texto2)
             }
         }
-        PieGrupo("La voz original quedó en silencio: súbela en Mezcla si quieres cantar con guía.")
+        PieGrupo("La voz original quedó en silencio: en el escenario la prendes con \"Guía\" si quieres cantar con ella.")
     }
+    BotonRelleno(
+        "Cantar en vivo",
+        {
+            Vista.preparar = null
+            Vista.escenario = true
+        },
+        Modifier.padding(top = 20.dp).fillMaxWidth().testTag("cantarDesdePreparar"), icono = Iconos.microfono,
+    )
 }
 
 /** La voz original a lo largo de la canción; las partes donde canta, resaltadas. */

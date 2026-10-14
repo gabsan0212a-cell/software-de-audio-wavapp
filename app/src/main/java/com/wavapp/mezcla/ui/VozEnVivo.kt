@@ -76,12 +76,14 @@ internal fun TarjetaVozEnVivo(salida: Salida) {
             PresetsVoz()
             Separador(Modifier.padding(top = 10.dp))
             FilaBoton("Ajustes de la voz…", { Vista.voz = true }, pal.acento)
+            Separador()
+            FilaBoton("Cantar en vivo…", { Vista.escenario = true }, pal.acento)
         }
     }
 }
 
 @Composable
-private fun PresetsVoz() {
+internal fun PresetsVoz() {
     val pal = LocalPaleta.current
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).testTag("presetsVoz"),
@@ -278,6 +280,13 @@ private fun ContenidoVoz() {
     // ---------- Nivel
     EncabezadoGrupo("Nivel")
     Tarjeta(relleno = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 10.dp)) {
+        FilaAjuste("Ganancia del micrófono", textoDbVoz(e.gananciaDb)) {
+            Deslizador(
+                e.gananciaDb, -24f, 24f, { Mesa.ponerGananciaEntrada(it) }, it, alReiniciar = { Mesa.ponerGananciaEntrada(0f) },
+                desde = 0f, descripcion = "Ganancia del micrófono",
+            )
+        }
+        MedidorEntrada(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp))
         AjusteVoz(Nucleo.VOZ_VOLUMEN, "Volumen de la voz", ::textoDbVoz)
     }
     PieGrupo(

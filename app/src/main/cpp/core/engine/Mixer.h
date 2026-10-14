@@ -15,6 +15,7 @@
 #include "io/MappedAudio.h"
 
 class LiveInput;
+class ShowRecorder;
 
 constexpr int kMaxTracks = 12;
 // Medidores: [0] pico master L, [1] pico master R, [2] reducción del limitador (dB, ≥ 0),
@@ -113,9 +114,12 @@ public:
 
     // Entrada en vivo: su escucha se suma a la salida (después del master).
     void setLiveInput(LiveInput *in) { mLive.store(in); }
+    // Lo que sale (después del master) también va a este grabador de la presentación.
+    void setShowRecorder(ShowRecorder *r) { mShow.store(r); }
     // Mientras se graba, la canción sigue corriendo después de su final (y aunque no haya pistas).
     void setFreeRun(bool on) { mFreeRun.store(on); }
-    // La salida tiene algo que dar: la mezcla corre o se está escuchando la entrada.
+    // La salida tiene algo que dar: la mezcla corre, se está escuchando la entrada o se graba la
+    // presentación.
     bool needsOutput() const;
     // Lo llama el hilo de la entrada (solo si el análisis es de la entrada).
     void writeInputTap(const float *l, const float *r, int n);
@@ -204,6 +208,7 @@ private:
     std::atomic<int> mNotchHz{0};
     std::atomic<int> mTapSource{-1};
     std::atomic<LiveInput *> mLive{nullptr};
+    std::atomic<ShowRecorder *> mShow{nullptr};
     std::atomic<bool> mFreeRun{false};
     std::unique_ptr<std::atomic<float>[]> mTapL, mTapR;
     std::atomic<uint64_t> mTapWrite{0};

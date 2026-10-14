@@ -45,6 +45,7 @@
 #include "engine/LiveInput.h"
 #include "engine/Meters.h"
 #include "engine/Mixer.h"
+#include "engine/ShowRecorder.h"
 #include "engine/VoiceFx.h"
 #include "io/Json.h"
 #include "io/MappedAudio.h"
@@ -4285,6 +4286,176 @@ TEST(estudioVozEnVivo) {
     float m[VoiceFx::kMeterCount];
     s2.voiceMeters(m);
     CHECK(m[7] == 4.0f && m[8] == static_cast<float>(kScaleMajor));
+}
+
+// ---------------------------------------------------------------- grabar la presentación
+
+TEST(grabadorDePresentacion) {
+    // Lo que sale del mezclador queda igualito en el archivo (con la voz en vivo incluida).
+    Mixer m(48000);
+    m.setTrack(0, genTrack("show1.wav", 2, 48000 * 3, [](int64_t f, int c) { return sine(c ? 330 : 220, 48000, f, 0.3); }));
+    LiveInput in(48000, m);
+    m.setLiveInput(&in);
+    in.setActive(true, 1);
+    in.setMonitor(true);
+    ShowRecorder rec(48000);
+    m.setShowRecorder(&rec);
+    std::string e;
+    const std::string path = tmpPath("presentacion.wav");
+    CHECK(rec.start(path, e) && rec.recording());
+    CHECK(!rec.start(path, e));  // ya está grabando
+    m.play();
+    std::vector<float> out(192 * 2), todo;
+    for (int k = 0; k < 250; ++k) {  // 1 s
+        const std::vector<float> x = senoMono(440, k * 192, 192, 0.2);
+        in.push(x.data(), 192, 1);
+        m.process(out.data(), 192, 2);
+        todo.insert(todo.end(), out.begin(), out.end());
+    }
+    const ShowRecorder::Result r = rec.stop();
+    CHECK(r.error.empty() && r.frames == 250 * 192 && r.dropped == 0 && r.path == path);
+    CHECK(!rec.recording());
+    auto a = MappedAudio::open(path, e);
+    CHECK(a && a->channels() == 2 && a->frames() == 250 * 192);
+    if (a) {
+        double err = 0.0;
+        for (size_t i = 0; i < todo.size(); ++i) err = std::max(err, static_cast<double>(std::fabs(a->data()[i] - todo[i])));
+        CHECK(err == 0.0);
+    }
+    CHECK(!rec.stop().error.empty());  // no se estaba grabando
+    // Sin grabar, el mezclador no deja nada.
+    for (int k = 0; k < 10; ++k) m.process(out.data(), 192, 2);
+    CHECK(rec.seconds() == 0.0 || !rec.recording());
+    m.setShowRecorder(nullptr);
+    m.setLiveInput(nullptr);
+}
+
+TEST(estudioPresentacion) {
+    const std::string dir = nuevaCarpeta("presentacion");
+    float st[Studio::kShowStateCount];
+    {
+        Studio s;
+        s.open(dir, dir);
+        CHECK(s.waitIdle(30000));
+        CHECK(s.loadDemo() && s.waitIdle(60000));
+        s.showState(st);
+        CHECK(st[0] == 0.0f && st[2] == 0.0f);   // nada grabado todavía
+        CHECK(!s.saveShow(crear(tmpPath("nada.wav")), "nada.wav"));
+        CHECK(s.showStart());
+        s.play();
+        std::vector<float> out(480 * 2);
+        for (int k = 0; k < 150; ++k) s.mixer().process(out.data(), 480, 2);  // 1.5 s
+        s.showState(st);
+        CHECK(st[0] == 1.0f && st[2] == 0.0f);
+        CHECK(s.showStop());
+        s.pause();
+        s.showState(st);
+        CHECK(st[0] == 0.0f && st[2] == 1.0f);
+        CHECK_NEAR(st[3], 1.5, 0.01);
+        CHECK(estado(s)["mensaje"].asString().rfind("Presentación grabada (0:01)", 0) == 0);
+        CHECK(!s.showStop());
+        // Guardarla en el teléfono: con el formato de exportar (16 bits a 44.1 kHz aquí).
+        s.setExportFormat(16, 44100);
+        const std::string out16 = tmpPath("presentacion-16.wav");
+        CHECK(s.saveShow(crear(out16), "Mi presentación.wav"));
+        CHECK(s.waitIdle(30000));
+        const Json j = estado(s);
+        CHECK(j["ultimaOk"].asBool() && j["exportaciones"].asInt() == 1);
+        CHECK(j["mensaje"].asString().rfind("Presentación guardada: Mi presentación.wav (16 bits · 44100 Hz · 0:01", 0) == 0);
+        WavReader wr;
+        CHECK(wr.open(std::fopen(out16.c_str(), "rb")).empty());
+        CHECK(wr.sampleRate() == 44100 && wr.bits() == 16 && wr.channels() == 2);
+        CHECK(std::llabs(wr.frames() - static_cast<int64_t>(1.5 * 44100)) <= 2);
+    }
+    // Al volver a abrir, la última presentación sigue lista para guardar.
+    Studio s2;
+    s2.open(dir, dir);
+    CHECK(s2.waitIdle(30000));
+    s2.showState(st);
+    CHECK(st[2] == 1.0f && std::fabs(st[3] - 1.5f) < 0.01f);
+}
+
+// La pantalla del escenario: cuánto falta para entrar a cantar. Las partes siguen los pedazos del
+// instrumental (si se mueve o se corta, se mueven con él).
+TEST(cuentaParaEntrar) {
+    const std::string dir = nuevaCarpeta("cuenta");
+    ::mkdir((dir + "/audio").c_str(), 0700);
+    CHECK(writeDemoTrack(1, dir + "/audio/inst.wav", 48000).empty());
+    // Una canción preparada a mano: canta de 2 a 5 s y de 8 a 10.5 s.
+    std::string env;
+    for (int i = 0; i < 120; ++i) {
+        const double t = i / 10.0;
+        env += std::string(i ? "," : "") + ((t >= 2 && t < 5) || (t >= 8 && t < 10.5) ? "1" : "0");
+    }
+    const std::string json =
+        R"({"version":1,"siguienteId":5,"pistas":[{"id":4,"nombre":"Paraíso · instrumental","archivo":"inst.wav",)"
+        R"("info":"","volDb":0,"pan":0}],"cancion":{"fuente":0,"instrumental":4,"voz":0,"tonica":9,"menor":true,)"
+        R"("bpm":96,"inicios":[2,8],"finales":[5,10.5],"envolvente":[)" + env + "]}}";
+    FILE *f = std::fopen((dir + "/sesion.json").c_str(), "wb");
+    std::fputs(json.c_str(), f);
+    std::fclose(f);
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    CHECK_NEAR(s.duration(), 12.0, 1e-9);
+    std::string je;
+    Json c = Json::parse(s.songJson(), je);
+    CHECK(c["lista"].asBool() && c["partes"].size() == 2);
+    CHECK_NEAR(c["partes"][1][0].asDouble(), 8.0, 1e-4);
+    CHECK_NEAR(c["partes"][1][1].asDouble(), 10.5, 1e-4);
+    float q[Studio::kCueCount];
+    auto cue = [&](double t) {
+        s.seek(t);
+        s.songCue(q);
+    };
+    cue(0.0);
+    CHECK(q[0] == Studio::kCueWaiting && q[2] == 0.0f && q[3] == 2.0f);
+    CHECK_NEAR(q[1], 2.0, 1e-3);
+    CHECK_NEAR(q[4], 0.0, 1e-3);
+    cue(3.0);
+    CHECK(q[0] == Studio::kCueSinging && q[2] == 0.0f);
+    CHECK_NEAR(q[1], 2.0, 1e-3);
+    CHECK_NEAR(q[4], 1.0 / 3.0, 1e-3);
+    cue(6.5);
+    CHECK(q[0] == Studio::kCueWaiting && q[2] == 1.0f);
+    CHECK_NEAR(q[1], 1.5, 1e-3);
+    CHECK_NEAR(q[4], 0.5, 1e-3);
+    cue(11.0);
+    CHECK(q[0] == Studio::kCueDone && q[2] == 2.0f && q[3] == 2.0f);
+    std::vector<float> e = s.songEnvelope(12);  // una columna por segundo
+    CHECK(e.size() == 12 && e[0] < 0.1f && e[3] > 0.9f && e[6] < 0.1f && e[9] > 0.9f && e[11] < 0.1f);
+
+    // El instrumental 1 s más tarde: todo se corre con él (y la pantalla sabe que cambió).
+    int32_t va[Studio::kVersionCount], vb[Studio::kVersionCount];
+    s.versions(va);
+    s.nudgeRegion(4, 0, 1000);
+    s.versions(vb);
+    CHECK(vb[Studio::kVerSong] != va[Studio::kVerSong]);
+    CHECK(s.regions(4)[0].start == 48000);
+    c = Json::parse(s.songJson(), je);
+    CHECK_NEAR(c["partes"][0][0].asDouble(), 3.0, 1e-4);
+    CHECK_NEAR(c["partes"][1][1].asDouble(), 11.5, 1e-4);
+    cue(2.5);
+    CHECK(q[0] == Studio::kCueWaiting && q[2] == 0.0f);
+    CHECK_NEAR(q[1], 0.5, 1e-3);
+    e = s.songEnvelope(13);  // ahora la mezcla dura 13 s
+    CHECK(e[0] < 0.1f && e[2] < 0.1f && e[3] > 0.9f && e[7] < 0.1f && e[10] > 0.9f);
+    // Cortado en medio de una parte, sigue siendo una (se juntan los pedazos que se tocan).
+    s.seek(4.0);
+    CHECK(s.cut(4, 0) == 1);
+    c = Json::parse(s.songJson(), je);
+    CHECK(c["partes"].size() == 2);
+    CHECK_NEAR(c["partes"][0][0].asDouble(), 3.0, 1e-4);
+    CHECK_NEAR(c["partes"][0][1].asDouble(), 6.0, 1e-4);
+    // Sin la parte de en medio (se borra el pedazo de 4 s en adelante): solo queda lo de antes.
+    CHECK(s.deleteRegion(4, 1));
+    c = Json::parse(s.songJson(), je);
+    CHECK(c["partes"].size() == 1);
+    CHECK_NEAR(c["partes"][0][1].asDouble(), 4.0, 1e-4);
+    // Sin canción preparada: nada que contar.
+    CHECK(s.removeTrack(4));
+    s.songCue(q);
+    CHECK(q[0] == Studio::kCueNone && q[3] == 0.0f);
 }
 
 int main(int argc, char **argv) {

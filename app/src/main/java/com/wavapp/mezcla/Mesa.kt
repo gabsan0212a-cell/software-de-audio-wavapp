@@ -21,6 +21,7 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.ceil
 
 /** Nivel de un medidor en dB (ya con su caída, calculada en el núcleo). */
 class Medidor {
@@ -225,6 +226,28 @@ class Voz {
     var deCancion by mutableStateOf(true)     // la escala sale de la canción preparada
 }
 
+/** La presentación que se graba en vivo (lo que sale hacia la consola), como la tiene el núcleo. */
+class Presentacion {
+    var grabando by mutableStateOf(false)
+    var segundos by mutableIntStateOf(0)  // lo grabado (cambia una vez por segundo)
+    var lista by mutableStateOf(false)    // hay una para guardar en el teléfono
+    var duracion by mutableIntStateOf(0)  // sus segundos
+    var guardada by mutableStateOf(false) // la última ya se guardó en el teléfono
+    var error by mutableStateOf("")       // por qué no se pudo grabar o guardar (vacío = nada)
+}
+
+/**
+ * Para cantar en vivo: dónde va la canción respecto a las partes en que canta la voz original
+ * (la da el núcleo). Mientras el escenario está a la vista se lee en cada cuadro.
+ */
+class Cuenta {
+    var estado by mutableIntStateOf(Nucleo.CUE_NADA)
+    var segundos by mutableIntStateOf(0)    // para entrar o lo que queda de la parte (hacia arriba)
+    var parte by mutableIntStateOf(0)       // desde 0
+    var partes by mutableIntStateOf(0)
+    var avance by mutableFloatStateOf(0f)   // 0..1 de la espera o de la parte (se lee al dibujar)
+}
+
 class MedidorMaster {
     var l by mutableFloatStateOf(-120f)
     var r by mutableFloatStateOf(-120f)
@@ -328,6 +351,14 @@ object Mesa {
     private var vCancion = -1
     private val bufSeparar = FloatArray(Nucleo.DATOS_SEPARAR)
 
+    /** El escenario (cantar en vivo): la presentación que se graba y la cuenta para entrar. */
+    val presentacion = Presentacion()
+    val cuenta = Cuenta()
+    /** El escenario está a la vista (la cuenta se lee en cada cuadro). */
+    var escenario = false
+    private val bufShow = FloatArray(Nucleo.DATOS_PRESENTACION)
+    private val bufCue = FloatArray(Nucleo.DATOS_CUE)
+
     /** Diagnóstico de la salida de audio (frecuencia, búfer, cortes), una vez por segundo. */
     var salida by mutableStateOf("")
         private set
@@ -349,6 +380,7 @@ object Mesa {
     // Exportación en curso: si sale mal, se borra el archivo que se creó.
     private var exportPendiente: Uri? = null
     private var exportacionesVistas = 0
+    private var guardandoPresentacion = false
 
     // ------------------------------------------------------------------ inicio
 
@@ -387,6 +419,7 @@ object Mesa {
             leerEq(entrada.pista)
             voz.valores = Nucleo.voiceFxState()
             leerMedidoresVoz()
+            leerPresentacion()
         }
         for (p in pistas) {
             val vp = versiones[Nucleo.verParams(p.slot)]
@@ -570,6 +603,25 @@ object Mesa {
         e.segundos = bufEntrada[7].toDouble()
     }
 
+    private fun leerPresentacion() {
+        Nucleo.showState(bufShow)
+        val p = presentacion
+        p.grabando = bufShow[0] != 0f
+        p.segundos = bufShow[1].toInt()
+        p.lista = bufShow[2] != 0f
+        p.duracion = bufShow[3].toInt()
+    }
+
+    private fun leerCuenta() {
+        Nucleo.songCue(bufCue)
+        val c = cuenta
+        c.estado = bufCue[0].toInt()
+        c.segundos = ceil(bufCue[1].toDouble()).toInt()
+        c.parte = bufCue[2].toInt()
+        c.partes = bufCue[3].toInt()
+        c.avance = bufCue[4]
+    }
+
     private fun leerHistorial() {
         val h = Nucleo.history()
         puedeDeshacer = (h and 1) != 0
@@ -589,6 +641,11 @@ object Mesa {
             val uri = exportPendiente
             exportPendiente = null
             if (uri != null && !o.optBoolean("ultimaOk")) borrarDocumento(uri)
+            if (guardandoPresentacion) {
+                guardandoPresentacion = false
+                presentacion.guardada = o.optBoolean("ultimaOk")
+                presentacion.error = if (presentacion.guardada) "" else estado
+            }
         }
     }
 
@@ -767,7 +824,8 @@ object Mesa {
 
     /** ¿Hay algo moviéndose en pantalla (audio, entrada, un trabajo o medidores bajando)? */
     // Quitar la voz tarda mucho: su avance basta leerlo unas veces por segundo (ahorra batería).
-    fun activa(): Boolean = reproduciendo || (ocupada && !separacion.activa) || moviendo || entrada.abierta
+    fun activa(): Boolean =
+        reproduciendo || (ocupada && !separacion.activa) || moviendo || entrada.abierta || presentacion.grabando
 
     /** Se llama en cada cuadro de pantalla: posición, medidores y análisis. */
     fun tick(ahoraMs: Long) {
@@ -802,6 +860,8 @@ object Mesa {
         e.satura = bufMedidores[k + 2] != 0f
         if (e.grabando) leerEntrada()  // los segundos grabados
         if (e.abierta && voz.encendida) leerMedidoresVoz()
+        if (presentacion.grabando) leerPresentacion()
+        if (escenario) leerCuenta()
     }
 
     private fun leerMedidoresVoz() {
@@ -865,6 +925,47 @@ object Mesa {
 
     fun ondaGrabacion(columnas: Int, segundos: Float): FloatArray = Nucleo.recordingWave(columnas, segundos)
 
+    // ------------------------------------------------------------------ escenario (cantar en vivo)
+
+    /** Empieza a grabar la presentación (lo que sale hacia la consola) y, si estaba parada, la canción. */
+    fun grabarPresentacion() {
+        if (Nucleo.showStart()) {
+            presentacion.guardada = false
+            presentacion.error = ""
+            if (!Nucleo.isPlaying()) Nucleo.playPause()
+            sincronizar()
+        } else {
+            sincronizar()
+            presentacion.error = estado  // el núcleo dice por qué
+        }
+    }
+
+    /** Termina la presentación (y la canción, si sigue). Queda lista para guardarla en el teléfono. */
+    fun pararPresentacion() {
+        Nucleo.showStop()
+        if (Nucleo.isPlaying()) Nucleo.playPause()
+        sincronizar()
+    }
+
+    fun nombrePresentacion(): String =
+        "Presentación " + SimpleDateFormat("yyyy-MM-dd HHmm", Locale.US).format(Date()) + ".wav"
+
+    /** El núcleo guarda la última presentación en [uri] (elegido por la persona), con el formato de exportar. */
+    fun guardarPresentacion(context: Context, uri: Uri) {
+        if (ocupada || !presentacion.lista) return
+        presentacion.error = ""
+        guardarEn(context, uri, "No se guardó la presentación", { presentacion.error = it }) { fd, nombre ->
+            Nucleo.saveShow(fd, nombre).also { guardandoPresentacion = it }
+        }
+    }
+
+    /** La voz original (guía) de la canción preparada, si sigue en la mesa. */
+    fun pistaGuia(): Pista? = if (cancion.voz == 0) null else pistas.firstOrNull { it.id == cancion.voz }
+
+    /** El nombre de la canción preparada (el del instrumental, sin lo que le agregó la app). */
+    fun nombreCancion(): String? =
+        pistas.firstOrNull { it.id == cancion.instrumental }?.nombre?.removeSuffix(" · instrumental")
+
     // ------------------------------------------------------------------ exportar
 
     fun ponerExportacion(bits: Int, rate: Int) { Nucleo.setExportFormat(bits, rate); sincronizar() }
@@ -880,6 +981,16 @@ object Mesa {
     /** El núcleo renderiza la mezcla completa y la guarda en [uri] (elegido por la persona). */
     fun exportar(context: Context, uri: Uri) {
         if (ocupada || pistas.isEmpty()) return
+        guardarEn(context, uri, "No se exportó") { fd, nombre -> Nucleo.exportMix(fd, nombre) }
+    }
+
+    /**
+     * Abre [uri] para escribir y se lo pasa al núcleo ([escribir] trabaja en segundo plano). Si no
+     * se puede o sale mal, se borra el archivo que se creó.
+     */
+    private fun guardarEn(
+        context: Context, uri: Uri, fallo: String, alFallar: ((String) -> Unit)? = null, escribir: (Int, String) -> Boolean,
+    ) {
         scope.launch {
             val (fd, nombre) = withContext(Dispatchers.IO) {
                 val fd = try {
@@ -891,15 +1002,18 @@ object Mesa {
             }
             if (fd < 0) {
                 borrarDocumento(uri)
-                avisar("No se exportó: no se pudo crear el archivo")
+                avisar("$fallo: no se pudo crear el archivo")
+                alFallar?.invoke(estado)
                 return@launch
             }
             exportPendiente = uri
-            if (!Nucleo.exportMix(fd, nombre)) {
+            val empezo = escribir(fd, nombre)
+            if (!empezo) {
                 exportPendiente = null
                 borrarDocumento(uri)
             }
             sincronizar()
+            if (!empezo) alFallar?.invoke(estado)
         }
     }
 

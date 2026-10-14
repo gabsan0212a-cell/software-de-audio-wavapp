@@ -21,6 +21,7 @@
 #include "engine/LiveInput.h"
 #include "engine/Meters.h"
 #include "engine/Mixer.h"
+#include "engine/ShowRecorder.h"
 #include "project/Model.h"
 
 class ModelFile;
@@ -205,9 +206,19 @@ public:
     void separationState(float *out) const;
     // La canción preparada: {"lista","fuente","instrumental","voz","tonica","menor","claridad",
     // "bpm","pulsos","primerPulso","escala":[7],"notas":[12],"partes":[[inicio, fin], ...]}.
+    // Las partes (dónde canta la voz original) van en segundos de la mezcla: siguen los pedazos
+    // del instrumental (si se recortó o se movió, se mueven con él).
     std::string songJson() const;
-    // La voz original a lo largo de la canción, en `cols` columnas (0..1, el máximo de cada una).
+    // La voz original a lo largo de la mezcla, en `cols` columnas (0..1, el máximo de cada una).
     std::vector<float> songEnvelope(int cols) const;
+    // Para cantar en vivo: dónde va la canción respecto a esas partes. songCue(): [estado,
+    // segundos, parte, partes, avance]. Estado: 0 no hay canción preparada (o no se oye la voz
+    // original), 1 cantando (segundos = lo que falta de la parte; avance 0..1 de la parte),
+    // 2 esperando la entrada (segundos = lo que falta para entrar; avance 0..1 de la espera),
+    // 3 ya no hay más partes. "parte" cuenta desde 0.
+    static constexpr int kCueCount = 5;
+    enum Cue { kCueNone = 0, kCueSinging, kCueWaiting, kCueDone };
+    void songCue(float *out) const;
 
     // ---------- Transporte
     void play();
@@ -259,6 +270,16 @@ public:
     // Pone un preset (y prende la voz). No cambia la escala, la tónica, el registro ni el volumen.
     bool applyVoicePreset(int index);
     void voiceMeters(float *out) { mInput.voice().meters(out); }  // VoiceFx::kMeterCount valores
+
+    // ---------- Grabar la presentación: lo que sale hacia la consola (la pista con la voz en vivo,
+    // después del master). Queda la última, lista para guardarla en el teléfono.
+    bool showStart();  // false si no se puede (el motivo queda en el mensaje)
+    bool showStop();
+    // showState(): [grabando, segundos grabados, hay una para guardar, sus segundos].
+    static constexpr int kShowStateCount = 4;
+    void showState(float *out) const;
+    // La guarda en `fd` (WAV con el formato de exportar) en segundo plano, como exportar.
+    bool saveShow(int fd, const std::string &name);
 
     // ---------- Forma de onda
     // Del pedazo `index`, solo la parte [from, to) de la línea de tiempo, en `cols` columnas:
@@ -352,6 +373,9 @@ private:
     int eqVersion(const TrackModel &t) const;
     void applyInputLocked();
     void applySongToVoiceLocked();  // tonalidad y tempo de la canción preparada → voz en vivo
+    // Las partes con voz en la línea de tiempo (segundos), siguiendo los pedazos del instrumental.
+    std::vector<std::pair<double, double>> songPartsLocked() const;
+    std::string showPath() const;  // la última presentación grabada
     TrackModel *findLocked(int id);
     const TrackModel *findLocked(int id) const;
     void applyTrackLocked(TrackModel &t);
@@ -405,6 +429,8 @@ private:
     const DecodeFunction mDecoder;
     Mixer mMixer{kRate};
     LiveInput mInput{kRate, mMixer};
+    ShowRecorder mShow{kRate};
+    std::atomic<double> mShowSeconds{0.0};  // la última presentación grabada (0 = no hay)
     std::atomic<int> mLatIn{-1}, mLatOut{-1};
     bool mRecWithMix = false;  // con mModel: había pistas al empezar a grabar
     int64_t mRecFrom = 0;      // con mModel: dónde estaba el cursor al empezar a grabar

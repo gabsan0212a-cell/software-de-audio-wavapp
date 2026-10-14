@@ -25,6 +25,9 @@ internal fun recordarAbrirArchivos(): () -> Unit = {}
 @Composable
 internal fun recordarGuardarMezcla(): () -> Unit = {}
 
+@Composable
+internal fun recordarGuardarPresentacion(): () -> Unit = {}
+
 internal fun imagenDePixeles(px: IntArray, ancho: Int, alto: Int): ImageBitmap {
     val bmp = Bitmap()
     bmp.allocPixels(ImageInfo(ancho, alto, ColorType.BGRA_8888, ColorAlphaType.PREMUL))

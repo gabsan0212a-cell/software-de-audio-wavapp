@@ -4,6 +4,8 @@ on:
   push:
     paths-ignore:
       - 'tests/previa/**'  # la vista previa de escritorio no cambia el APK
+      - 'tools/**'         # herramientas (conversión de modelos): tienen su propio flujo
+      - '.github/workflows/modelos.yml'
   workflow_dispatch:
 
 permissions:

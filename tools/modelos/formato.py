@@ -11,6 +11,7 @@ El núcleo (app/src/main/cpp/core/sep/ModelFile) lee exactamente esto.
 """
 
 import json
+import os
 import struct
 
 import numpy as np
@@ -39,6 +40,7 @@ def escribir(ruta, cabecera, tensores):
     js = json.dumps(cab, ensure_ascii=False).encode("utf-8")
     inicio = MAGIA + struct.pack("<I", len(js)) + js
     inicio += b"\0" * ((-len(inicio)) % 64)
+    os.makedirs(os.path.dirname(os.path.abspath(ruta)), exist_ok=True)
     with open(ruta, "wb") as f:
         f.write(inicio)
         f.write(datos)

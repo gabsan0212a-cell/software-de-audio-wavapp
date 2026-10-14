@@ -3,6 +3,11 @@ name: Modelos
 # Baja el modelo de voz (Mel-Band RoFormer de Kim, licencia MIT), lo convierte al formato de
 # WavApp y genera las referencias con el código original (PyTorch) para probar el motor en C++.
 # Todo queda en el release "modelos"; de ahí lo toma la compilación del APK.
+#
+# Seguridad: el código y el archivo de terceros solo corren en "convertir", que no puede escribir
+# en el repositorio (permiso de solo lectura). El archivo del modelo se comprueba con su huella
+# SHA-256 antes de abrirlo y se abre solo como tensores (weights_only, sin ejecutar código).
+# "publicar" no ejecuta nada de afuera: solo sube lo que dejó "convertir".
 on:
   workflow_dispatch:
   push:
@@ -11,7 +16,7 @@ on:
       - '.github/workflows/modelos.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: modelos-${{ github.ref }}
@@ -22,10 +27,15 @@ jobs:
     name: Convertir el modelo de voz
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
     env:
       KIM_COMMIT: 25f44ffb55ee3c301281bba21b2d6d311cb69ae2
+      CKPT_SHA256: 87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -34,30 +44,53 @@ jobs:
           pip install torch==2.4.1 --index-url https://download.pytorch.org/whl/cpu
           pip install numpy==1.26.4 scipy==1.13.1 librosa==0.10.2.post1 einops==0.6.1 \
             rotary_embedding_torch==0.3.5 beartype==0.14.1 pyyaml==6.0.2
-      - name: Código original del modelo (Kim)
+      - name: Código original del modelo (Kim, commit fijo)
         run: |
           git clone https://github.com/KimberleyJensen/Mel-Band-Roformer-Vocal-Model kim
           git -C kim checkout "$KIM_COMMIT"
-      - name: Bajar el modelo
+          test "$(git -C kim rev-parse HEAD)" = "$KIM_COMMIT"
+      - name: Bajar el modelo y comprobar su huella
         run: |
           curl -L --fail --retry 5 -o MelBandRoformer.ckpt \
             https://huggingface.co/KimberleyJSN/melbandroformer/resolve/main/MelBandRoformer.ckpt
           ls -l MelBandRoformer.ckpt
-          sha256sum MelBandRoformer.ckpt | tee ckpt.sha256
+          echo "$CKPT_SHA256  MelBandRoformer.ckpt" | tee ckpt.sha256
+          sha256sum -c ckpt.sha256
       - name: Convertir
         working-directory: tools/modelos
         run: python convertir.py --kim ../../kim --ckpt ../../MelBandRoformer.ckpt --salida ../../salida/voz-kim.wvm
       - name: Referencias (PyTorch)
         working-directory: tools/modelos
         run: python referencias.py --kim ../../kim --ckpt ../../MelBandRoformer.ckpt --salida ../../salida
-      - name: Publicar en el release "modelos"
+      - name: Huellas
+        run: |
+          cd salida
+          sha256sum ./*.wvm | tee sumas.txt
+          cat ../ckpt.sha256 >> sumas.txt
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modelos
+          path: salida/
+          retention-days: 5
+
+  publicar:
+    name: Publicar en el release "modelos"
+    needs: convertir
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: modelos
+          path: salida
+      - name: Subir
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           cd salida
-          sha256sum *.wvm | tee sumas.txt
-          sed 's/ .*MelBandRoformer/ MelBandRoformer/' ../ckpt.sha256 >> sumas.txt
           ls -l
           gh release view modelos >/dev/null 2>&1 || gh release create modelos --prerelease --target "$GITHUB_SHA" \
             --title "Modelos (no es para instalar)" \

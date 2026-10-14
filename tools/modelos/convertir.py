@@ -29,7 +29,8 @@ def cargar_kim(repo, ckpt=None, config=None, **cambios):
     params.update(cambios)
     modelo = MelBandRoformer(**params)
     if ckpt is not None:
-        sd = torch.load(ckpt, map_location="cpu")
+        # Solo tensores: el archivo no puede ejecutar código al abrirse.
+        sd = torch.load(ckpt, map_location="cpu", weights_only=True)
         if isinstance(sd, dict) and "state_dict" in sd:
             sd = sd["state_dict"]
         modelo.load_state_dict(sd)

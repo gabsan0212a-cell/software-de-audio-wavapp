@@ -66,7 +66,7 @@ private fun iconosOscuros(vista: View, oscuros: Boolean) {
 }
 
 /**
- * Tipos que muestra el selector. No solo `audio/*`: muchas carpetas anuncian archivos de audio
+ * Tipos que muestra el selector. No solo los de audio: muchas carpetas anuncian archivos de audio
  * con otro tipo (.m4a como `video/mp4`, .ogg/.opus como `application/ogg`, .flac como
  * `application/x-flac`, lo descargado o de WhatsApp como `application/octet-stream`) y el sistema
  * los esconde. El núcleo mira el contenido, saca la pista de audio (también de un video) y avisa

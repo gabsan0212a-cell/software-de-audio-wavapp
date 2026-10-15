@@ -65,6 +65,18 @@ private fun iconosOscuros(vista: View, oscuros: Boolean) {
     }
 }
 
+/**
+ * Tipos que muestra el selector. No solo `audio/*`: muchas carpetas anuncian archivos de audio
+ * con otro tipo (.m4a como `video/mp4`, .ogg/.opus como `application/ogg`, .flac como
+ * `application/x-flac`, lo descargado o de WhatsApp como `application/octet-stream`) y el sistema
+ * los esconde. El núcleo mira el contenido, saca la pista de audio (también de un video) y avisa
+ * si un archivo no tiene audio que se pueda leer.
+ */
+private val tiposDeAudio = arrayOf(
+    "audio/*", "video/*", "application/ogg", "application/x-ogg", "application/flac", "application/x-flac",
+    "application/x-matroska", "application/octet-stream",
+)
+
 /** Abre el selector de audio del sistema; lo elegido se importa en el núcleo. */
 @Composable
 internal fun recordarAbrirArchivos(): () -> Unit {
@@ -72,7 +84,7 @@ internal fun recordarAbrirArchivos(): () -> Unit {
     val elegir = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         Mesa.agregarArchivos(context, uris)
     }
-    return remember(elegir) { { elegir.launch(arrayOf("audio/*")) } }
+    return remember(elegir) { { elegir.launch(tiposDeAudio) } }
 }
 
 /** Pregunta dónde guardar el WAV y el núcleo exporta ahí. */

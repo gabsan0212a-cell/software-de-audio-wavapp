@@ -16,6 +16,9 @@
 
 class LiveInput;
 class ShowRecorder;
+namespace inst {
+class Live;
+}
 
 constexpr int kMaxTracks = 12;
 // Medidores: [0] pico master L, [1] pico master R, [2] reducción del limitador (dB, ≥ 0),
@@ -63,6 +66,11 @@ public:
     // solo pedazo con el archivo completo desde 0.
     bool setRegions(int slot, const std::vector<Region> &regions);
     std::vector<Region> regions(int slot) const;
+    // Cambia el archivo de una pista que ya suena por otro (un instrumento que se volvió a
+    // renderizar), sin fundidos ni reinicios: lo que coincide sigue sonando igual. Devuelve el
+    // archivo anterior cuando el hilo de audio ya no lo usa.
+    std::unique_ptr<MappedAudio> replaceAudio(int slot, std::unique_ptr<MappedAudio> audio,
+                                              const std::vector<Region> &regions);
 
     void setTrackGain(int slot, float gain);  // lineal
     void setTrackPan(int slot, float pan);    // -1 (L) .. 1 (R)
@@ -118,6 +126,15 @@ public:
     void setShowRecorder(ShowRecorder *r) { mShow.store(r); }
     // Mientras se graba, la canción sigue corriendo después de su final (y aunque no haya pistas).
     void setFreeRun(bool on) { mFreeRun.store(on); }
+    // Lo que se toca en vivo con los instrumentos (se suma antes del master).
+    void setInstrumentLive(inst::Live *l) { mInstLive.store(l); }
+    // La salida no se duerme (p. ej. mientras se crea música: lo que se toca suena al instante).
+    void setKeepAwake(bool on) { mKeepAwake.store(on); }
+    // Repetir [start, end) mientras suena (end <= start: no se repite). No afecta al exportar.
+    void setLoop(int64_t start, int64_t end);
+    // Metrónomo: un clic en cada pulso (cuadros por pulso; 0 = apagado), contando desde el inicio.
+    // Suena solo mientras corre la canción y no se exporta.
+    void setMetronome(double framesPerBeat) { mMetroFpb.store(framesPerBeat > 0 ? framesPerBeat : 0.0); }
     // La salida tiene algo que dar: la mezcla corre, se está escuchando la entrada o se graba la
     // presentación.
     bool needsOutput() const;
@@ -179,7 +196,7 @@ private:
 
     void renderBlock(int n);
     void finishBus(int n, bool rolling);  // anti-zumbido, análisis, master y medidores
-    void readInput(const MappedAudio &a, const PieceSet &ps, int n);
+    void readInput(const MappedAudio &a, const PieceSet &ps, int n, int64_t pos);  // [pos, pos + n)
     static std::unique_ptr<PieceSet> makePieces(std::vector<Region> regions, int64_t fileFrames);
     void publishPieces(Slot &s, std::unique_ptr<PieceSet> ps);  // con mMutex
     void publishAutos(Slot &s, std::unique_ptr<AutoSet> as);    // con mMutex
@@ -210,6 +227,10 @@ private:
     std::atomic<LiveInput *> mLive{nullptr};
     std::atomic<ShowRecorder *> mShow{nullptr};
     std::atomic<bool> mFreeRun{false};
+    std::atomic<inst::Live *> mInstLive{nullptr};
+    std::atomic<bool> mKeepAwake{false};
+    std::atomic<int64_t> mLoopStart{0}, mLoopEnd{0};
+    std::atomic<double> mMetroFpb{0.0};
     std::unique_ptr<std::atomic<float>[]> mTapL, mTapR;
     std::atomic<uint64_t> mTapWrite{0};
     static constexpr int kLoudRing = 512;  // 51 s de bloques
@@ -227,6 +248,10 @@ private:
     float mBlkTapL[kBlock], mBlkTapR[kBlock];
     float mWetL[kBlock], mWetR[kBlock];
     bool mOffline = false;
+    // Metrónomo (hilo de audio)
+    int mClickLeft = 0;
+    double mClickPhase = 0.0, mClickInc = 0.0;
+    void addMetronome(int n);
     LoudnessFrontEnd mLoudFe;
     uint32_t mLoudGen = 0;
     int mNotchSeen = 0;

@@ -14,6 +14,7 @@
 #include "dsp/AnalysisView.h"
 #include "engine/Meters.h"
 #include "engine/VoiceFx.h"
+#include "inst/Instruments.h"
 
 static Studio gStudio(decodeWithMediaCodec);
 static AudioOutput gOutput(gStudio.mixer());
@@ -106,7 +107,7 @@ JNI(jintArray, constants)(JNIEnv *env, jobject) {
                          Studio::kTrackParamCount, Studio::kMasterStateCount, Studio::kLoudCount,
                          Studio::kSongLoudCount, fx::kCount, MeterBallistics::kCompressor, Studio::kVerSong,
                          Studio::kSepStateCount, vfx::kCount, VoiceFx::kMeterCount, Studio::kShowStateCount,
-                         Studio::kCueCount};
+                         Studio::kCueCount, Studio::kVerMusic, Studio::kMusicStateCount, inst::kParamCount};
     const jsize n = static_cast<jsize>(sizeof v / sizeof v[0]);
     jintArray a = env->NewIntArray(n);
     env->SetIntArrayRegion(a, 0, n, v);
@@ -468,4 +469,50 @@ JNI(void, songCue)(JNIEnv *env, jobject, jfloatArray out) {
     gStudio.songCue(v);
     const jsize n = std::min<jsize>(env->GetArrayLength(out), Studio::kCueCount);
     env->SetFloatArrayRegion(out, 0, n, v);
+}
+
+// ---------- Crear música: instrumentos, tempo y tonalidad
+JNI(void, musicState)(JNIEnv *env, jobject, jfloatArray out) {
+    float v[Studio::kMusicStateCount];
+    gStudio.musicState(v);
+    env->SetFloatArrayRegion(out, 0, std::min<jsize>(Studio::kMusicStateCount, env->GetArrayLength(out)), v);
+}
+JNI(void, setTempo)(JNIEnv *, jobject, jfloat bpm) { gStudio.setTempo(bpm); }
+JNI(void, setKey)(JNIEnv *, jobject, jint key, jboolean minor) { gStudio.setKey(key, minor == JNI_TRUE); }
+JNI(void, setMetronome)(JNIEnv *, jobject, jboolean on) { gStudio.setMetronome(on == JNI_TRUE); }
+JNI(jstring, instrumentsJson)(JNIEnv *env, jobject) { return jstr(env, Studio::instrumentsJson()); }
+JNI(jfloatArray, instParamInfo)(JNIEnv *env, jobject) { return floats(env, Studio::instParamInfo()); }
+JNI(jint, addInstrument)(JNIEnv *, jobject, jint kind, jint preset) { return gStudio.addInstrument(kind, preset); }
+JNI(jstring, instrumentJson)(JNIEnv *env, jobject, jint id) { return jstr(env, gStudio.instrumentJson(id)); }
+JNI(jstring, instRowsJson)(JNIEnv *env, jobject, jint id, jboolean scaleOnly) {
+    return jstr(env, gStudio.instRowsJson(id, scaleOnly == JNI_TRUE));
+}
+JNI(jint, instToggle)(JNIEnv *, jobject, jint id, jint tick, jint pitch, jint len, jboolean chord) {
+    return gStudio.instToggle(id, tick, pitch, len, chord == JNI_TRUE);
+}
+JNI(jint, instRoll)(JNIEnv *, jobject, jint id, jint step, jint pitch) { return gStudio.instRoll(id, step, pitch); }
+JNI(jboolean, instSetNote)(JNIEnv *, jobject, jint id, jint index, jint tick, jint len, jint pitch, jint vel) {
+    return gStudio.instSetNote(id, index, tick, len, pitch, vel) ? JNI_TRUE : JNI_FALSE;
+}
+JNI(jboolean, instRemoveNote)(JNIEnv *, jobject, jint id, jint index) {
+    return gStudio.instRemoveNote(id, index) ? JNI_TRUE : JNI_FALSE;
+}
+JNI(void, instClear)(JNIEnv *, jobject, jint id) { gStudio.instClear(id); }
+JNI(void, instSetPattern)(JNIEnv *, jobject, jint id, jint bars, jint repeats, jfloat swing) {
+    gStudio.instSetPattern(id, bars, repeats, swing);
+}
+JNI(void, instSetPreset)(JNIEnv *, jobject, jint id, jint preset) { gStudio.instSetPreset(id, preset); }
+JNI(void, instSetParam)(JNIEnv *, jobject, jint id, jint param, jfloat value) { gStudio.instSetParam(id, param, value); }
+JNI(jboolean, instIdea)(JNIEnv *, jobject, jint id) { return gStudio.instIdea(id) ? JNI_TRUE : JNI_FALSE; }
+// Tocar en vivo: si la salida estaba dormida, se despierta.
+JNI(void, instPlay)(JNIEnv *, jobject, jint id, jint pitch, jint vel, jboolean down) {
+    if (down == JNI_TRUE) gOutput.start();
+    gStudio.instPlay(id, pitch, vel, down == JNI_TRUE);
+}
+JNI(void, instRecord)(JNIEnv *, jobject, jint id, jboolean on) { gStudio.instRecord(id, on == JNI_TRUE); }
+JNI(jboolean, instRecording)(JNIEnv *, jobject) { return gStudio.instRecording() ? JNI_TRUE : JNI_FALSE; }
+JNI(jdouble, instPosition)(JNIEnv *, jobject, jint id) { return gStudio.instPosition(id); }
+JNI(void, setCreating)(JNIEnv *, jobject, jboolean on, jint loopId) {
+    if (on == JNI_TRUE) gOutput.start();
+    gStudio.setCreating(on == JNI_TRUE, loopId);
 }

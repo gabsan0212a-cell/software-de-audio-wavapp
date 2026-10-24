@@ -19,7 +19,7 @@
 - Solo `androidx.compose.foundation` (sin Material): componentes propios en `ui/Componentes.kt`
   y `ui/Superpuestos.kt`, colores y tipografía de iOS en `ui/Tema.kt`, íconos con rutas en
   `ui/Iconos.kt`. Claro u oscuro según el celular.
-- Pestañas abajo (Mezcla, Grabar, Editar, Análisis), mini reproductor que abre el reproductor a
+- Pestañas abajo (Mezcla, Crear, Grabar, Editar, Análisis), mini reproductor que abre el reproductor a
   pantalla completa, hojas que suben desde abajo, menús de acciones y alertas de iOS.
 - Lo que cambia en cada cuadro (posición, medidores) se lee al dibujar, no al componer.
 - Nunca `coerceIn` con límites calculados en la pantalla (cierra la app si el rango queda al
@@ -61,6 +61,14 @@
   "· instrumental" y "· voz original" debajo; luego `dsp/SongAnalysis` saca tonalidad, BPM, pulsos
   y dónde canta, y queda en `ProjectModel::song`). `dsp/Pitch` (YIN) sirve también para el
   auto-tune. Android: `TrabajoLargo` (servicio en primer plano) y `ui/Preparar.kt`.
+- Crear música: `core/inst/` (`Instruments`/`Engine`: síntesis de batería, 808, bajo, guitarra
+  Karplus-Strong y sintetizador; `Pattern`: notas en pulsos, render de una vuelta + colas, ideas;
+  `Live`: tocar en vivo con cola sin bloqueos) + `StudioCrear.cpp` (cada instrumento es una pista
+  cuyo WAV se renderiza en `mInstJobs`; `Mixer::replaceAudio` cambia el archivo sin cortes; tempo y
+  tonalidad en `MusicModel`, metrónomo y repetir en el `Mixer`). Pantalla: `ui/CrearTab.kt` y
+  `ui/EditorInstrumento.kt` (las filas y los nombres de las notas los da el núcleo).
+- Efectos de voz en pistas: `TrackFx` también tiene graves, compuerta y auto-tune (antes del EQ;
+  el `Mixer` lee la pista `TrackFx::kTuneLatency` adelante), de-esser y doblaje.
 - El modelo: `tools/modelos/` lo convierte en `modelos.yml` (release `modelos`). El código de
   terceros (repo de Kim, checkpoint) corre solo en el trabajo de solo lectura, con
   `weights_only=True` y huellas SHA-256 fijas; nunca en trabajos con permisos de escritura. El CI

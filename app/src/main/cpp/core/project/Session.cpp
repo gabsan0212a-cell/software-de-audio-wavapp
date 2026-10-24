@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 #include "dsp/Equalizer.h"
 
@@ -80,6 +82,50 @@ void autoFromJson(const Json &a, TrackModel &t) {
     }
 }
 
+// {"tipo", "preset", "ajustes": {...}, "compases", "veces", "swing", "notas": [[pulso, largo, nota, fuerza], ...]}
+Json instToJson(const inst::Part &part) {
+    Json o = Json::object();
+    o.set("tipo", part.sound.kind);
+    o.set("preset", part.sound.preset);
+    Json aj = Json::object();
+    for (int k = 0; k < inst::kParamCount; ++k)
+        aj.set(inst::paramInfo(k).key, step(part.sound.values[static_cast<size_t>(k)], inst::paramInfo(k).step));
+    o.set("ajustes", std::move(aj));
+    o.set("compases", part.pattern.bars);
+    o.set("veces", part.pattern.repeats);
+    o.set("swing", step(part.pattern.swing, 0.01));
+    Json notas = Json::array();
+    for (const inst::Note &n : part.pattern.notes) {
+        Json a = Json::array();
+        a.push(n.tick).push(n.len).push(n.pitch).push(n.vel);
+        notas.push(std::move(a));
+    }
+    o.set("notas", std::move(notas));
+    return o;
+}
+
+void instFromJson(const Json &o, inst::Part &part) {
+    inst::Sound s;
+    s.kind = static_cast<int>(o["tipo"].asInt(inst::kSynth));
+    s.preset = static_cast<int>(o["preset"].asInt(0));
+    const Json &aj = o["ajustes"];
+    for (int k = 0; k < inst::kParamCount; ++k)
+        s.values[static_cast<size_t>(k)] = static_cast<float>(aj[inst::paramInfo(k).key].asDouble(inst::paramInfo(k).def));
+    part.sound = inst::clampSound(s);
+    inst::Pattern &pt = part.pattern;
+    pt.bars = static_cast<int>(o["compases"].asInt(4));
+    pt.repeats = static_cast<int>(o["veces"].asInt(4));
+    pt.swing = static_cast<float>(o["swing"].asDouble(0));
+    const Json &notas = o["notas"];
+    for (size_t i = 0; i < notas.size() && i < static_cast<size_t>(inst::kMaxNotes); ++i) {
+        const Json &a = notas[i];
+        if (a.size() < 4) continue;
+        pt.notes.push_back({static_cast<int>(a[0].asInt()), static_cast<int>(a[1].asInt()), static_cast<int>(a[2].asInt()),
+                            static_cast<int>(a[3].asInt())});
+    }
+    inst::normalize(pt, part.sound.kind);
+}
+
 }  // namespace
 
 Json sessionToJson(const ProjectModel &p) {
@@ -110,6 +156,13 @@ Json sessionToJson(const ProjectModel &p) {
         Json fxj = Json::object();
         for (int k = 0; k < fx::kCount; ++k) fxj.set(fx::info(k).key, static_cast<double>(t.fx[static_cast<size_t>(k)]));
         jt.set("efectos", std::move(fxj));
+        if (t.isInst) {
+            Json ij = instToJson(t.part);
+            char hx[24];
+            std::snprintf(hx, sizeof hx, "%016llx", static_cast<unsigned long long>(t.renderedHash));
+            ij.set("render", std::string(hx));
+            jt.set("instrumento", std::move(ij));
+        }
         tracks.push(std::move(jt));
     }
     Json master = Json::object();
@@ -138,6 +191,14 @@ Json sessionToJson(const ProjectModel &p) {
     voz.set("version", kVoiceVersion);
     in.set("voz", std::move(voz));
     j.set("entrada", std::move(in));
+    Json mu = Json::object();
+    mu.set("bpm", step(p.music.bpm, 0.1));
+    mu.set("tonica", p.music.key);
+    mu.set("menor", p.music.minor);
+    mu.set("bpmElegido", p.music.bpmSet);
+    mu.set("tonicaElegida", p.music.keySet);
+    mu.set("metronomo", p.music.metronome);
+    j.set("musica", std::move(mu));
     if (p.song.ready()) {
         const SongModel &c = p.song;
         Json cj = Json::object();
@@ -209,6 +270,11 @@ bool sessionFromJson(const Json &j, ProjectModel &p) {
         for (int k = 0; k < fx::kCount; ++k)
             t.fx[static_cast<size_t>(k)] =
                 fx::clampValue(k, static_cast<float>(fxj[fx::info(k).key].asDouble(fx::info(k).def)));
+        if (o["instrumento"].isObject()) {
+            t.isInst = true;
+            instFromJson(o["instrumento"], t.part);
+            t.renderedHash = std::strtoull(o["instrumento"]["render"].asString("0").c_str(), nullptr, 16);
+        }
         if (t.file.empty()) continue;
         p.nextId = std::max(p.nextId, t.id + 1);
         p.tracks.push_back(std::move(t));
@@ -226,6 +292,16 @@ bool sessionFromJson(const Json &j, ProjectModel &p) {
         float &speed = p.voice[static_cast<size_t>(vfx::kTuneSpeed)];
         if (speed == 20.0f) speed = vfx::info(vfx::kTuneSpeed).def;
         else if (speed == 12.0f) speed = 4.0f;
+    }
+    const Json &mu = j["musica"];
+    if (mu.isObject()) {
+        p.music.bpm = std::clamp(static_cast<float>(mu["bpm"].asDouble(90)), 40.0f, 240.0f);
+        const int key = static_cast<int>(mu["tonica"].asInt(9));
+        p.music.key = key >= 0 && key < 12 ? key : 9;
+        p.music.minor = mu["menor"].asBool(true);
+        p.music.bpmSet = mu["bpmElegido"].asBool(false);
+        p.music.keySet = mu["tonicaElegida"].asBool(false);
+        p.music.metronome = mu["metronomo"].asBool(false);
     }
     const Json &cj = j["cancion"];
     if (cj.isObject() && cj["instrumental"].asInt(0) > 0) {

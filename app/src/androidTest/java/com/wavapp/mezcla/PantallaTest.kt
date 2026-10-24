@@ -459,6 +459,44 @@ class PantallaTest {
         if (Mesa.reproduciendo) regla.onNodeWithContentDescription("Pausar").performClick()
         regla.waitUntil(5_000) { !Mesa.reproduciendo }
         regla.onNodeWithContentDescription("Detener").performClick()
+
+        // Crear música: una batería nueva (llega con una idea), una nota puesta con el dedo en la
+        // cuadrícula, los pads y el sonido. Después se quita.
+        regla.onNodeWithTag("pestana-${Vista.CREAR}").performClick()
+        regla.waitUntil(3_000) { Vista.pestana == Vista.CREAR }
+        avanzarMedidores()
+        captura("33-crear")
+        regla.onNodeWithTag("agregarInstrumento-0").performScrollTo().performClick()
+        regla.waitUntil(30_000) { Mesa.instrumentoAbierto > 0 }
+        regla.onNodeWithTag("editorInstrumento").assertIsDisplayed()
+        val bateria = Mesa.pistas.first { it.id == Mesa.instrumentoAbierto }
+        assertTrue(bateria.esInstrumento && bateria.instrumento == Nucleo.INST_BATERIA)
+        regla.waitUntil(5_000) { (bateria.patron?.n ?: 0) > 0 }
+        val antes = bateria.patron!!.n
+        // La fila de arriba (el platillo), segundo paso.
+        val d = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+        regla.onNodeWithTag("cuadricula").performTouchInput { click(Offset((88f + 30f * 1.5f) * d, (22f + 12f) * d)) }
+        regla.waitUntil(5_000) { bateria.patron?.n == antes + 1 }
+        avanzarMedidores()
+        captura("34-bateria-notas")
+        regla.onNodeWithText("Tocar").performClick()
+        regla.onNodeWithTag("pads").assertIsDisplayed()
+        regla.onNodeWithTag("pads").performTouchInput { click(Offset(width * 0.1f, height * 0.75f)) }
+        avanzarMedidores()
+        captura("35-bateria-pads")
+        regla.onNodeWithText("Sonido").performClick()
+        regla.onNodeWithContentDescription("Sonido Boom bap").performClick()
+        regla.waitUntil(5_000) { bateria.patron?.preset == 1 }
+        avanzarMedidores()
+        captura("36-bateria-sonido")
+        regla.onNodeWithText("Notas").performClick()
+        regla.onNodeWithText("Listo").performClick()
+        regla.waitUntil(3_000) { Mesa.instrumentoAbierto == 0 }
+        regla.onNodeWithTag("instrumento-${bateria.id}").assertExists()
+        regla.runOnUiThread { Mesa.quitar(bateria) }
+        regla.waitUntil(5_000) { Mesa.pistas.size == 4 }
+        regla.onNodeWithTag("pestana-${Vista.MEZCLA}").performClick()
+        regla.waitUntil(3_000) { Vista.pestana == Vista.MEZCLA }
     }
 
     /** Avanza cuadros a mano (el bucle de pantalla está pausado en las pruebas) hasta que se cumpla [cond]. */

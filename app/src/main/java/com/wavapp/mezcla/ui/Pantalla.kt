@@ -56,6 +56,7 @@ object Vista {
     const val EDITAR = 1
     const val ANALISIS = 2
     const val GRABAR = 3
+    const val CREAR = 4
 
     var pestana by mutableIntStateOf(MEZCLA)
     var reproductor by mutableStateOf(false)
@@ -68,6 +69,13 @@ object Vista {
     var preparar by mutableStateOf<Pista?>(null)
     var voz by mutableStateOf(false)
     var escenario by mutableStateOf(false)
+
+    // Crear: elegir la tonalidad, repetir el patrón, el instrumento que se abre al aparecer y
+    // a cuál se le borran las notas (pide confirmar).
+    var tonalidad by mutableStateOf(false)
+    var repetir by mutableStateOf(true)
+    var abrirInstrumento by mutableIntStateOf(0)
+    var borrarNotas by mutableStateOf<Pista?>(null)
 
     // Grabar: qué entrada (0 = la primera de la lista), en estéreo o no, y la última toma.
     var entradaId by mutableIntStateOf(0)
@@ -106,6 +114,20 @@ fun PantallaMesa() {
         Analisis.fuenteForzada = if (Vista.pestana == Vista.GRABAR && !tapada) Nucleo.ID_ENTRADA else null
         Edicion.abierta = Vista.pestana == Vista.EDITAR
         Mesa.escenario = Vista.escenario
+        // Crear: la salida despierta (lo que se toca suena al instante) y se repite el patrón.
+        val abierto = Mesa.instrumentoAbierto
+        val creando = !tapada && (Vista.pestana == Vista.CREAR || abierto > 0)
+        val repetirId = if (!Vista.repetir) 0 else abierto.takeIf { it > 0 }
+            ?: Mesa.pistas.firstOrNull { it.esInstrumento }?.id ?: 0
+        Mesa.creando(creando, if (creando) repetirId else 0)
+    }
+    // Un instrumento recién agregado se abre en cuanto el núcleo lo tiene listo.
+    LaunchedEffect(Vista.abrirInstrumento, Mesa.pistas.size) {
+        val id = Vista.abrirInstrumento
+        if (id > 0 && Mesa.pistas.any { it.id == id }) {
+            Mesa.instrumentoAbierto = id
+            Vista.abrirInstrumento = 0
+        }
     }
     val abrirArchivos = recordarAbrirArchivos()
     val guardarMezcla = recordarGuardarMezcla()
@@ -146,6 +168,7 @@ fun PantallaMesa() {
             Vista.EDITAR -> PestanaEdicion(abajo)
             Vista.ANALISIS -> PestanaAnalisis(abajo)
             Vista.GRABAR -> PestanaGrabar(abajo, audio, permiso)
+            Vista.CREAR -> PestanaCrear(abajo)
             else -> PestanaMezcla(abajo, abrirArchivos)
         }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
@@ -157,6 +180,11 @@ fun PantallaMesa() {
         Escenario(
             Vista.escenario, audio.salida, permiso, alCerrar = { Vista.escenario = false }, alGuardar = guardarPresentacion,
         )
+        EditorInstrumento(
+            Mesa.pistas.firstOrNull { it.id == Mesa.instrumentoAbierto && it.esInstrumento },
+            alCerrar = { Mesa.instrumentoAbierto = 0 },
+        )
+        HojaTonalidad(Vista.tonalidad, alCerrar = { Vista.tonalidad = false })
         HojaEq(Mesa.eqAbierta, alCerrar = { Mesa.eqAbierta = null })
         HojaAutomatizacion(
             Vista.automatizacion?.takeIf { it in Mesa.pistas }, alCerrar = { Vista.automatizacion = null },
@@ -175,10 +203,20 @@ fun PantallaMesa() {
             Vista.agregar, alCerrar = { Vista.agregar = false }, titulo = "Agregar pistas",
             acciones = listOf(
                 Accion("Agregar archivos…") { abrirArchivos() },
+                Accion("Crear con instrumentos…") { Vista.pestana = Vista.CREAR },
                 Accion("Pistas de prueba") { Mesa.cargarPrueba() },
             ),
         )
         OpcionesPista()
+        val borrar = Vista.borrarNotas
+        Alerta(
+            visible = borrar != null,
+            titulo = "¿Borrar todas las notas?",
+            mensaje = "El instrumento se queda sin notas (se puede deshacer).",
+            confirmar = "Borrar", destructiva = true,
+            alConfirmar = { borrar?.let { Mesa.borrarNotas(it) } },
+            alCerrar = { Vista.borrarNotas = null },
+        )
         val quitar = Vista.aQuitar
         Alerta(
             visible = quitar != null,
@@ -208,7 +246,8 @@ fun PantallaMesa() {
 private fun OpcionesPista() {
     val pista = Vista.opciones
     val acciones = if (pista == null) emptyList() else buildList {
-        add(Accion("Preparar para cantar…") { Vista.preparar = pista })
+        if (pista.esInstrumento) add(Accion("Editar instrumento…") { Mesa.instrumentoAbierto = pista.id })
+        else add(Accion("Preparar para cantar…") { Vista.preparar = pista })
         add(Accion("Ecualizador") { Mesa.eqAbierta = pista })
         add(Accion("Efectos") { Vista.efectos = pista })
         add(Accion("Automatización") { Vista.automatizacion = pista })
@@ -234,6 +273,7 @@ private fun BarraPestanas() {
         Separador()
         Row(Modifier.fillMaxWidth().height(ALTO_PESTANAS)) {
             Pestana(Iconos.mezclador, "Mezcla", Vista.MEZCLA)
+            Pestana(Iconos.teclado, "Crear", Vista.CREAR)
             Pestana(Iconos.microfono, "Grabar", Vista.GRABAR)
             Pestana(Iconos.tijeras, "Editar", Vista.EDITAR)
             Pestana(Iconos.onda, "Análisis", Vista.ANALISIS)

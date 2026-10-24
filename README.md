@@ -70,6 +70,16 @@ internet).
       para entrar a cantar, el mapa de dónde canta la voz, el afinador grande, el nivel del
       micrófono, presets y botones grandes; graba lo que sale hacia la consola (la pista con tu voz,
       después del master) y lo guarda en el teléfono como WAV
+- [x] 14. Crear música (pestaña **Crear**, 1.2.0): batería (Trap, Boom bap, Reggaetón, Pop / rock,
+      Electrónica, Lo-fi), 808, bajos, guitarras (acústica, nylon, eléctrica limpia y
+      distorsionada, muteada) y sintetizador (pluck, pad, lead, supersaw, piano eléctrico, órgano,
+      campanas, cuerdas), todo sintetizado en el celular. Cada instrumento llega con una idea en la
+      tonalidad y el tempo elegidos; se edita en una cuadrícula (notas de la escala, acordes,
+      redobles de hi-hat, swing), se toca en vivo con pads (y lo tocado se graba al patrón) y se
+      le cambia el sonido. Es una pista más: volumen, EQ, efectos, edición y exportar
+- [x] 15. Los efectos de la voz en vivo también en las pistas grabadas (botón FX → **Voz**): auto-tune
+      (sin retraso: la voz queda en su lugar), quitar graves, compuerta, de-esser y doblaje, con
+      presets ("Voz con auto-tune", "Voz trap (robot)"...)
 
 Sin plugins VST en Android.
 
@@ -87,6 +97,17 @@ Sin plugins VST en Android.
    cuánto falta para entrar (los últimos 3 segundos en rojo) y **¡Canta!** mientras dura cada
    parte. Al terminar toca el cuadro rojo.
 6. **Guardar** deja la presentación en el teléfono como WAV (con el formato de exportar).
+
+## Cómo crear un beat
+1. Pestaña **Crear**: elige el **tempo** y la **tonalidad** (por omisión 90 BPM y La menor; con una
+   canción preparada se usan los suyos).
+2. Toca un instrumento en **Agregar instrumento** (por ejemplo la batería): llega con una idea que
+   ya suena. **Otra idea** da otra; **Borrar** lo deja vacío.
+3. **Notas**: toca un cuadro para poner o quitar una nota; en la batería deja el dedo para un
+   redoble (hi-hats del trap). En los melódicos elige el largo (1/16 a 1 compás) y **Acordes**.
+4. **Tocar**: pads para probar; con **Grabar notas** lo que toques entra al patrón mientras suena.
+5. **Sonido**: el preset y los ajustes (brillo, duración, distorsión, deslizar, afinación).
+6. Suma 808, bajo, guitarra o sintetizador igual; después graba tu voz en **Grabar** y exporta.
 
 ## Cómo está hecho
 - `app/src/main/cpp/core/`: **el núcleo**, C++17 sin nada de Android (se prueba en Linux).
@@ -110,6 +131,13 @@ Sin plugins VST en Android.
     (caídas y picos de los medidores) y `Decoder.h` (lo que debe dar la plataforma).
   - `project/`: `Model` (el proyecto), `Session` (sesion.json) y `Edit` (mover, recortar,
     fundidos, cortar, imán).
+  - `inst/`: crear música. `Instruments` (los presets) y `Engine` (la síntesis: batería con tonos y
+    ruido filtrado, 808 con golpe y saturación, cuerdas Karplus-Strong para guitarras y bajo,
+    sintetizador de resta, FM y órgano), `Pattern` (notas en pulsos, ideas para empezar, filas de
+    la escala; una vuelta se renderiza una vez y las repeticiones suman su cola) y `Live` (tocar en
+    vivo: cola sin bloqueos hacia el hilo de audio). `StudioCrear.cpp`: las pistas de instrumento se
+    renderizan en otro hilo a un WAV y `Mixer::replaceAudio` cambia el archivo sin cortes; tempo,
+    tonalidad, metrónomo y repetir el patrón.
   - `sep/`: quitar la voz. `ModelFile` (el modelo `.wvm`, mapeado en memoria directo del APK),
     `MelRoformer` (la red, igual a la original en PyTorch: Eigen y todos los núcleos con
     `ThreadPool`), `Stft` y `Separator` (la canción en trozos de 8 s que se enciman y se unen
@@ -143,8 +171,9 @@ Sin plugins VST en Android.
     `Ecualizador.kt`, `Efectos.kt` (la hoja del botón FX), `AnalisisPanel.kt`, `Volumen.kt`
     (LUFS), `EdicionPanel.kt` (pedazos y carriles de automatización), `Automatizacion.kt` (la hoja
     del botón A), `GrabarTab.kt`, `VozEnVivo.kt` (afinador, presets y la hoja de ajustes de la
-    voz), `Exportar.kt`, `Preparar.kt` (preparar para cantar) y `Escenario.kt` (la pantalla para
-    cantar en vivo).
+    voz), `Exportar.kt`, `Preparar.kt` (preparar para cantar), `Escenario.kt` (la pantalla para
+    cantar en vivo), `CrearTab.kt` (la pestaña Crear y la tonalidad) y `EditorInstrumento.kt`
+    (cuadrícula de notas, pads y sonido).
   - `Plataforma.kt`: lo único que obliga Android en la pantalla (atrás, pantalla encendida,
     selector de archivos, barra de estado).
   - `Errores.kt` y `android/Fallas.cpp`: si la app se cierra por un error (de la pantalla o del

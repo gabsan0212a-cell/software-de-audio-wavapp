@@ -203,4 +203,55 @@ object Iconos {
             )
         }
     }
+    // Instrumentos (crear música)
+    val teclado by lazy {
+        icono("teclado") {
+            trazo(1.7f, "M4 5 H20 C20.55 5 21 5.45 21 6 V18 C21 18.55 20.55 19 20 19 H4 C3.45 19 3 18.55 3 18 V6 C3 5.45 3.45 5 4 5 Z",
+                "M7.5 13 V19", "M12 13 V19", "M16.5 13 V19")
+            relleno("M6 5 H9 V13 H6 Z", "M10.5 5 H13.5 V13 H10.5 Z", "M15 5 H18 V13 H15 Z")
+        }
+    }
+    val bateria by lazy {
+        icono("bateria") {
+            trazo(
+                1.7f, "M4 10 A8 3 0 1 0 20 10 A8 3 0 1 0 4 10 Z", "M4 10 V16 A8 3 0 0 0 20 16 V10",
+                "M8 12.6 V18.6", "M16 12.6 V18.6", "M13.5 6.5 L19 2.5", "M10.5 6.5 L5 2.5",
+            )
+        }
+    }
+    val subGrave by lazy {
+        icono("subGrave") {
+            trazo(1.7f, "M12 3 A9 9 0 1 1 12 21 A9 9 0 1 1 12 3 Z", "M12 7.5 A4.5 4.5 0 1 1 12 16.5 A4.5 4.5 0 1 1 12 7.5 Z")
+            relleno("M12 10.5 A1.5 1.5 0 1 1 12 13.5 A1.5 1.5 0 1 1 12 10.5 Z")
+        }
+    }
+    val guitarra by lazy {
+        icono("guitarra") {
+            trazo(
+                1.7f, "M13.2 10.8 L19.5 4.5", "M18 3 L21 6",
+                "M10.6 9.6 C11.9 8.6 13.6 8.9 14.6 10.2 C15.4 11.3 15 12.5 14 13.1 C13.4 13.5 13.3 14.1 13.4 14.8 " +
+                    "C13.7 16.9 12.4 19.6 9.8 20.4 C7.2 21.2 4.4 19.6 3.7 17.1 C3 14.6 4.7 12.3 6.9 11.9 " +
+                    "C7.8 11.7 8.4 11.6 8.9 10.9 C9.3 10.4 9.9 10 10.6 9.6 Z",
+            )
+            relleno("M8.6 13.6 A1.5 1.5 0 1 1 8.6 16.6 A1.5 1.5 0 1 1 8.6 13.6 Z")
+        }
+    }
+    val idea by lazy {
+        icono("idea") {
+            trazo(1.7f, "M12 3 A6 6 0 0 1 15.6 13.8 C15 14.3 14.7 15 14.7 15.7 V16.5 H9.3 V15.7 C9.3 15 9 14.3 8.4 13.8 A6 6 0 0 1 12 3 Z",
+                "M9.5 19 H14.5", "M10.5 21.3 H13.5")
+        }
+    }
+    val grabar by lazy { icono("grabar") { relleno("M12 5 A7 7 0 1 1 12 19 A7 7 0 1 1 12 5 Z") } }
+    val metronomo by lazy {
+        icono("metronomo") {
+            trazo(1.7f, "M9.5 3.5 H14.5 L19 20 H5 Z", "M12 15.5 L16.5 6.5", "M7 15.5 H17")
+        }
+    }
+    val repetir by lazy {
+        icono("repetir") {
+            trazo(1.8f, "M4 11.5 V10 A3 3 0 0 1 7 7 H18.5", "M16 4.5 L18.5 7 L16 9.5", "M20 12.5 V14 A3 3 0 0 1 17 17 H5.5",
+                "M8 19.5 L5.5 17 L8 14.5")
+        }
+    }
 }

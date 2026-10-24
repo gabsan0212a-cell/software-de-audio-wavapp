@@ -48,6 +48,9 @@
 #include "engine/Mixer.h"
 #include "engine/ShowRecorder.h"
 #include "engine/VoiceFx.h"
+#include "inst/Instruments.h"
+#include "inst/Live.h"
+#include "inst/Pattern.h"
 #include "io/Json.h"
 #include "io/MappedAudio.h"
 #include "io/WavReader.h"
@@ -4708,6 +4711,440 @@ TEST(relojesDistintos) {
         CHECK(s.maxSegunda < 0.02);
         CHECK(s.fifo.level() < 64 + 240 + 192 + 64);
     }
+}
+
+// ---------------------------------------------------------------- instrumentos (crear música)
+
+static Json leerJson(const std::string &t) {
+    std::string e;
+    return Json::parse(t, e);
+}
+
+// Cada preset de cada instrumento suena, sin números raros ni recortes, y afinado.
+TEST(instrumentosSuenan) {
+    inst::Engine e(48000);
+    for (int k = 0; k < inst::kKindCount; ++k) {
+        for (int p = 0; p < inst::presetCount(k); ++p) {
+            inst::Sound s;
+            s.kind = k;
+            s.preset = p;
+            e.setSound(s);
+            const int note = k == inst::kDrums ? 0 : inst::homePitch(k);
+            e.noteOn(note, 0.8f, 7);
+            std::vector<float> l(48000), r(48000);
+            for (int i = 0; i < 48000; i += 512) {
+                if (i == 24064) e.noteOff(note);
+                e.render(l.data() + i, r.data() + i, std::min(512, 48000 - i));
+            }
+            float pk = 0;
+            bool finite = true;
+            for (int i = 0; i < 48000; ++i) {
+                finite = finite && std::isfinite(l[i]) && std::isfinite(r[i]);
+                pk = std::max({pk, std::fabs(l[i]), std::fabs(r[i])});
+            }
+            CHECK(finite);
+            CHECK(pk > 0.02f && pk < 1.0f);
+            if (!(pk > 0.02f && pk < 1.0f)) std::printf("    %s / %s: pico %.3f\n", inst::kindName(k), inst::presetName(k, p), pk);
+            // Melódicos de sonido continuo: la nota que suena es la pedida (con YIN).
+            if (k != inst::kDrums && std::strcmp(inst::presetName(k, p), "Muteada") != 0) {
+                PitchDetector d(48000, 2048, 25, 2000);
+                std::vector<float> m(l.size());
+                for (size_t i = 0; i < m.size(); ++i) m[i] = l[i] + r[i];
+                const auto res = d.detect(m.data() + 9600, 0.2f);
+                const float midi = res.hz > 0 ? hzToMidi(res.hz) : 0.0f;
+                // (Algunos sonidos tienen una octava abajo: también vale.)
+                const float off = std::fabs(std::fmod(midi - note + 120.0f, 12.0f));
+                CHECK(res.hz > 0 && std::min(off, 12.0f - off) < 0.2f);
+            }
+            e.silence();
+        }
+    }
+    CHECK(inst::presetCount(inst::kDrums) >= 5 && inst::presetCount(inst::kSynth) >= 6);
+}
+
+// Las notas suenan donde van (el tempo manda) y el swing corre las de contratiempo.
+TEST(patronEnTiempo) {
+    inst::Part part;
+    part.sound.kind = inst::kDrums;
+    part.sound.preset = 0;
+    part.pattern.bars = 1;
+    part.pattern.repeats = 1;
+    // A 120 BPM un paso (1/16) dura 0.125 s = 6000 cuadros.
+    part.pattern.notes = {{0, inst::kStepTicks, 3, 110}, {4 * inst::kStepTicks, inst::kStepTicks, 3, 110},
+                          {9 * inst::kStepTicks, inst::kStepTicks, 3, 110}};
+    auto onsets = [](const std::vector<float> &a) {
+        std::vector<int64_t> v;
+        bool sounding = false;
+        for (size_t i = 0; i < a.size() / 2; ++i) {
+            const float x = std::fabs(a[2 * i]) + std::fabs(a[2 * i + 1]);
+            if (!sounding && x > 0.01f) {
+                v.push_back(static_cast<int64_t>(i));
+                sounding = true;
+            }
+            if (sounding && x < 1e-4f) {
+                // apagado un rato: el próximo golpe es otro
+                bool quiet = true;
+                for (size_t k = i; k < std::min(a.size() / 2, i + 200); ++k)
+                    if (std::fabs(a[2 * k]) > 1e-4f) quiet = false;
+                if (quiet) sounding = false;
+            }
+        }
+        return v;
+    };
+    std::vector<float> a = inst::render(part, 120, 48000);
+    CHECK(a.size() / 2 >= 96000);  // una vuelta de 2 s (y la cola del último)
+    std::vector<int64_t> o = onsets(a);
+    CHECK(o.size() == 3);
+    if (o.size() == 3) {
+        CHECK(std::llabs(o[0] - 0) <= 30);
+        CHECK(std::llabs(o[1] - 24000) <= 30);
+        CHECK(std::llabs(o[2] - 54000) <= 30);
+    }
+    part.pattern.swing = 1.0f;  // contratiempo de 1/16: medio paso más tarde
+    o = onsets(inst::render(part, 120, 48000));
+    if (o.size() == 3) CHECK(std::llabs(o[2] - 57000) <= 30);
+    // Al doble de tempo, la mitad de tiempo.
+    part.pattern.swing = 0;
+    o = onsets(inst::render(part, 240, 48000));
+    if (o.size() == 3) CHECK(std::llabs(o[2] - 27000) <= 30);
+}
+
+// Repetir el patrón es como tocarlo seguido: lo que queda sonando de una vuelta pasa a la otra y,
+// desde la segunda, todas las vueltas son idénticas (así repetir una vuelta no tiene saltos).
+TEST(patronRepite) {
+    inst::Part part;
+    part.sound.kind = inst::k808;
+    part.sound.preset = 0;
+    part.pattern = inst::starter(part.sound, 9, true, 1, 0);
+    part.pattern.repeats = 4;
+    const std::vector<float> a = inst::render(part, 100, 48000);
+    const int64_t loop = static_cast<int64_t>(std::llround(inst::patternFrames(part.pattern, 100, 48000)));
+    CHECK(static_cast<int64_t>(a.size() / 2) >= 4 * loop);
+    double diff = 0, energy = 0;
+    for (int64_t i = 0; i < loop; ++i) {
+        const float x = a[static_cast<size_t>(2 * (loop + i))], y = a[static_cast<size_t>(2 * (2 * loop + i))];
+        diff = std::max(diff, static_cast<double>(std::fabs(x - y)));
+        energy += x * x;
+    }
+    CHECK(energy > 1.0);
+    CHECK(diff < 1e-4);
+    // Ideas para empezar en todos los instrumentos y con otra variante.
+    for (int k = 0; k < inst::kKindCount; ++k)
+        for (int p = 0; p < inst::presetCount(k); ++p) {
+            inst::Sound s;
+            s.kind = k;
+            s.preset = p;
+            const inst::Pattern p0 = inst::starter(s, 0, false, 4, 0), p1 = inst::starter(s, 0, false, 2, 1);
+            CHECK(!p0.notes.empty() && !p1.notes.empty());
+            for (const inst::Note &n : p0.notes) CHECK(n.tick >= 0 && n.tick < 4 * inst::kBarTicks);
+            if (k != inst::kDrums)
+                for (const inst::Note &n : p0.notes) {
+                    int lo, hi;
+                    inst::noteRange(k, lo, hi);
+                    CHECK(n.pitch >= lo - 12 && n.pitch <= hi + 12);
+                    CHECK(inst::inScale(n.pitch, 0, false));
+                }
+        }
+    CHECK(inst::noteName(60) == "Do4" && inst::noteName(70) == "Si\u266D4" && inst::noteName(66) == "Fa\u266F4");
+    CHECK(inst::chord(57, 9, true) == std::vector<int>({57, 60, 64}));  // La menor
+    CHECK(inst::rows(inst::kDrums, 0, false, true).size() == 8);
+}
+
+// Tocar en vivo: suena por la salida aunque la canción esté parada, sin esperar.
+TEST(tocarEnVivo) {
+    Mixer m(48000);
+    inst::Live live(48000);
+    m.setInstrumentLive(&live);
+    CHECK(!m.needsOutput());
+    inst::Sound s;
+    s.kind = inst::kSynth;
+    s.preset = 0;
+    live.play(s, 60, 0.9f, 1.0f);
+    CHECK(m.needsOutput());
+    std::vector<float> out(512 * 2);
+    m.process(out.data(), 512, 2);
+    float pk = 0;
+    for (float x : out) pk = std::max(pk, std::fabs(x));
+    CHECK(pk > 0.01f);
+    live.release(60);
+    for (int k = 0; k < 400; ++k) m.process(out.data(), 512, 2);
+    CHECK(!live.busy() && !m.needsOutput());
+    m.setKeepAwake(true);
+    CHECK(m.needsOutput());
+    m.setInstrumentLive(nullptr);
+}
+
+// Repetir una vuelta y el metrónomo.
+TEST(mezcladorRepiteYMetronomo) {
+    Mixer m(48000);
+    CHECK(m.setTrack(0, seno("loop.wav", 1, 48000 * 4, 220, 0.3)));
+    m.setLoop(48000, 96000);
+    m.play();
+    std::vector<float> out(480 * 2);
+    int64_t maxPos = 0;
+    for (int k = 0; k < 400; ++k) {  // 4 s
+        m.process(out.data(), 480, 2);
+        maxPos = std::max(maxPos, m.position());
+    }
+    CHECK(maxPos <= 96000);
+    CHECK(m.position() >= 48000 && m.position() < 96000);
+    m.setLoop(0, 0);
+    // Metrónomo a 120 BPM: un clic cada 24000 cuadros, al inicio de cada pulso.
+    Mixer m2(48000);
+    CHECK(m2.setTrack(0, genTrack("silencio.wav", 1, 48000 * 2, [](int64_t, int) { return 0.0f; })));
+    m2.setLimiter(false);
+    m2.setMetronome(24000);
+    m2.play();
+    std::vector<float> all;
+    for (int k = 0; k < 100; ++k) {
+        m2.process(out.data(), 480, 2);
+        all.insert(all.end(), out.begin(), out.end());
+    }
+    std::vector<int64_t> clicks;
+    for (size_t i = 0; i < all.size() / 2; ++i)
+        if (std::fabs(all[2 * i]) > 0.02f && (clicks.empty() || static_cast<int64_t>(i) - clicks.back() > 4000))
+            clicks.push_back(static_cast<int64_t>(i));
+    CHECK(clicks.size() == 2);
+    if (clicks.size() == 2) {
+        CHECK(clicks[0] < 64);
+        CHECK(std::llabs(clicks[1] - 24000) < 64);
+    }
+}
+
+// El Studio: agregar un instrumento, editar lo que toca (con deshacer), tempo, guardar y abrir.
+TEST(estudioInstrumentos) {
+    const std::string dir = nuevaCarpeta("crear");
+    int bateria = -1, bajo = -1;
+    std::string notasAntes;
+    {
+        Studio s;
+        s.open(dir, dir);
+        CHECK(s.waitIdle(30000));
+        s.clearProject();
+        CHECK(s.trackCount() == 0);
+        const Json info = leerJson(Studio::instrumentsJson());
+        CHECK(info["tipos"].size() == inst::kKindCount);
+        CHECK(info["tipos"][0]["nombre"].asString() == "Batería");
+        CHECK(info["piezas"].size() == 8);
+        s.setTempo(120);
+        bateria = s.addInstrument(inst::kDrums, 0);
+        bajo = s.addInstrument(inst::k808, 0);
+        CHECK(bateria > 0 && bajo > bateria);
+        CHECK(s.waitIdle(60000));
+        CHECK(s.trackCount() == 2);
+        const Json ps = pistas(s);
+        CHECK(ps[0]["instrumento"].asInt() == inst::kDrums && ps[1]["instrumento"].asInt() == inst::k808);
+        CHECK(ps[0]["nombre"].asString() == "Batería" && ps[1]["nombre"].asString() == "808");
+        // 4 compases × 4 veces a 120 BPM = 32 s (más la cola).
+        CHECK(ps[0]["cuadros"].asInt() >= 32 * 48000);
+        Json ij = leerJson(s.instrumentJson(bateria));
+        CHECK(ij["tipo"].asInt() == inst::kDrums && ij["compases"].asInt() == 4 && ij["veces"].asInt() == 4);
+        const size_t n0 = ij["notas"].size();
+        CHECK(n0 > 0 && n0 % 4 == 0);
+        CHECK(s.instrumentJson(9999).empty());
+        // Poner y quitar una nota; deshacer.
+        const int tick = 1 * inst::kStepTicks;
+        CHECK(s.instToggle(bateria, tick, 6, inst::kStepTicks, false) == 1);
+        CHECK(leerJson(s.instrumentJson(bateria))["notas"].size() == n0 + 4);
+        CHECK(s.instToggle(bateria, tick, 6, inst::kStepTicks, false) == 0);
+        CHECK(leerJson(s.instrumentJson(bateria))["notas"].size() == n0);
+        CHECK(s.undo());
+        CHECK(leerJson(s.instrumentJson(bateria))["notas"].size() == n0 + 4);
+        CHECK(s.undo());
+        CHECK(leerJson(s.instrumentJson(bateria))["notas"].size() == n0);
+        // Redoble: 1 → 2 → 3 golpes en el mismo paso.
+        CHECK(s.instRoll(bateria, 3, 3) == 1);
+        CHECK(s.instRoll(bateria, 3, 3) == 2);
+        CHECK(s.instRoll(bateria, 3, 3) == 3);
+        // Acorde de la escala en el 808 no (una nota a la vez), en el sinte sí.
+        s.instClear(bajo);
+        CHECK(leerJson(s.instrumentJson(bajo))["notas"].size() == 0);
+        CHECK(s.instToggle(bajo, 0, 33, 4 * inst::kStepTicks, false) == 1);
+        // Menos compases y repeticiones: el archivo se acorta.
+        s.instSetPattern(bajo, 1, 2, 0);
+        CHECK(s.waitIdle(60000));
+        const Json ps2 = pistas(s);
+        CHECK(ps2[1]["cuadros"].asInt() >= 4 * 48000 && ps2[1]["cuadros"].asInt() < 14 * 48000);
+        // Cambiar el sonido y un ajuste.
+        s.instSetPreset(bajo, 2);
+        s.instSetParam(bajo, inst::kDrive, 0.5f);
+        ij = leerJson(s.instrumentJson(bajo));
+        CHECK(ij["preset"].asInt() == 2 && std::fabs(ij["ajustes"][inst::kDrive].asDouble() - 0.5) < 1e-6);
+        CHECK(pistas(s)[1]["info"].asString() == "instrumento · 808 corto");
+        // Filas de la cuadrícula: en la escala de La menor (la tónica marcada).
+        s.setKey(9, true);
+        const Json rows = leerJson(s.instRowsJson(bajo, true));
+        CHECK(rows.size() > 10);
+        bool tonica = false;
+        for (size_t i = 0; i < rows.size(); ++i) {
+            CHECK(inst::inScale(static_cast<int>(rows[i][0].asInt()), 9, true));
+            if (rows[i][0].asInt() == 33) tonica = rows[i][2].asInt() == 1 && rows[i][1].asString() == "La1";
+        }
+        CHECK(tonica);
+        // El tempo cambia el largo de todo.
+        CHECK(s.waitIdle(60000));
+        const int64_t antes = pistas(s)[0]["cuadros"].asInt();
+        s.setTempo(60);
+        CHECK(s.waitIdle(60000));
+        CHECK(std::llabs(pistas(s)[0]["cuadros"].asInt() - 2 * antes) < 48000 * 9);
+        float mu[Studio::kMusicStateCount];
+        s.musicState(mu);
+        CHECK(mu[0] == 60.0f && mu[1] == 9.0f && mu[2] == 1.0f && mu[6] == 0.0f);
+        // Tocar en vivo y grabar lo tocado mientras suena.
+        s.instClear(bateria);
+        s.instRecord(bateria, true);
+        s.play();
+        std::vector<float> out(480 * 2);
+        for (int k = 0; k < 30; ++k) s.mixer().process(out.data(), 480, 2);
+        s.instPlay(bateria, 0, 120, true);
+        s.instPlay(bateria, 0, 120, false);
+        s.pause();
+        s.instRecord(bateria, false);
+        ij = leerJson(s.instrumentJson(bateria));
+        CHECK(ij["notas"].size() == 4 && ij["notas"][2].asInt() == 0);
+        CHECK(s.instIdea(bateria));
+        notasAntes = s.instrumentJson(bateria);
+        CHECK(s.waitIdle(60000));
+        CHECK(s.saveNow());
+    }
+    {
+        // Al abrir de nuevo, todo sigue igual (sin volver a renderizar).
+        Studio s;
+        s.open(dir, dir);
+        CHECK(s.waitIdle(60000));
+        CHECK(s.trackCount() == 2);
+        const Json a = leerJson(s.instrumentJson(bateria)), b = leerJson(notasAntes);
+        CHECK(a["notas"].dump() == b["notas"].dump());
+        float mu[Studio::kMusicStateCount];
+        s.musicState(mu);
+        CHECK(mu[0] == 60.0f);
+        // Sin su archivo, un instrumento se vuelve a renderizar al abrir.
+        s.saveNow();
+    }
+    {
+        Json sesion = leerJson([&] {
+            std::ifstream in(dir + "/sesion.json");
+            std::stringstream ss;
+            ss << in.rdbuf();
+            return ss.str();
+        }());
+        const std::string archivo = sesion["pistas"][0]["archivo"].asString();
+        CHECK(!archivo.empty() && std::remove((dir + "/audio/" + archivo).c_str()) == 0);
+        Studio s;
+        s.open(dir, dir);
+        CHECK(s.waitIdle(60000));
+        CHECK(s.trackCount() == 2);
+        CHECK(pistas(s)[0]["cuadros"].asInt() > 48000);
+        CHECK(s.saveNow());
+    }
+    {
+        // La app se cerró mientras se preparaba: el archivo es de antes (su huella no coincide con
+        // lo que toca). Al abrir se vuelve a renderizar.
+        auto leer = [&] {
+            std::ifstream in(dir + "/sesion.json");
+            std::stringstream ss;
+            ss << in.rdbuf();
+            return ss.str();
+        };
+        std::string texto = leer();
+        const Json antes = leerJson(texto);
+        const std::string archivo = antes["pistas"][1]["archivo"].asString();
+        const std::string huella = antes["pistas"][1]["instrumento"]["render"].asString();
+        CHECK(huella.size() == 16 && huella != "0000000000000000");
+        const size_t at = texto.find(huella);
+        CHECK(at != std::string::npos);
+        if (at != std::string::npos) texto.replace(at, huella.size(), "0000000000000000");
+        {
+            std::ofstream out(dir + "/sesion.json", std::ios::binary | std::ios::trunc);
+            out << texto;
+        }
+        Studio s;
+        s.open(dir, dir);
+        CHECK(s.waitIdle(60000));
+        CHECK(s.saveNow());
+        const Json despues = leerJson(leer());
+        CHECK(despues["pistas"][1]["archivo"].asString() != archivo);
+        CHECK(despues["pistas"][1]["instrumento"]["render"].asString() == huella);
+        CHECK(despues["pistas"][0]["archivo"].asString() == antes["pistas"][0]["archivo"].asString());
+    }
+}
+
+// Los efectos de la voz en vivo también en las pistas: el auto-tune afina una grabación y la voz
+// no se corre de su lugar (el mezclador compensa lo que atrasa).
+TEST(vozEnPistas) {
+    // Una "voz" de prueba: La4 desafinado 40 cents hacia arriba, con armónicos.
+    const double hz = 440.0 * std::pow(2.0, 0.4 / 12.0);
+    auto voz = [&](const std::string &n) {
+        return genTrack(n, 1, 48000 * 3, [=](int64_t f, int) {
+            const double t = f / 48000.0;
+            const double env = f < 4800 ? 0.0 : 0.3;
+            return static_cast<float>(env * (std::sin(2 * M_PI * hz * t) + 0.4 * std::sin(4 * M_PI * hz * t) +
+                                             0.2 * std::sin(6 * M_PI * hz * t)));
+        });
+    };
+    auto renderiza = [&](bool tune, float amount, std::vector<float> &l) {
+        Mixer m(48000);
+        CHECK(m.setTrack(0, voz(tune ? "voz-a.wav" : "voz-b.wav")));
+        m.setLimiter(false);
+        if (tune) {
+            TrackFx *f = m.trackFx(0, true);
+            f->set(fx::kTuneOn, 1);
+            f->set(fx::kTuneScale, vfx::kScaleChromaticChoice);
+            f->set(fx::kTuneSpeed, 0);
+            f->set(fx::kTuneAmount, amount);
+        }
+        m.play();
+        std::vector<float> out(480 * 2);
+        l.clear();
+        for (int k = 0; k < 250; ++k) {
+            m.process(out.data(), 480, 2);
+            for (int i = 0; i < 480; ++i) l.push_back(out[2 * i]);
+        }
+    };
+    std::vector<float> seco, afinado, cero;
+    renderiza(false, 0, seco);
+    renderiza(true, 1.0f, afinado);
+    renderiza(true, 0.0f, cero);
+    PitchDetector d(48000, 2048, 70, 1000);
+    const float antes = hzToMidi(d.detect(seco.data() + 48000).hz);
+    const float despues = hzToMidi(d.detect(afinado.data() + 48000).hz);
+    CHECK_NEAR(antes, 69.4, 0.05);
+    CHECK_NEAR(despues, 69.0, 0.05);
+    // Sin corregir, la pista suena en su lugar: el inicio de la voz cae donde estaba (±1.5 ms).
+    auto inicio = [](const std::vector<float> &v) {
+        for (size_t i = 0; i < v.size(); ++i)
+            if (std::fabs(v[i]) > 0.05f) return static_cast<int64_t>(i);
+        return static_cast<int64_t>(-1);
+    };
+    CHECK(std::llabs(inicio(seco) - 4800) < 10);
+    CHECK(std::llabs(inicio(cero) - inicio(seco)) < 72);
+    // Los presets de voz para pistas, y que todo se guarda con su nombre.
+    bool hay = false;
+    for (int i = 0; i < fx::presetCount(); ++i)
+        if (std::string(fx::preset(i).name) == "Voz con auto-tune") {
+            hay = true;
+            const fx::Values &v = fx::preset(i).values;
+            CHECK(v[fx::kTuneOn] == 1 && v[fx::kDoublerOn] == 1 && v[fx::kGateOn] == 1 && v[fx::kHpOn] == 1);
+            CHECK(fx::anyOn(v));
+        }
+    CHECK(hay);
+    ProjectModel pm;
+    TrackModel t;
+    t.id = 1;
+    t.file = "x.wav";
+    t.fx[fx::kTuneOn] = 1;
+    t.fx[fx::kTuneSpeed] = 33;
+    t.fx[fx::kDoublerMix] = 0.5f;
+    pm.tracks.push_back(t);
+    ProjectModel back;
+    CHECK(sessionFromJson(sessionToJson(pm), back));
+    CHECK(back.tracks.size() == 1 && back.tracks[0].fx[fx::kTuneOn] == 1 && back.tracks[0].fx[fx::kTuneSpeed] == 33 &&
+          back.tracks[0].fx[fx::kDoublerMix] == 0.5f);
+    // Una sesión vieja (sin estos ajustes) los abre apagados.
+    ProjectModel vieja;
+    std::string err;
+    CHECK(sessionFromJson(Json::parse(R"({"pistas":[{"id":1,"archivo":"x.wav","efectos":{"compresor":1}}]})", err), vieja));
+    CHECK(vieja.tracks[0].fx[fx::kTuneOn] == 0 && vieja.tracks[0].fx[fx::kCompOn] == 1);
 }
 
 int main(int argc, char **argv) {

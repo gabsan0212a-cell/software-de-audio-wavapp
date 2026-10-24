@@ -2,6 +2,7 @@
 
 #include "engine/LiveInput.h"
 #include "engine/ShowRecorder.h"
+#include "inst/Live.h"
 
 #include <algorithm>
 #include <chrono>
@@ -201,6 +202,37 @@ void Mixer::publishPieces(Slot &s, std::unique_ptr<PieceSet> ps) {
     if (!waitForAudioThread()) old.release();
 }
 
+std::unique_ptr<MappedAudio> Mixer::replaceAudio(int slot, std::unique_ptr<MappedAudio> audio,
+                                                 const std::vector<Region> &regions) {
+    if (slot < 0 || slot >= kMaxTracks || !audio) return nullptr;
+    std::lock_guard<std::mutex> lk(mMutex);
+    Slot &s = mSlots[slot];
+    if (!s.owned) return nullptr;
+    std::unique_ptr<PieceSet> ps = makePieces(regions, audio->frames());
+    std::unique_ptr<MappedAudio> old = std::move(s.owned);
+    std::unique_ptr<PieceSet> oldPs = std::move(s.ownedPieces);
+    s.owned = std::move(audio);
+    s.ownedPieces = std::move(ps);
+    // El hilo de audio podría ver el archivo nuevo con los pedazos viejos (o al revés) en un
+    // bloque: readInput nunca lee fuera del archivo, así que solo sería ese bloque.
+    s.pieces.store(s.ownedPieces.get(), std::memory_order_release);
+    s.audio.store(s.owned.get(), std::memory_order_release);
+    if (!waitForAudioThread()) {
+        oldPs.release();
+        updateLength();
+        return std::unique_ptr<MappedAudio>();  // (el anterior queda sin liberar: más seguro)
+    }
+    updateLength();
+    return old;
+}
+
+void Mixer::setLoop(int64_t start, int64_t end) {
+    if (end <= start || start < 0) start = end = 0;
+    mLoopEnd.store(0);
+    mLoopStart.store(start);
+    mLoopEnd.store(end);
+}
+
 bool Mixer::setRegions(int slot, const std::vector<Region> &regions) {
     if (slot < 0 || slot >= kMaxTracks) return false;
     std::lock_guard<std::mutex> lk(mMutex);
@@ -284,7 +316,9 @@ void Mixer::play() {
 }
 
 bool Mixer::needsOutput() const {
-    if (mRolling.load(std::memory_order_relaxed)) return true;
+    if (mRolling.load(std::memory_order_relaxed) || mKeepAwake.load(std::memory_order_relaxed)) return true;
+    const inst::Live *il = mInstLive.load(std::memory_order_acquire);
+    if (il && il->busy()) return true;
     const ShowRecorder *rec = mShow.load(std::memory_order_acquire);
     if (rec && rec->recording()) return true;  // la presentación sigue grabando (también el silencio)
     const LiveInput *in = mLive.load(std::memory_order_acquire);
@@ -344,7 +378,10 @@ void Mixer::process(float *out, int frames, int channels) {
     mCallbacks.fetch_add(1);  // impar: en curso
     int done = 0;
     while (done < frames) {
-        const int n = std::min(kBlock, frames - done);
+        int n = std::min(kBlock, frames - done);
+        // Repetir: el bloque se corta justo donde termina la vuelta.
+        const int64_t le = mLoopEnd.load(std::memory_order_relaxed);
+        if (le > 0 && mPos < le && mPos + n > le) n = static_cast<int>(le - mPos);
         renderBlock(n);
         for (int i = 0; i < n; ++i) {  // nunca más de 0 dBFS (sin el limitador podría pasar)
             mMixL[i] = std::clamp(mMixL[i], -1.0f, 1.0f);
@@ -399,8 +436,12 @@ void Mixer::renderBlock(int n) {
     if (!rolling) {
         std::fill(mMixL, mMixL + n, 0.0f);
         std::fill(mMixR, mMixR + n, 0.0f);
-        // Sin la canción, la voz en vivo (si se escucha) igual pasa por el master y su limitador.
-        if (live && live->mixMonitor(mMixL, mMixR, n)) {
+        // Sin la canción, la voz en vivo (si se escucha) y lo que se toca en los instrumentos igual
+        // pasan por el master y su limitador.
+        bool any = live && live->mixMonitor(mMixL, mMixR, n);
+        inst::Live *il = mOffline ? nullptr : mInstLive.load(std::memory_order_acquire);
+        if (il && il->mix(mMixL, mMixR, n)) any = true;
+        if (any) {
             finishBus(n, false);
             return;
         }
@@ -487,12 +528,14 @@ void Mixer::renderBlock(int n) {
 
         // Entrada del bloque (ceros fuera de los pedazos; el EQ y los efectos pueden seguir
         // sonando un poco).
-        readInput(*a, *ps, n);
+        // Con auto-tune la pista se lee un poco adelante (lo que él atrasa).
+        if (fx && snap) fx->restart();
+        readInput(*a, *ps, n, mPos + (fx ? fx->latency() : 0));
+        if (fx) fx->processPre(mInL, mono ? nullptr : mInR, n);
         s.eq.process(mInL, mono ? nullptr : mInR, n);
         bool wet = false;
         PanMatrix w0{}, dw{};
         if (fx) {
-            if (snap) fx->restart();
             fx->processInsert(mInL, mono ? nullptr : mInR, n);
             wet = fx->processSends(mInL, mono ? nullptr : mInR, n, mWetL, mWetR);
             if (wet) {  // los envíos son estéreo: se panean como estéreo
@@ -550,9 +593,16 @@ void Mixer::renderBlock(int n) {
 
     // La voz en vivo (escucha de la entrada) entra al bus como una pista más, antes del master.
     if (live) live->mixMonitor(mMixL, mMixR, n);
+    if (!mOffline) {
+        if (inst::Live *il = mInstLive.load(std::memory_order_acquire)) il->mix(mMixL, mMixR, n);
+        addMetronome(n);
+    }
     finishBus(n, true);
 
     mPos += n;
+    const int64_t loopEnd = mLoopEnd.load(std::memory_order_relaxed);
+    if (!mOffline && loopEnd > 0 && mPos >= loopEnd && mPos - n < loopEnd && mSeekTarget.load() < 0)
+        mPos = mLoopStart.load(std::memory_order_relaxed) + (mPos - loopEnd);
     if (mPos >= length && !freeRun) {
         if (mSeekTarget.load() >= 0) {
             // Llegó al final con un salto pendiente (p. ej. "al inicio" justo antes de que
@@ -564,6 +614,37 @@ void Mixer::renderBlock(int n) {
             mPos = 0;
             mTransport = 0.0f;
         }
+    }
+}
+
+void Mixer::addMetronome(int n) {
+    const double fpb = mMetroFpb.load(std::memory_order_relaxed);
+    if (fpb <= 0.0 && mClickLeft <= 0) return;
+    // El primer pulso que cae dentro de este bloque (si cae alguno).
+    int at = -1;
+    bool strong = false;
+    if (fpb > 0.0) {
+        const double beat = std::ceil(static_cast<double>(mPos) / fpb);
+        const double f = beat * fpb;
+        if (f < static_cast<double>(mPos + n)) {
+            at = static_cast<int>(f - static_cast<double>(mPos));
+            strong = static_cast<int64_t>(beat) % 4 == 0;  // el primero del compás
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        if (i == at) {
+            mClickLeft = mSampleRate / 25;  // 40 ms
+            mClickPhase = 0.0;
+            mClickInc = (strong ? 1600.0 : 1100.0) / mSampleRate;
+        }
+        if (mClickLeft <= 0) continue;
+        const float t = static_cast<float>(mSampleRate / 25 - mClickLeft) / mSampleRate;
+        const float c = 0.32f * std::exp(-t / 0.008f) * static_cast<float>(std::sin(6.283185307179586 * mClickPhase));
+        mClickPhase += mClickInc;
+        if (mClickPhase >= 1.0) mClickPhase -= 1.0;
+        mMixL[i] += c;
+        mMixR[i] += c;
+        --mClickLeft;
     }
 }
 
@@ -615,21 +696,21 @@ void Mixer::finishBus(int n, bool rolling) {
     if (!mOffline && rolling) feedLoudness(n);
 }
 
-void Mixer::readInput(const MappedAudio &a, const PieceSet &ps, int n) {
+void Mixer::readInput(const MappedAudio &a, const PieceSet &ps, int n, int64_t pos) {
     const bool mono = a.channels() == 1;
     std::fill(mInL, mInL + n, 0.0f);
     if (!mono) std::fill(mInR, mInR + n, 0.0f);
     const float *data = a.data();
     const int64_t frames = a.frames();
     for (const Piece &p : ps.pieces) {
-        const int64_t from = std::max(mPos, p.start);
-        const int64_t to = std::min({mPos + n, p.start + p.length, p.start + (frames - p.src)});
+        const int64_t from = std::max(pos, p.start);
+        const int64_t to = std::min({pos + n, p.start + p.length, p.start + (frames - p.src)});
         for (int64_t f = from; f < to; ++f) {
             const int64_t k = f - p.start, src = p.src + k, rest = p.length - k;
             float g = 1.0f;
             if (k < p.fadeIn) g *= fadeCurve((k + 0.5) / p.fadeIn);
             if (rest <= p.fadeOut) g *= fadeCurve((rest - 0.5) / p.fadeOut);
-            const int i = static_cast<int>(f - mPos);
+            const int i = static_cast<int>(f - pos);
             if (mono) {
                 mInL[i] += g * data[src];
             } else {

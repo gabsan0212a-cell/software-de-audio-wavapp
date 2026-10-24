@@ -7,6 +7,7 @@
 
 #include "engine/Mixer.h"
 #include "engine/VoiceFx.h"
+#include "inst/Pattern.h"
 
 // El proyecto tal como lo guarda la sesión y lo ve la pantalla. El Studio es su dueño.
 
@@ -39,6 +40,24 @@ struct TrackModel {
     int autoMode = 1;
     autom::Lane autoPts[autom::kParamCount];  // volumen (dB) y paneo, por cuadro
     std::vector<float> peaks;      // forma de onda: [bloque][canal][min, max]
+    // Pista de instrumento: su audio se renderiza de lo que toca (inst/Pattern.h). Cada cambio
+    // sube renderGen; el render que termina con un número viejo se descarta.
+    bool isInst = false;
+    inst::Part part;
+    uint32_t renderGen = 0;
+    double renderedBpm = 0.0;  // el tempo con el que está renderizado su archivo
+    uint64_t renderedHash = 0; // inst::renderHash de lo que tiene su archivo (se guarda en la sesión)
+};
+
+// Para crear música: tempo, tonalidad y metrónomo. Si no se eligieron a mano, siguen a la
+// canción preparada (si hay una).
+struct MusicModel {
+    float bpm = 90.0f;
+    int key = 9;          // La
+    bool minor = true;
+    bool bpmSet = false;  // la persona eligió el tempo
+    bool keySet = false;  // la persona eligió la tonalidad
+    bool metronome = false;
 };
 
 struct MasterModel {
@@ -79,4 +98,5 @@ struct ProjectModel {
     float monitorDb = 0.0f;     // volumen de la escucha: -60 (= -∞) .. +6
     vfx::Values voice = vfx::defaults();  // la voz en vivo (auto-tune y efectos)
     SongModel song;
+    MusicModel music;
 };

@@ -33,8 +33,9 @@ import com.wavapp.mezcla.Pista
 import java.util.Locale
 import kotlin.math.exp
 import kotlin.math.ln
+import kotlin.math.roundToInt
 
-/** Hoja de efectos de una pista: presets, compresor, delay y reverb. */
+/** Hoja de efectos de una pista: presets, los de la voz (auto-tune y limpieza), compresor, delay y reverb. */
 @Composable
 fun HojaEfectos(pista: Pista?, alCerrar: () -> Unit) {
     val recordada = remember { arrayOfNulls<Pista>(1) }
@@ -55,10 +56,18 @@ fun HojaEfectos(pista: Pista?, alCerrar: () -> Unit) {
 /** Lo que trae un efecto prendido, para mostrarlo en una línea. */
 internal fun resumenEfectos(p: Pista): String {
     val on = listOfNotNull(
+        "Auto-tune".takeIf { p.fxOn(Nucleo.FX_AUTOTUNE) },
         "Compresor".takeIf { p.fxOn(Nucleo.FX_COMP) },
+        "Doblaje".takeIf { p.fxOn(Nucleo.FX_DOBLAJE) },
         "Delay".takeIf { p.fxOn(Nucleo.FX_DELAY) },
         "Reverb".takeIf { p.fxOn(Nucleo.FX_REVERB) },
-    )
+    ).ifEmpty {
+        listOfNotNull(
+            "Graves".takeIf { p.fxOn(Nucleo.FX_GRAVES) },
+            "Compuerta".takeIf { p.fxOn(Nucleo.FX_COMPUERTA) },
+            "De-esser".takeIf { p.fxOn(Nucleo.FX_DEESSER) },
+        )
+    }
     return if (on.isEmpty()) "Sin efectos" else on.joinToString(" · ")
 }
 
@@ -82,6 +91,8 @@ private fun ContenidoEfectos(p: Pista) {
         }
     }
     PieGrupo("Un punto de partida: después ajusta lo que quieras.")
+
+    VozDeLaPista(p)
 
     EncabezadoGrupo("Compresor")
     Tarjeta(relleno = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 2.dp)) {
@@ -133,6 +144,81 @@ private fun ContenidoEfectos(p: Pista) {
     PieGrupo(
         "El delay y la reverb se suman aparte (el sonido original no cambia) y siguen el volumen y el paneo " +
             "de la pista. También suenan al exportar.",
+    )
+}
+
+/** La escala que usa el auto-tune de la pista, para leerla. */
+private fun textoEscalaPista(p: Pista): String {
+    val m = Mesa.musica
+    return when (p.fx.getOrElse(Nucleo.FX_ESCALA) { 0f }.roundToInt()) {
+        Nucleo.ESCALA_CANCION ->
+            if (m.tonicaAutotune < 0) "Todas las notas (sin canción ni instrumentos)"
+            else nombreTonalidad(m.tonicaAutotune, m.menorAutotune) + " · de la canción"
+        Nucleo.ESCALA_MAYOR -> nombreTonalidad(p.fx[Nucleo.FX_TONICA].roundToInt(), false)
+        Nucleo.ESCALA_MENOR -> nombreTonalidad(p.fx[Nucleo.FX_TONICA].roundToInt(), true)
+        else -> "Todas las notas"
+    }
+}
+
+/** Los efectos de la voz en vivo, para una voz grabada. */
+@Composable
+private fun VozDeLaPista(p: Pista) {
+    val pal = LocalPaleta.current
+    EncabezadoGrupo("Voz")
+    Tarjeta(relleno = PaddingValues(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 8.dp)) {
+        FilaInterruptor("Auto-tune", p.fxOn(Nucleo.FX_AUTOTUNE), { Mesa.alternarFx(p, Nucleo.FX_AUTOTUNE) }, Modifier.testTag("autotunePista")) {
+            Texto(textoEscalaPista(p), Tipo.nota, pal.texto2, lineas = 1)
+        }
+        if (p.fxOn(Nucleo.FX_AUTOTUNE)) {
+            Separador()
+            Texto("Escala", Tipo.subtitulo, pal.texto, Modifier.padding(top = 10.dp, bottom = 6.dp))
+            val escala = p.fx[Nucleo.FX_ESCALA].roundToInt()
+            Segmentado(
+                listOf("Canción", "Mayor", "Menor", "Todas"), escala,
+                { Mesa.ponerFx(p, Nucleo.FX_ESCALA, it.toFloat()) }, Modifier.fillMaxWidth(),
+            )
+            if (escala == Nucleo.ESCALA_MAYOR || escala == Nucleo.ESCALA_MENOR) {
+                val tonica = p.fx[Nucleo.FX_TONICA].roundToInt()
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    NOTAS.forEachIndexed { i, n -> Chip(n, i == tonica, { Mesa.ponerFx(p, Nucleo.FX_TONICA, i.toFloat()) }) }
+                }
+            }
+            Ajuste(p, Nucleo.FX_VELOCIDAD, "Velocidad") { if (it < 0.5f) "Al instante (robot)" else "${it.roundToInt()} ms" }
+            Ajuste(p, Nucleo.FX_AFINAR, "Cuánto corrige", ::textoPorciento)
+            Texto("Voz", Tipo.subtitulo, pal.texto, Modifier.padding(top = 12.dp, bottom = 6.dp))
+            Segmentado(
+                listOf("Grave", "Media", "Aguda"), p.fx[Nucleo.FX_REGISTRO].roundToInt(),
+                { Mesa.ponerFx(p, Nucleo.FX_REGISTRO, it.toFloat()) }, Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(6.dp))
+        }
+        Separador()
+        FilaInterruptor("Quitar graves", p.fxOn(Nucleo.FX_GRAVES), { Mesa.alternarFx(p, Nucleo.FX_GRAVES) }) {
+            Texto("El retumbe del micrófono", Tipo.nota, pal.texto2, lineas = 1)
+        }
+        if (p.fxOn(Nucleo.FX_GRAVES)) Ajuste(p, Nucleo.FX_GRAVES_HZ, "Debajo de") { "${it.roundToInt()} Hz" }
+        Separador(Modifier.padding(top = 6.dp))
+        FilaInterruptor("Compuerta", p.fxOn(Nucleo.FX_COMPUERTA), { Mesa.alternarFx(p, Nucleo.FX_COMPUERTA) }) {
+            Texto("Baja el ruido entre frases", Tipo.nota, pal.texto2, lineas = 1)
+        }
+        if (p.fxOn(Nucleo.FX_COMPUERTA)) Ajuste(p, Nucleo.FX_COMPUERTA_UMBRAL, "Abre arriba de", ::textoDbFx)
+        Separador(Modifier.padding(top = 6.dp))
+        FilaInterruptor("De-esser", p.fxOn(Nucleo.FX_DEESSER), { Mesa.alternarFx(p, Nucleo.FX_DEESSER) }) {
+            Texto("Suaviza las \"eses\"", Tipo.nota, pal.texto2, lineas = 1)
+        }
+        if (p.fxOn(Nucleo.FX_DEESSER)) Ajuste(p, Nucleo.FX_DEESSER_UMBRAL, "Baja las \"eses\" arriba de", ::textoDbFx)
+        Separador(Modifier.padding(top = 6.dp))
+        FilaInterruptor("Doblaje", p.fxOn(Nucleo.FX_DOBLAJE), { Mesa.alternarFx(p, Nucleo.FX_DOBLAJE) }) {
+            Texto("Como grabar la voz dos veces: más ancha", Tipo.nota, pal.texto2, lineas = 1)
+        }
+        if (p.fxOn(Nucleo.FX_DOBLAJE)) Ajuste(p, Nucleo.FX_DOBLAJE_CANTIDAD, "Cantidad", ::textoPorciento)
+    }
+    PieGrupo(
+        "Los mismos de la voz en vivo, para una voz grabada. El auto-tune deja la pista en mono y la voz queda en su " +
+            "lugar (el núcleo compensa lo que tarda).",
     )
 }
 

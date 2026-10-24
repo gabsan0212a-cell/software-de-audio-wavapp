@@ -8,6 +8,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -84,15 +85,74 @@ class CurvaAuto(
     }
 }
 
+/**
+ * Lo que toca un instrumento y su sonido, como lo tiene el núcleo. Las notas van de a 4 números
+ * (pulso, largo, nota o pieza, fuerza); los pulsos de un paso de la cuadrícula los dice el núcleo.
+ */
+class Patron(
+    val tipo: Int,
+    val preset: Int,
+    val compases: Int,
+    val veces: Int,
+    val swing: Float,
+    val ajustes: FloatArray,
+    val notas: IntArray,
+    val preparando: Boolean,
+) {
+    val n: Int get() = notas.size / 4
+    fun pulso(i: Int) = notas[4 * i]
+    fun largo(i: Int) = notas[4 * i + 1]
+    fun nota(i: Int) = notas[4 * i + 2]
+    fun fuerza(i: Int) = notas[4 * i + 3]
+}
+
+/** Una fila de la cuadrícula de un instrumento (de arriba a abajo). */
+class Fila(val nota: Int, val nombre: String, val tonica: Boolean, val enEscala: Boolean)
+
+/** Un tipo de instrumento: su nombre, sus presets y qué ajustes usa (vienen del núcleo). */
+class TipoInstrumento(val nombre: String, val presets: List<String>, val ajustes: List<Int>, val inicio: Int)
+
+/** Lo que el núcleo sabe de los instrumentos (no cambia). */
+class InfoInstrumentos(
+    val tipos: List<TipoInstrumento>,
+    val piezas: List<String>,
+    val pasoPulsos: Int,
+    val pasosCompas: Int,
+    val maxCompases: Int,
+    val maxVeces: Int,
+)
+
+/** La música que se crea: tempo, tonalidad y metrónomo, como los tiene el núcleo. */
+class Musica {
+    var bpm by mutableFloatStateOf(90f)
+    var tonica by mutableIntStateOf(9)
+    var menor by mutableStateOf(true)
+    var metronomo by mutableStateOf(false)
+    var bpmDeCancion by mutableStateOf(false)
+    var tonicaDeCancion by mutableStateOf(false)
+    var preparando by mutableIntStateOf(0)  // instrumentos que se están preparando
+    // La escala "de la canción" del auto-tune de las pistas (-1 = todas las notas).
+    var tonicaAutotune by mutableIntStateOf(-1)
+    var menorAutotune by mutableStateOf(false)
+}
+
 /** Lo que la pantalla muestra de una pista. El dueño de los datos es el núcleo. */
 class Pista(
     val slot: Int,
     val id: Int,
     val nombre: String,
     val canales: Int,
-    val cuadros: Long,
-    val info: String,
+    cuadros: Long,
+    info: String,
+    /** -1 = audio; si no, el instrumento (Nucleo.INST_...). */
+    val instrumento: Int = -1,
 ) {
+    /** Cambia cuando el núcleo vuelve a preparar un instrumento. */
+    var cuadros by mutableLongStateOf(cuadros)
+    var info by mutableStateOf(info)
+    /** Lo que toca (solo en un instrumento). */
+    var patron by mutableStateOf<Patron?>(null)
+    val esInstrumento: Boolean get() = instrumento >= 0
     var volDb by mutableFloatStateOf(0f)
     var pan by mutableIntStateOf(0)
     var mute by mutableStateOf(false)
@@ -122,7 +182,10 @@ class Pista(
     var fx by mutableStateOf(FloatArray(0))
     var compresion by mutableFloatStateOf(0f)
     fun fxOn(param: Int): Boolean = fx.getOrElse(param) { 0f } > 0.5f
-    val fxActivo: Boolean get() = fxOn(Nucleo.FX_COMP) || fxOn(Nucleo.FX_DELAY) || fxOn(Nucleo.FX_REVERB)
+    val fxActivo: Boolean get() = listOf(
+        Nucleo.FX_COMP, Nucleo.FX_DELAY, Nucleo.FX_REVERB, Nucleo.FX_GRAVES, Nucleo.FX_COMPUERTA, Nucleo.FX_AUTOTUNE,
+        Nucleo.FX_DEESSER, Nucleo.FX_DOBLAJE,
+    ).any { fxOn(it) }
     val eqActivo: Boolean get() = !eqBypass && bandas.any { it.on }
     val editada: Boolean get() = pedazos != listOf(Pedazo(0, 0, cuadros))
     val segundos: Double get() = cuadros / Mesa.RATE
@@ -136,6 +199,7 @@ class Pista(
     internal var vPedazos = -1
     internal var vAuto = -1
     internal var vFx = -1
+    internal var vInst = -1
 }
 
 /** Volumen percibido (LUFS) de lo que sale, como lo calcula el núcleo. */
@@ -342,6 +406,34 @@ object Mesa {
     val infoVoz: FloatArray by lazy { Nucleo.voiceFxInfo() }
     private val bufVoz = FloatArray(Nucleo.DATOS_VOZ)
 
+    /** Crear música: tempo y tonalidad, los instrumentos que hay y el instrumento abierto. */
+    val musica = Musica()
+    val infoInstrumentos: InfoInstrumentos by lazy {
+        val o = JSONObject(Nucleo.instrumentsJson())
+        val t = o.getJSONArray("tipos")
+        fun lista(a: JSONArray) = List(a.length()) { a.getString(it) }
+        InfoInstrumentos(
+            List(t.length()) {
+                val x = t.getJSONObject(it)
+                val aj = x.getJSONArray("ajustes")
+                TipoInstrumento(x.getString("nombre"), lista(x.getJSONArray("presets")), List(aj.length()) { k -> aj.getInt(k) }, x.optInt("inicio"))
+            },
+            lista(o.getJSONArray("piezas")), o.optInt("pasoPulsos", 24), o.optInt("pasosCompas", 16),
+            o.optInt("maxCompases", 16), o.optInt("maxVeces", 64),
+        )
+    }
+    val infoAjustesInst: FloatArray by lazy { Nucleo.instParamInfo() }
+    /** El instrumento que se está editando (su id; 0 = ninguno). */
+    var instrumentoAbierto by mutableIntStateOf(0)
+    /** Dónde va la canción en el patrón del instrumento abierto (pasos; -1 = no suena). Cambia en cada cuadro. */
+    var pasoAhora by mutableFloatStateOf(-1f)
+        private set
+    var grabandoNotas by mutableStateOf(false)
+        private set
+    private var vMusica = -1
+    private val bufMusica = FloatArray(Nucleo.DATOS_MUSICA)
+    private var creandoVisto: Pair<Boolean, Int>? = null
+
     /** La canción preparada para cantar y cómo va la separación de la voz. */
     val cancion = Cancion()
     val separacion = Separacion()
@@ -434,7 +526,13 @@ object Mesa {
             val vr = versiones[Nucleo.verPedazos(p.slot)]
             if (vr != p.vPedazos) { p.vPedazos = vr; leerPedazos(p) }
             if (releerAuto) { p.vAuto = va; leerAuto(p) }
+            if (p.esInstrumento) {
+                val vi = versiones[Nucleo.verInst(p.slot)]
+                if (vi != p.vInst) { p.vInst = vi; leerPatron(p) }
+            }
         }
+        val vm = versiones[Nucleo.VER_MUSICA]
+        if (vm != vMusica) { vMusica = vm; leerMusica() }
         if (pistas.isNotEmpty()) leerAutoAhora()
         val vc = versiones[Nucleo.VER_CANCION]
         if (vc != vCancion) { vCancion = vc; leerCancion() }
@@ -452,8 +550,13 @@ object Mesa {
             val o = arr.getJSONObject(i)
             val id = o.getInt("id")
             val slot = o.getInt("slot")
-            nuevas += pistas.firstOrNull { it.id == id && it.slot == slot }
-                ?: Pista(slot, id, o.optString("nombre"), o.optInt("canales"), o.optLong("cuadros"), o.optString("info"))
+            val vieja = pistas.firstOrNull { it.id == id && it.slot == slot }
+            vieja?.cuadros = o.optLong("cuadros")
+            vieja?.info = o.optString("info")
+            nuevas += vieja ?: Pista(
+                slot, id, o.optString("nombre"), o.optInt("canales"), o.optLong("cuadros"), o.optString("info"),
+                o.optInt("instrumento", -1),
+            )
         }
         if (nuevas != pistas.toList()) {
             pistas.clear()
@@ -472,6 +575,36 @@ object Mesa {
         p.solo = bufParams[3] != 0f
         p.fase = bufParams[4] != 0f
         p.autoModo = bufParams[5].toInt()
+    }
+
+    private fun leerPatron(p: Pista) {
+        val t = Nucleo.instrumentJson(p.id)
+        if (t.isEmpty()) return
+        val o = JSONObject(t)
+        val aj = o.getJSONArray("ajustes")
+        val no = o.getJSONArray("notas")
+        p.patron = Patron(
+            o.optInt("tipo"), o.optInt("preset"), o.optInt("compases", 4), o.optInt("veces", 4),
+            o.optDouble("swing", 0.0).toFloat(), FloatArray(aj.length()) { aj.getDouble(it).toFloat() },
+            IntArray(no.length()) { no.getInt(it) }, o.optBoolean("preparando"),
+        )
+    }
+
+    private fun leerMusica() {
+        Nucleo.musicState(bufMusica)
+        val m = musica
+        m.bpm = bufMusica[0]
+        m.tonica = bufMusica[1].toInt()
+        m.menor = bufMusica[2] != 0f
+        m.metronomo = bufMusica[3] != 0f
+        m.bpmDeCancion = bufMusica[4] != 0f
+        m.tonicaDeCancion = bufMusica[5] != 0f
+        m.preparando = bufMusica[6].toInt()
+        m.tonicaAutotune = bufMusica[7].toInt()
+        m.menorAutotune = bufMusica[8] != 0f
+        grabandoNotas = Nucleo.instRecording()
+        // La escala cambió: las filas de la cuadrícula también.
+        for (p in pistas) if (p.esInstrumento) p.vInst = -1
     }
 
     private fun leerAuto(p: Pista) {
@@ -681,6 +814,59 @@ object Mesa {
         sincronizar()
     }
 
+    // ------------------------------------------------------------------ crear música
+
+    /** Agrega un instrumento (el núcleo lo prepara con una idea para empezar). Devuelve su id o -1. */
+    fun agregarInstrumento(tipo: Int, preset: Int = 0): Int {
+        val id = Nucleo.addInstrument(tipo, preset)
+        sincronizar()
+        return id
+    }
+    fun ponerTempo(bpm: Float) { Nucleo.setTempo(bpm); sincronizar() }
+    fun ponerTonalidad(tonica: Int, menor: Boolean) { Nucleo.setKey(tonica, menor); sincronizar() }
+    fun ponerMetronomo(on: Boolean) { Nucleo.setMetronome(on); sincronizar() }
+    /** Filas de la cuadrícula (de arriba a abajo). */
+    fun filas(p: Pista, soloEscala: Boolean): List<Fila> {
+        val a = JSONArray(Nucleo.instRowsJson(p.id, soloEscala))
+        return List(a.length()) {
+            val f = a.getJSONArray(it)
+            Fila(f.getInt(0), f.getString(1), f.getInt(2) != 0, f.getInt(3) != 0)
+        }
+    }
+    /** Pone o quita una nota (o un acorde). true = se agregó. */
+    fun alternarNota(p: Pista, pulso: Int, nota: Int, largo: Int, acorde: Boolean): Boolean {
+        val r = Nucleo.instToggle(p.id, pulso, nota, largo, acorde)
+        sincronizar()
+        return r == 1
+    }
+    fun redoble(p: Pista, paso: Int, pieza: Int): Int = Nucleo.instRoll(p.id, paso, pieza).also { sincronizar() }
+    fun cambiarNota(p: Pista, indice: Int, pulso: Int, largo: Int, nota: Int, fuerza: Int) {
+        Nucleo.instSetNote(p.id, indice, pulso, largo, nota, fuerza)
+        sincronizar()
+    }
+    fun borrarNotas(p: Pista) { Nucleo.instClear(p.id); sincronizar() }
+    fun ponerPatron(p: Pista, compases: Int, veces: Int, swing: Float) {
+        Nucleo.instSetPattern(p.id, compases, veces, swing)
+        sincronizar()
+    }
+    fun ponerPresetInst(p: Pista, preset: Int) { Nucleo.instSetPreset(p.id, preset); sincronizar() }
+    fun ponerAjusteInst(p: Pista, ajuste: Int, valor: Float) { Nucleo.instSetParam(p.id, ajuste, valor); sincronizar() }
+    fun otraIdea(p: Pista) { Nucleo.instIdea(p.id); sincronizar() }
+    /** Tocar en vivo: apretar (true) o soltar (false). */
+    fun tocar(p: Pista, nota: Int, abajo: Boolean, fuerza: Int = 110) = Nucleo.instPlay(p.id, nota, fuerza, abajo)
+    fun grabarNotas(p: Pista, on: Boolean) {
+        Nucleo.instRecord(p.id, on)
+        if (on && !reproduciendo) Nucleo.playPause()
+        sincronizar()
+    }
+    /** La pestaña Crear (o un instrumento abierto) está a la vista; con [repetir] se repite ese patrón. */
+    fun creando(on: Boolean, repetirId: Int) {
+        val v = on to repetirId
+        if (v == creandoVisto) return
+        creandoVisto = v
+        Nucleo.setCreating(on, repetirId)
+    }
+
     fun ponerVolumen(p: Pista, db: Float) { Nucleo.setVolume(p.id, db); sincronizar() }
     fun ponerPan(p: Pista, pan: Float) { Nucleo.setPan(p.id, pan); sincronizar() }
     fun alternarMute(p: Pista) { Nucleo.setMute(p.id, !p.mute); sincronizar() }
@@ -808,8 +994,10 @@ object Mesa {
 
     fun reproducirPausar() {
         if (pistas.isEmpty()) return
+        if (reproduciendo && grabandoNotas) instrumentoAbierto.takeIf { it > 0 }?.let { Nucleo.instRecord(it, false) }
         Nucleo.playPause()
         reproduciendo = Nucleo.isPlaying()
+        sincronizar()
     }
 
     fun detener() {
@@ -862,6 +1050,8 @@ object Mesa {
         if (e.abierta && voz.encendida) leerMedidoresVoz()
         if (presentacion.grabando) leerPresentacion()
         if (escenario) leerCuenta()
+        val abierto = instrumentoAbierto
+        pasoAhora = if (abierto > 0 && reproduciendo) Nucleo.instPosition(abierto).toFloat() else -1f
     }
 
     private fun leerMedidoresVoz() {

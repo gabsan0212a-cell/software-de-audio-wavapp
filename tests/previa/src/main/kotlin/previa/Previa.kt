@@ -305,7 +305,7 @@ fun main(args: Array<String>) {
             Vista.pestana = Vista.MEZCLA
             esperar(300)
             val altoDp = ALTO / DENS
-            tocar(ANCHO / DENS / 2, altoDp - 25)
+            tocar(ANCHO / DENS * 0.7f, altoDp - 25)
             esperar(300)
             println("toque pestaña Editar -> pestana=${Vista.pestana}")
             tocar(ANCHO / DENS / 6, altoDp - 25)
@@ -470,6 +470,72 @@ fun main(args: Array<String>) {
             foto("47-error")
             com.wavapp.mezcla.ui.errorDePrueba = null
             esperar(400)
+        }
+        if (quiere("crear")) {
+            // Crear música: la pestaña, los instrumentos, el editor (notas, pads, sonido) y la
+            // tonalidad. También los efectos de voz en una pista grabada.
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            Vista.pestana = Vista.CREAR
+            esperar(600)
+            foto("50-crear-vacio", ambos = false)
+            val bateria = Mesa.agregarInstrumento(Nucleo.INST_BATERIA)
+            hasta(20_000, "batería lista") { Mesa.pistas.any { it.id == bateria } }
+            Mesa.instrumentoAbierto = 0
+            Vista.abrirInstrumento = 0
+            val bajo = Mesa.agregarInstrumento(Nucleo.INST_808)
+            val sinte = Mesa.agregarInstrumento(Nucleo.INST_SINTE, 4)
+            val guitarra = Mesa.agregarInstrumento(Nucleo.INST_GUITARRA)
+            hasta(30_000, "instrumentos listos") {
+                listOf(bajo, sinte, guitarra).all { id -> Mesa.pistas.any { it.id == id } } && Mesa.musica.preparando == 0
+            }
+            Mesa.instrumentoAbierto = 0
+            Vista.abrirInstrumento = 0
+            esperar(800)
+            foto("51-crear")
+            Mesa.instrumentoAbierto = bateria
+            com.wavapp.mezcla.ui.EditorVista.modo = 0
+            Mesa.saltar(0.0)
+            if (!Mesa.reproduciendo) Mesa.reproducirPausar()
+            esperar(1800)
+            foto("52-bateria-notas")
+            // Un toque en la cuadrícula pone una nota (la fila de arriba, el platillo, en el paso 2).
+            val antes = Mesa.pistas.first { it.id == bateria }.patron?.n ?: 0
+            tocar(58f + 30f * 1.5f, 48f + 24f + 30f + 22f + 16f)
+            esperar(600)
+            val despues = Mesa.pistas.first { it.id == bateria }.patron?.n ?: 0
+            println("notas de la batería: $antes -> $despues")
+            com.wavapp.mezcla.ui.EditorVista.modo = 1
+            esperar(600)
+            foto("53-bateria-pads")
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            Mesa.instrumentoAbierto = bajo
+            com.wavapp.mezcla.ui.EditorVista.modo = 0
+            esperar(800)
+            foto("54-808-notas")
+            Mesa.instrumentoAbierto = sinte
+            esperar(800)
+            foto("55-sinte-notas", ambos = false)
+            com.wavapp.mezcla.ui.EditorVista.modo = 1
+            esperar(600)
+            foto("56-sinte-pads", ambos = false)
+            com.wavapp.mezcla.ui.EditorVista.modo = 2
+            esperar(600)
+            foto("57-sinte-sonido")
+            Mesa.instrumentoAbierto = 0
+            esperar(500)
+            Vista.tonalidad = true
+            esperar(600)
+            foto("58-tonalidad", ambos = false)
+            Vista.tonalidad = false
+            esperar(400)
+            val voz = Mesa.pistas[1]
+            Mesa.aplicarPresetFx(voz, Mesa.presetsFx.indexOf("Voz con auto-tune").coerceAtLeast(0))
+            Vista.pestana = Vista.MEZCLA
+            Vista.efectos = voz
+            esperar(800)
+            foto("59-efectos-voz")
+            Vista.efectos = null
+            esperar(500)
         }
         if (quiere("vacio")) {
             if (Mesa.reproduciendo) Mesa.reproducirPausar()

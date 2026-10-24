@@ -47,6 +47,11 @@ object Nucleo {
     /** Valores de [showState] y de [songCue]. */
     val DATOS_PRESENTACION = c[25]
     val DATOS_CUE = c[26]
+    /** Versión de la música que se crea (tempo, tonalidad, instrumentos preparándose) y sus datos. */
+    val VER_MUSICA = c[27]
+    val DATOS_MUSICA = c[28]
+    /** Cuántos ajustes tiene el sonido de un instrumento (ver los INST_ de abajo). */
+    val INST_AJUSTES = c[29]
     /** "Sin dato" en los valores de LUFS. */
     const val SIN_DATO = -200f
 
@@ -61,6 +66,7 @@ object Nucleo {
     fun verPedazos(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 2
     fun verAuto(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 3
     fun verFx(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 4
+    fun verInst(espacio: Int) = VER_PRIMERA + VER_POR_ESPACIO * espacio + 5
 
     // Lugares en el arreglo de meters(): [2*espacio] L, [2*espacio+1] R de cada pista, y luego:
     fun medMasterL() = 2 * MAX_PISTAS
@@ -113,6 +119,34 @@ object Nucleo {
     const val FX_REVERB_DURACION = 14
     const val FX_REVERB_BRILLO = 15
     const val FX_REVERB_PREDELAY = 16
+    // Los de la voz en vivo, para las grabaciones.
+    const val FX_GRAVES = 17
+    const val FX_GRAVES_HZ = 18
+    const val FX_COMPUERTA = 19
+    const val FX_COMPUERTA_UMBRAL = 20
+    const val FX_AUTOTUNE = 21
+    const val FX_AFINAR = 22
+    const val FX_VELOCIDAD = 23
+    const val FX_TONICA = 24
+    const val FX_ESCALA = 25              // ESCALA_
+    const val FX_REGISTRO = 26
+    const val FX_DEESSER = 27
+    const val FX_DEESSER_UMBRAL = 28
+    const val FX_DOBLAJE = 29
+    const val FX_DOBLAJE_CANTIDAD = 30
+
+    // Instrumentos (iguales a inst::Kind) y ajustes de su sonido (iguales a inst::Param).
+    const val INST_BATERIA = 0
+    const val INST_808 = 1
+    const val INST_BAJO = 2
+    const val INST_GUITARRA = 3
+    const val INST_SINTE = 4
+    const val INST_BRILLO = 0
+    const val INST_ATAQUE = 1
+    const val INST_DURACION = 2
+    const val INST_DISTORSION = 3
+    const val INST_DESLIZAR = 4
+    const val INST_AFINACION = 5
 
     // Ajustes de la voz en vivo (iguales a vfx::Param del núcleo).
     const val VOZ_ENCENDIDA = 0
@@ -385,4 +419,41 @@ object Nucleo {
      * parte (desde 0), partes, avance 0..1 (de la espera o de la parte)].
      */
     external fun songCue(out: FloatArray)
+
+    // ---------- Crear música: instrumentos (cada uno es una pista cuyo audio arma el núcleo)
+    /** [tempo, tónica (0 = Do), menor, metrónomo, el tempo es de la canción, la tonalidad es de la canción, preparándose]. */
+    external fun musicState(out: FloatArray)
+    external fun setTempo(bpm: Float)
+    external fun setKey(key: Int, minor: Boolean)
+    external fun setMetronome(on: Boolean)
+    /** {"tipos":[{"nombre","presets","ajustes","inicio"}],"piezas","pasoPulsos","pasosCompas","maxCompases","maxVeces"} */
+    external fun instrumentsJson(): String
+    /** [mín, máx, inicial, log 1/0] por cada ajuste del sonido. */
+    external fun instParamInfo(): FloatArray
+    /** Agrega un instrumento (con una idea para empezar); la pista aparece cuando está lista. Devuelve su id o -1. */
+    external fun addInstrument(kind: Int, preset: Int): Int
+    /** {"tipo","preset","compases","veces","swing","ajustes","notas":[pulso, largo, nota, fuerza, ...],"preparando"} o "". */
+    external fun instrumentJson(id: Int): String
+    /** Filas de la cuadrícula de arriba a abajo: [[nota, "nombre", tónica, en la escala], ...]. */
+    external fun instRowsJson(id: Int, scaleOnly: Boolean): String
+    /** 1 = se agregó, 0 = se quitó, -1 = no se pudo. */
+    external fun instToggle(id: Int, tick: Int, pitch: Int, len: Int, chord: Boolean): Int
+    /** Redoble de la batería en ese paso: devuelve cuántos golpes quedaron (1 a 4). */
+    external fun instRoll(id: Int, step: Int, pitch: Int): Int
+    external fun instSetNote(id: Int, index: Int, tick: Int, len: Int, pitch: Int, vel: Int): Boolean
+    external fun instRemoveNote(id: Int, index: Int): Boolean
+    external fun instClear(id: Int)
+    external fun instSetPattern(id: Int, bars: Int, repeats: Int, swing: Float)
+    external fun instSetPreset(id: Int, preset: Int)
+    external fun instSetParam(id: Int, param: Int, value: Float)
+    /** Otra idea para empezar (se puede deshacer). */
+    external fun instIdea(id: Int): Boolean
+    /** Tocar en vivo (apretar o soltar). Si se está grabando y la canción suena, la nota entra al patrón. */
+    external fun instPlay(id: Int, pitch: Int, vel: Int, down: Boolean)
+    external fun instRecord(id: Int, on: Boolean)
+    external fun instRecording(): Boolean
+    /** Dónde va la canción dentro del patrón, en pasos (-1 = no suena). */
+    external fun instPosition(id: Int): Double
+    /** La pestaña Crear está a la vista (la salida no se duerme); con [loopId] se repite ese patrón. */
+    external fun setCreating(on: Boolean, loopId: Int)
 }

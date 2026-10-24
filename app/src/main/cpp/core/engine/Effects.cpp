@@ -4,6 +4,8 @@
 #include <cmath>
 #include <vector>
 
+#include "engine/VoiceFx.h"
+
 namespace fx {
 
 namespace {
@@ -26,9 +28,26 @@ const Info kInfo[kCount] = {
     {"duracion", 0.3f, 8, 1.6f, 0.05, true},        // s
     {"brilloReverb", 1500, 16000, 7000, 10, true},  // Hz
     {"predelay", 0, 150, 20, 1, false},             // ms
+    {"graves", 0, 1, 0, 1, false},
+    {"gravesHz", 40, 250, 90, 1, true},             // Hz: el filtro quita lo de abajo
+    {"compuerta", 0, 1, 0, 1, false},
+    {"umbralCompuerta", -80, -20, -52, 1, false},   // dB
+    {"autotune", 0, 1, 0, 1, false},
+    {"afinar", 0, 1, 1, 0.01, false},               // cuánto corrige (0..1)
+    {"velocidad", 0, 400, 5, 1, false},             // ms (0 = robot)
+    {"tonica", 0, 11, 9, 1, false},                 // si la escala no es la de la canción
+    {"escala", 0, 3, 0, 1, false},                  // vfx::ScaleChoice
+    {"registro", 0, 2, 1, 1, false},                // grave, media, aguda
+    {"deesser", 0, 1, 0, 1, false},
+    {"umbralEses", -50, 0, -28, 0.5, false},        // dB
+    {"doblaje", 0, 1, 0, 1, false},
+    {"cantidadDoblaje", 0, 1, 0.35f, 0.01, false},
 };
 
-bool isSwitch(int p) { return p == kCompOn || p == kDelayOn || p == kDelayPingPong || p == kReverbOn; }
+bool isSwitch(int p) {
+    return p == kCompOn || p == kDelayOn || p == kDelayPingPong || p == kReverbOn || p == kHpOn || p == kGateOn ||
+           p == kTuneOn || p == kDeessOn || p == kDoublerOn;
+}
 
 // Un preset parte de los valores iniciales y cambia lo que dice la lista.
 Preset make(const char *name, std::initializer_list<std::pair<int, float>> changes) {
@@ -71,6 +90,27 @@ const std::vector<Preset> &presets() {
                                  {kReverbDecay, 2.0f}, {kReverbTone, 7500}, {kReverbPredelay, 20}}),
         make("Ambiente grande", {{kReverbOn, 1}, {kReverbMix, 0.4f}, {kReverbDecay, 4.5f}, {kReverbTone, 5500},
                                  {kReverbPredelay, 40}}),
+        // Como la voz en vivo, para una voz grabada.
+        make("Voz con auto-tune", {{kHpOn, 1}, {kHpFreq, 90}, {kGateOn, 1}, {kGateThreshold, -52}, {kTuneOn, 1},
+                                   {kTuneAmount, 1}, {kTuneSpeed, 4}, {kDeessOn, 1}, {kDeessThreshold, -30},
+                                   {kCompOn, 1}, {kCompThreshold, -22}, {kCompRatio, 4}, {kCompAttack, 4},
+                                   {kCompRelease, 90}, {kCompMakeup, 6}, {kDoublerOn, 1}, {kDoublerMix, 0.28f},
+                                   {kDelayOn, 1}, {kDelayTime, 330}, {kDelayFeedback, 0.3f}, {kDelayMix, 0.14f},
+                                   {kDelayTone, 4500}, {kDelayPingPong, 1}, {kReverbOn, 1}, {kReverbMix, 0.24f},
+                                   {kReverbDecay, 2.2f}, {kReverbTone, 6500}, {kReverbPredelay, 30}}),
+        make("Voz trap (robot)", {{kHpOn, 1}, {kHpFreq, 100}, {kGateOn, 1}, {kTuneOn, 1}, {kTuneAmount, 1},
+                                  {kTuneSpeed, 0}, {kDeessOn, 1}, {kCompOn, 1}, {kCompThreshold, -24}, {kCompRatio, 5},
+                                  {kCompAttack, 3}, {kCompRelease, 80}, {kCompMakeup, 7}, {kDoublerOn, 1},
+                                  {kDoublerMix, 0.22f}, {kDelayOn, 1}, {kDelayTime, 500}, {kDelayFeedback, 0.22f},
+                                  {kDelayMix, 0.1f}, {kDelayTone, 4500}, {kDelayPingPong, 1}, {kReverbOn, 1},
+                                  {kReverbMix, 0.18f}, {kReverbDecay, 1.4f}}),
+        make("Voz afinada natural", {{kHpOn, 1}, {kGateOn, 1}, {kGateThreshold, -55}, {kTuneOn, 1}, {kTuneAmount, 0.7f},
+                                     {kTuneSpeed, 70}, {kDeessOn, 1}, {kCompOn, 1}, {kCompThreshold, -20},
+                                     {kCompRatio, 3}, {kCompAttack, 5}, {kCompRelease, 120}, {kCompMakeup, 4},
+                                     {kReverbOn, 1}, {kReverbMix, 0.16f}, {kReverbDecay, 1.5f}}),
+        make("Limpiar voz", {{kHpOn, 1}, {kHpFreq, 100}, {kGateOn, 1}, {kGateThreshold, -50}, {kDeessOn, 1},
+                             {kDeessThreshold, -30}, {kCompOn, 1}, {kCompThreshold, -20}, {kCompRatio, 3},
+                             {kCompAttack, 5}, {kCompRelease, 120}, {kCompMakeup, 4}}),
         make("Sin efectos", {}),
     };
     return list;
@@ -95,7 +135,11 @@ float clampValue(int p, float v) {
     return std::clamp(v, i.min, i.max);
 }
 
-bool anyOn(const Values &v) { return v[kCompOn] > 0.5f || v[kDelayOn] > 0.5f || v[kReverbOn] > 0.5f; }
+bool anyOn(const Values &v) {
+    for (int p : {kCompOn, kDelayOn, kReverbOn, kHpOn, kGateOn, kTuneOn, kDeessOn, kDoublerOn})
+        if (v[static_cast<size_t>(p)] > 0.5f) return true;
+    return false;
+}
 
 int presetCount() { return static_cast<int>(presets().size()); }
 
@@ -103,9 +147,15 @@ const Preset &preset(int i) { return presets()[static_cast<size_t>(std::clamp(i,
 
 }  // namespace fx
 
-TrackFx::TrackFx(int sampleRate) {
+TrackFx::TrackFx(int sampleRate) : mRate(sampleRate), mTune(sampleRate) {
     const fx::Values d = fx::defaults();
     for (int p = 0; p < fx::kCount; ++p) mParams[static_cast<size_t>(p)].store(d[static_cast<size_t>(p)]);
+    mGateL.setup(sampleRate);
+    mGateR.setup(sampleRate);
+    mDeessL.setup(sampleRate);
+    mDeessR.setup(sampleRate);
+    mDoubler.allocate(sampleRate);
+    std::fill(mMono, mMono + kMaxBlock, 0.0f);
     mComp.setup(sampleRate);
     mDelay.allocate(sampleRate, fx::info(fx::kDelayTime).max + 50.0f);
     mReverb.allocate(sampleRate);
@@ -116,9 +166,25 @@ TrackFx::TrackFx(int sampleRate) {
 
 void TrackFx::copyParams(const TrackFx &o) {
     for (int p = 0; p < fx::kCount; ++p) set(p, o.get(p));
+    setSongKey(o.mSongKey.load(), o.mSongMinor.load());
+}
+
+void TrackFx::setSongKey(int key, bool minor) {
+    mSongMinor.store(minor);
+    mSongKey.store(key >= 0 && key < 12 ? key : -1);
 }
 
 void TrackFx::restart() {
+    mHpL.reset();
+    mHpR.reset();
+    mGateL.reset();
+    mGateR.reset();
+    mTune.reset();
+    mDeessL.reset();
+    mDeessR.reset();
+    mDoubler.restart();
+    mDoublerGain = on(fx::kDoublerOn) ? get(fx::kDoublerMix) : 0.0f;
+    mDoublerIdle = mDoublerGain == 0.0f;
     mComp.reset();
     mDelay.restart();
     mReverb.restart();
@@ -129,7 +195,75 @@ void TrackFx::restart() {
     mReverbIdle = mReverbGain == 0.0f;
 }
 
+void TrackFx::processPre(float *l, float *r, int n) {
+    n = std::min(n, kMaxBlock);
+    if (on(fx::kHpOn)) {
+        const float hz = get(fx::kHpFreq);
+        if (hz != mHpFreq) {
+            mHpFreq = hz;
+            mHpL.highPass(hz, 0.7071, mRate);
+            mHpR.highPass(hz, 0.7071, mRate);
+        }
+        mHpL.process(l, n);
+        if (r) mHpR.process(r, n);
+    }
+    bool quiet = false;
+    if (on(fx::kGateOn)) {
+        GateSettings g;
+        g.thresholdDb = get(fx::kGateThreshold);
+        mGateL.process(l, n, g);
+        if (r) mGateR.process(r, n, g);
+        quiet = !mGateL.open() && (!r || !mGateR.open());
+    }
+    const bool tune = on(fx::kTuneOn);
+    if (!tune) {
+        mTuneWasOn = false;
+        return;
+    }
+    if (!mTuneWasOn) {
+        mTune.reset();
+        mTuneWasOn = true;
+    }
+    const int range = static_cast<int>(std::lround(get(fx::kTuneRange)));
+    if (range != mRange) {
+        mRange = range;
+        float lo, hi;
+        vfx::rangeHz(range, lo, hi);
+        mTune.setRange(lo, hi);
+    }
+    TuneSettings t;
+    const int choice = static_cast<int>(std::lround(get(fx::kTuneScale)));
+    if (choice == vfx::kScaleSong) {
+        const int sk = mSongKey.load(std::memory_order_relaxed);
+        t.key = std::max(0, sk);
+        t.scale = sk < 0 ? kScaleChromatic : (mSongMinor.load(std::memory_order_relaxed) ? kScaleMinor : kScaleMajor);
+    } else {
+        t.key = static_cast<int>(std::lround(get(fx::kTuneKey)));
+        t.scale = choice == vfx::kScaleMajorChoice ? kScaleMajor
+                  : choice == vfx::kScaleMinorChoice ? kScaleMinor : kScaleChromatic;
+    }
+    t.amount = get(fx::kTuneAmount);
+    t.speedMs = get(fx::kTuneSpeed);
+    // El auto-tune trabaja en mono (una voz): una pista estéreo queda igual en los dos lados.
+    float *x = l;
+    if (r) {
+        for (int i = 0; i < n; ++i) mMono[i] = 0.5f * (l[i] + r[i]);
+        x = mMono;
+    }
+    mTune.process(x, n, t, quiet);
+    if (r) {
+        std::copy(x, x + n, l);
+        std::copy(x, x + n, r);
+    }
+}
+
 void TrackFx::processInsert(float *l, float *r, int n) {
+    if (on(fx::kDeessOn)) {
+        DeEssSettings d;
+        d.thresholdDb = get(fx::kDeessThreshold);
+        mDeessL.process(l, std::min(n, kMaxBlock), d);
+        if (r) mDeessR.process(r, std::min(n, kMaxBlock), d);
+    }
     if (!on(fx::kCompOn)) return;
     CompSettings s;
     s.thresholdDb = get(fx::kCompThreshold);
@@ -146,6 +280,7 @@ bool TrackFx::processSends(const float *l, const float *r, int n, float *wetL, f
     n = std::min(n, kMaxBlock);
     const float delayT = on(fx::kDelayOn) ? get(fx::kDelayMix) : 0.0f;
     const float reverbT = on(fx::kReverbOn) ? get(fx::kReverbMix) : 0.0f;
+    const float doublerT = on(fx::kDoublerOn) ? get(fx::kDoublerMix) : 0.0f;
     bool any = false;
     // Un envío que se apaga baja en 20 ms y luego deja de calcularse; al volver arranca vacío.
     auto send = [&](float target, float &gain, bool &idle, auto &&run) {
@@ -169,6 +304,18 @@ bool TrackFx::processSends(const float *l, const float *r, int n, float *wetL, f
         gain = std::fabs(target - g) < 1e-6f ? target : g;
         any = true;
     };
+    send(doublerT, mDoublerGain, mDoublerIdle, [&](bool restart) {
+        if (restart) {
+            mDoubler.restart();
+            return;
+        }
+        // Dos copias de la voz (mono), una a cada lado.
+        float *in = mMono;
+        for (int i = 0; i < n; ++i) in[i] = r ? 0.5f * (l[i] + r[i]) : l[i];
+        std::fill(mTmpL, mTmpL + n, 0.0f);
+        std::fill(mTmpR, mTmpR + n, 0.0f);
+        mDoubler.process(in, n, mTmpL, mTmpR, 1.0f);
+    });
     send(delayT, mDelayGain, mDelayIdle, [&](bool restart) {
         if (restart) {
             mDelay.restart();

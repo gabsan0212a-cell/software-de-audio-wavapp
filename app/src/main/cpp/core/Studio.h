@@ -22,6 +22,8 @@
 #include "engine/Meters.h"
 #include "engine/Mixer.h"
 #include "engine/ShowRecorder.h"
+#include "inst/Live.h"
+#include "inst/Pattern.h"
 #include "project/Model.h"
 
 class ModelFile;
@@ -47,13 +49,15 @@ public:
     static constexpr int kMaxHistory = 100;
 
     enum Version { kVerTracks = 0, kVerMaster, kVerHistory, kVerStatus, kVerBackground, kVerFirstSlot };
-    // Por cada espacio del mezclador: parámetros, EQ, pedazos, automatización y efectos.
-    static constexpr int kVersPerSlot = 5;
-    // Al final: la entrada en vivo (ganancia, escucha y su EQ) y la canción preparada para cantar
-    // (separar la voz y lo que se sabe de la canción).
+    // Por cada espacio del mezclador: parámetros, EQ, pedazos, automatización, efectos e
+    // instrumento (lo que toca y su sonido).
+    static constexpr int kVersPerSlot = 6;
+    // Al final: la entrada en vivo (ganancia, escucha y su EQ), la canción preparada para cantar
+    // (separar la voz y lo que se sabe de la canción) y la música que se crea (tempo, tonalidad).
     static constexpr int kVerInput = kVerFirstSlot + kVersPerSlot * kMaxTracks;
     static constexpr int kVerSong = kVerInput + 1;
-    static constexpr int kVersionCount = kVerSong + 1;
+    static constexpr int kVerMusic = kVerSong + 1;
+    static constexpr int kVersionCount = kVerMusic + 1;
     // El EQ de la entrada en vivo se maneja con las mismas funciones del EQ, con este id.
     static constexpr int kInputId = 0;
     // inputState(): [abierta, canales, ganancia dB, escucha, volumen de escucha dB,
@@ -64,6 +68,11 @@ public:
     static constexpr int verRegions(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 2; }
     static constexpr int verAuto(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 3; }
     static constexpr int verFx(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 4; }
+    static constexpr int verInst(int slot) { return kVerFirstSlot + kVersPerSlot * slot + 5; }
+    // musicState(): tempo (BPM), tónica (0 = Do), menor, metrónomo, el tempo viene de la canción
+    // preparada, la tonalidad viene de ella, instrumentos preparándose, la escala "de la canción"
+    // del auto-tune de las pistas (tónica, -1 = todas las notas; menor).
+    static constexpr int kMusicStateCount = 9;
     // trackParams(): volumen (dB), paneo, mute, solo, fase, modo de automatización.
     static constexpr int kTrackParamCount = 6;
 
@@ -271,6 +280,50 @@ public:
     bool applyVoicePreset(int index);
     void voiceMeters(float *out) { mInput.voice().meters(out); }  // VoiceFx::kMeterCount valores
 
+    // ---------- Crear música: pistas de instrumento (inst/), tempo y tonalidad.
+    // Cada instrumento es una pista común cuyo audio se renderiza (en otro hilo) de lo que toca:
+    // al cambiar algo, el audio nuevo reemplaza al anterior sin cortes.
+    void musicState(float *out) const;  // kMusicStateCount valores
+    void setTempo(float bpm);           // 40..240; vuelve a renderizar los instrumentos
+    void setKey(int key, bool minor);   // la escala de la cuadrícula y del auto-tune
+    void setMetronome(bool on);
+    // {"tipos":[{"nombre","presets":[...],"ajustes":[...]}...],"piezas":[...],"pasoPulsos",
+    //  "pasosCompas","maxCompases","maxVeces"}
+    static std::string instrumentsJson();
+    static std::vector<float> instParamInfo();  // [mín, máx, inicial, log] por ajuste
+    // Agrega un instrumento (con una idea para empezar). La pista aparece cuando su audio está
+    // listo. Devuelve su id o -1 (el motivo queda en el mensaje).
+    int addInstrument(int kind, int preset);
+    // {"tipo","preset","compases","veces","swing","ajustes":[...],"notas":[pulso, largo, nota,
+    //  fuerza, ...],"preparando"}; "" si no es un instrumento.
+    std::string instrumentJson(int id) const;
+    // Filas de la cuadrícula, de arriba a abajo: [[nota, "nombre", tónica 1/0, en la escala 1/0], ...]
+    std::string instRowsJson(int id, bool scaleOnly) const;
+    // Pone o quita una nota (o un acorde de la escala) en ese pulso. 1 = se agregó, 0 = se quitó,
+    // -1 = no se pudo.
+    int instToggle(int id, int tick, int pitch, int lenTicks, bool chord);
+    // Redoble en un paso de la batería: 1, 2, 3 o 4 golpes (cada toque suma uno). Devuelve cuántos.
+    int instRoll(int id, int step, int pitch);
+    // Cambia una nota (arrastre del largo): varios cambios seguidos son un paso de deshacer.
+    bool instSetNote(int id, int index, int tick, int len, int pitch, int vel);
+    bool instRemoveNote(int id, int index);
+    void instClear(int id);
+    void instSetPattern(int id, int bars, int repeats, float swing);
+    void instSetPreset(int id, int preset);
+    void instSetParam(int id, int param, float value);
+    bool instIdea(int id);  // otra idea para empezar (reemplaza lo que toca; se puede deshacer)
+    // Tocar en vivo: suena al instante con el sonido de la pista. Si se está grabando y la canción
+    // suena, la nota entra al patrón (en el paso más cercano).
+    void instPlay(int id, int pitch, int vel, bool down);
+    void instRecord(int id, bool on);
+    bool instRecording() const;
+    // Dónde va la canción dentro del patrón (en pasos, con decimales); -1 si no está sonando.
+    double instPosition(int id) const;
+    // La pestaña Crear está a la vista: la salida no se duerme (lo que se toca suena al instante)
+    // y, con `loopId`, se repite el patrón de ese instrumento.
+    void setCreating(bool on, int loopId);
+    bool waitInstruments(int timeoutMs) { return mInstJobs.waitIdle(timeoutMs); }
+
     // ---------- Grabar la presentación: lo que sale hacia la consola (la pista con la voz en vivo,
     // después del master). Queda la última, lista para guardarla en el teléfono.
     bool showStart();  // false si no se puede (el motivo queda en el mensaje)
@@ -324,13 +377,15 @@ public:
     void autoTouch(int id, int param, bool down);
 
 private:
-    // Lo que se guarda para deshacer: pedazos y automatización de cada pista.
+    // Lo que se guarda para deshacer: pedazos, automatización y lo que toca cada instrumento.
     struct TrackSnap {
         int id = 0;
         std::vector<Region> regions;
         autom::Lane autos[autom::kParamCount];
+        inst::Pattern pattern;
         bool operator==(const TrackSnap &o) const {
-            return id == o.id && regions == o.regions && autos[0] == o.autos[0] && autos[1] == o.autos[1];
+            return id == o.id && regions == o.regions && autos[0] == o.autos[0] && autos[1] == o.autos[1] &&
+                   pattern == o.pattern;
         }
         bool operator!=(const TrackSnap &o) const { return !(*this == o); }
     };
@@ -373,6 +428,21 @@ private:
     int eqVersion(const TrackModel &t) const;
     void applyInputLocked();
     void applySongToVoiceLocked();  // tonalidad y tempo de la canción preparada → voz en vivo
+    // La música: tempo y tonalidad en uso (los elegidos o los de la canción preparada).
+    double bpmLocked() const;
+    void keyLocked(int &key, bool &minor) const;
+    void songKeyLocked(int &key, bool &minor) const;  // la escala "de la canción" del auto-tune (-1 = no hay)
+    bool hasInstrumentsLocked() const;
+    void applyMusicLocked();  // metrónomo y, si cambió el tempo, renderiza los instrumentos
+    void scheduleRenderLocked(TrackModel &t);
+    void changePatternLocked(TrackModel &t, inst::Pattern p, const std::string &key);
+    // Renderiza a un archivo nuevo de la carpeta de audio. "" si salió bien.
+    std::string renderInstrument(const inst::Part &part, double bpm, const std::string &audioDir, std::string &file,
+                                 std::unique_ptr<MappedAudio> &audio, std::vector<float> &peaks);
+    void jobAddInstrument(TrackModel t);
+    void jobRenderInstrument(int id);
+    int64_t instFileFrameLocked(const TrackModel &t, int64_t timelineFrame) const;  // -1 = no suena ahí
+    void applyLoopLocked();  // repetir la vuelta del instrumento mLoopId (si se está creando)
     // Las partes con voz en la línea de tiempo (segundos), siguiendo los pedazos del instrumental.
     std::vector<std::pair<double, double>> songPartsLocked() const;
     std::string showPath() const;  // la última presentación grabada
@@ -490,7 +560,21 @@ private:
     std::atomic<bool> mBgRun{false};
     std::thread mBgThread;
 
+    // Crear música
+    inst::Live mInstLive{kRate};
+    std::set<int> mRenderQueued;  // con mModel: instrumentos con un render pendiente
+    int mPendingAdds = 0;         // con mModel: instrumentos que se están agregando
+    std::map<int, int> mIdeas;    // con mModel: la última idea que se dio a cada instrumento
+    struct NoteRec {
+        bool on = false;
+        int id = 0;
+        std::map<int, int64_t> down;  // nota → cuadro (de su archivo) donde se apretó
+    } mRec;                           // con mModel
+    int mLoopId = 0;
+    bool mCreating = false;
+
     // Al final: se destruyen primero (esperan a sus trabajos antes de que se vaya lo demás).
     Worker mBackground;
     Worker mJobs;
+    Worker mInstJobs;  // renders de los instrumentos
 };

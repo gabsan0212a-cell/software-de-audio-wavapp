@@ -117,6 +117,7 @@ int64_t fileSize(const std::string &p) {
 
 Studio::Studio(DecodeFunction decoder) : mDecoder(std::move(decoder)) {
     mMixer.setLiveInput(&mInput);
+    mMixer.setInstrumentLive(&mInstLive);
     mMixer.setShowRecorder(&mShow);
     mProject.input.name = "Micrófono";
     applyInputLocked();
@@ -131,6 +132,8 @@ Studio::~Studio() {
     mMixer.setShowRecorder(nullptr);
     if (mShow.recording()) mShow.stop();
     mMixer.setLiveInput(nullptr);
+    mInstJobs.waitIdle(30000);
+    mMixer.setInstrumentLive(nullptr);
 }
 
 // ---------------------------------------------------------------- ciclo de vida
@@ -142,6 +145,7 @@ void Studio::open(const std::string &filesDir, const std::string &cacheDir) {
         if (filesDir == mFilesDir) return;
     }
     mJobs.waitIdle(120000);  // un trabajo del proyecto anterior termina antes de cambiar
+    mInstJobs.waitIdle(60000);
     if (!mFilesDir.empty()) saveNow();
     {
         std::lock_guard<std::mutex> lk(mModel);
@@ -252,6 +256,7 @@ bool Studio::save() {
 
 void Studio::clearProject() {
     mJobs.waitIdle(120000);
+    mInstJobs.waitIdle(60000);
     {
         std::lock_guard<std::mutex> lk(mModel);
         removeAllLocked(true);
@@ -265,6 +270,9 @@ void Studio::clearProject() {
         mProject.inputGainDb = gain;
         mProject.monitorDb = monitor;
         mProject.voice = voice;
+        mRec = NoteRec();
+        mIdeas.clear();
+        mMixer.setLoop(0, 0);
         applySongToVoiceLocked();
         applyMasterLocked();
         mUndo.clear();
@@ -282,7 +290,9 @@ void Studio::clearProject() {
     setMessage("");
 }
 
-bool Studio::waitIdle(int timeoutMs) { return mJobs.waitIdle(timeoutMs) && mBackground.waitIdle(timeoutMs); }
+bool Studio::waitIdle(int timeoutMs) {
+    return mJobs.waitIdle(timeoutMs) && mBackground.waitIdle(timeoutMs) && mInstJobs.waitIdle(timeoutMs);
+}
 
 void Studio::notify(const std::string &message) { setMessage(message); }
 
@@ -307,6 +317,7 @@ std::string Studio::tracksJson() const {
         o.set("canales", t.channels);
         o.set("cuadros", t.frames);
         o.set("info", t.info);
+        o.set("instrumento", t.isInst ? t.part.sound.kind : -1);
         a.push(std::move(o));
     }
     return a.dump();
@@ -468,7 +479,19 @@ void Studio::applyFxLocked(TrackModel &t) {
     // Los efectos se crean (y reservan memoria) solo cuando alguno se prende.
     TrackFx *f = mMixer.trackFx(t.slot, fx::anyOn(t.fx));
     if (!f) return;
+    int key;
+    bool minor;
+    songKeyLocked(key, minor);
+    f->setSongKey(key, minor);
     for (int k = 0; k < fx::kCount; ++k) f->set(k, t.fx[static_cast<size_t>(k)]);
+}
+
+void Studio::songKeyLocked(int &key, bool &minor) const {
+    // La de la canción preparada o, si se está creando música (o se eligió a mano), la de la música.
+    const SongModel &s = mProject.song;
+    key = s.ready() ? s.key : -1;
+    minor = s.minor;
+    if (mProject.music.keySet || hasInstrumentsLocked()) keyLocked(key, minor);
 }
 
 TrackModel *Studio::eqTargetLocked(int id) { return id == kInputId ? &mProject.input : findLocked(id); }
@@ -494,9 +517,18 @@ void Studio::applyInputLocked() {
 }
 
 void Studio::applySongToVoiceLocked() {
+    // La escala "de la canción" del auto-tune: la de la canción preparada o, si se está creando
+    // música (o se eligió a mano), la de la música. Igual el tempo del delay.
+    int key;
+    bool minor;
+    songKeyLocked(key, minor);
+    mInput.voice().setSongKey(key, minor);
+    for (const TrackModel &t : mProject.tracks)
+        if (TrackFx *f = mMixer.trackFx(t.slot, false)) f->setSongKey(key, minor);
     const SongModel &s = mProject.song;
-    mInput.voice().setSongKey(s.ready() ? s.key : -1, s.minor);
-    mInput.voice().setTempo(s.ready() ? s.bpm : 0.0f);
+    const bool tempo = s.ready() || mProject.music.bpmSet || hasInstrumentsLocked();
+    mInput.voice().setTempo(tempo ? static_cast<float>(bpmLocked()) : 0.0f);
+    applyMusicLocked();
 }
 
 void Studio::applyEqLocked(TrackModel &t) {
@@ -560,6 +592,7 @@ std::string Studio::addTrackLocked(TrackModel t, std::unique_ptr<MappedAudio> au
     bump(verEq(slot));
     bump(verAuto(slot));
     bump(verFx(slot));
+    bump(verInst(slot));
     mProject.nextId = std::max(mProject.nextId, t.id + 1);
     mProject.tracks.push_back(std::move(t));
     bump(kVerTracks);
@@ -574,6 +607,7 @@ void Studio::removeAllLocked(bool deleteFiles) {
         bump(verRegions(t.slot));
         bump(verAuto(t.slot));
         bump(verFx(t.slot));
+        bump(verInst(t.slot));
         if (deleteFiles) std::remove((mAudioDir + "/" + t.file).c_str());
     }
     mProject.tracks.clear();
@@ -821,18 +855,49 @@ void Studio::jobRestore() {
     bump(kVerInput);
     int missing = 0;
     std::set<std::string> used;
+    {
+        // El tempo en uso (para los instrumentos), con la música y la canción de la sesión.
+        std::lock_guard<std::mutex> lk(mModel);
+        mProject.music = pm.music;
+    }
+    double bpm;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        const MusicModel &m = pm.music;
+        bpm = !m.bpmSet && pm.song.ready() && pm.song.bpm >= 40.0f && pm.song.bpm <= 240.0f ? pm.song.bpm : m.bpm;
+    }
     for (TrackModel &t : pm.tracks) {
         const std::string file = audioDir + "/" + t.file;
         std::string e;
         auto audio = MappedAudio::open(file, e);
+        bool rerendered = false;
+        if (!audio && t.isInst) {
+            // Un instrumento sin su archivo se vuelve a renderizar (lo que toca está en la sesión).
+            std::vector<float> peaks;
+            std::string f2;
+            if (renderInstrument(t.part, bpm, audioDir, f2, audio, peaks).empty()) {
+                rerendered = true;
+                t.file = f2;
+                t.regions.clear();
+                t.hasRegions = false;
+            }
+        }
         if (!audio) {
             ++missing;
             continue;
         }
         t.peaks = computePeaks(*audio, kPeakBucket);
+        t.renderedBpm = bpm;
+        // Si la app se cerró antes de que terminara de prepararse, el archivo es de antes: se
+        // vuelve a renderizar (lo que toca está en la sesión).
+        const bool stale = t.isInst && !rerendered && t.renderedHash != inst::renderHash(t.part, bpm);
+        if (rerendered) t.renderedHash = inst::renderHash(t.part, bpm);
+        const int id = t.id;
         used.insert(t.file);
         std::lock_guard<std::mutex> lk(mModel);
         if (!addTrackLocked(std::move(t), std::move(audio)).empty()) ++missing;
+        else if (stale)
+            if (TrackModel *tm = findLocked(id)) scheduleRenderLocked(*tm);
     }
     // Archivos que ya nadie usa (de pistas quitadas o importaciones que no terminaron).
     if (DIR *d = ::opendir(audioDir.c_str())) {
@@ -876,6 +941,14 @@ bool Studio::removeTrack(int id) {
         if (mAutoGesture.active && mAutoGesture.id == id) mAutoGesture.active = false;
         if (mTouch.active && mTouch.id == id) mTouch = AutoTouch();
         if (mProject.tracks.empty()) mMixer.stop();
+        if (mRec.id == id) mRec = NoteRec();
+        if (mLoopId == id) {
+            mLoopId = 0;
+            mMixer.setLoop(0, 0);
+        }
+        mIdeas.erase(id);
+        bump(verInst(slot));
+        bump(kVerMusic);
         bump(kVerTracks);
         bump(verParams(slot));
         bump(verEq(slot));
@@ -1169,6 +1242,7 @@ bool Studio::exportMix(int fd, const std::string &name) {
     }
     if (f.targetLufs < 0.0f) setJobText("Midiendo y exportando la mezcla…");
     mJobs.post([this, fd, name, f] {
+        mInstJobs.waitIdle(60000);  // los instrumentos que se estaban preparando, ya listos
         const ExportResult r = ::exportMix(mMixer, fd, f, &mProgress, &mCancelExport);
         const bool ok = r.error.empty();
         std::string msg;
@@ -1648,6 +1722,7 @@ Studio::Snapshot Studio::snapshotLocked() const {
         ts.id = t.id;
         ts.regions = t.regions;
         for (int k = 0; k < autom::kParamCount; ++k) ts.autos[k] = t.autoPts[k];
+        if (t.isInst) ts.pattern = t.part.pattern;
         s.push_back(std::move(ts));
     }
     return s;
@@ -1658,6 +1733,10 @@ void Studio::restoreLocked(const Snapshot &s) {
         TrackModel *t = findLocked(ts.id);
         if (!t) continue;
         if (t->regions != ts.regions) applyRegionsLocked(*t, ts.regions);
+        if (t->isInst && t->part.pattern != ts.pattern) {
+            t->part.pattern = ts.pattern;
+            scheduleRenderLocked(*t);
+        }
         for (int k = 0; k < autom::kParamCount; ++k) {
             if (t->autoPts[k] == ts.autos[k]) continue;
             t->autoPts[k] = ts.autos[k];
@@ -2252,6 +2331,7 @@ bool Studio::measureSong() {
         mSongState = 1;
     }
     mJobs.post([this, changes] {
+        mInstJobs.waitIdle(60000);
         LoudnessReport r = measureMix(mMixer, 0.0f, false, &mProgress, 0.0f, 1.0f, &mCancelExport);
         const bool ok = r.error.empty();
         std::string msg;

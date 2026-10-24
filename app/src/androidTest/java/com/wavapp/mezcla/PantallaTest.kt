@@ -270,8 +270,12 @@ class PantallaTest {
         }
         regla.waitUntil(2_000) { p0.autoVol.n == 0 && !Edicion.abierta }
 
-        // Efectos: el botón FX abre la hoja; un preset prende compresor y reverb.
-        regla.runOnUiThread { if (Mesa.reproduciendo) Mesa.reproducirPausar() }
+        // Efectos: el botón FX abre la hoja; un preset prende compresor y reverb. (Pausa explícita: la
+        // canción puede estar llegando a su final, y "reproducir/pausar" cambiaría al revés.)
+        regla.runOnUiThread {
+            Nucleo.pause()
+            Mesa.sincronizar()
+        }
         regla.onNodeWithContentDescription("Efectos pista $id").performClick()
         regla.waitUntil(2_000) { Vista.efectos != null }
         regla.onNodeWithContentDescription("Preset Voz").performClick()
@@ -284,11 +288,14 @@ class PantallaTest {
         regla.waitUntil(2_000) { Vista.efectos == null }
         assertTrue(p0.fxActivo)
 
-        // Volumen percibido (LUFS): se mide lo que sale mientras suena.
+        // Volumen percibido (LUFS): se mide lo que sale mientras suena (desde el inicio).
         regla.runOnUiThread {
+            Nucleo.pause()
             Mesa.saltar(0.0)
-            Mesa.reproducirPausar()
+            Nucleo.play()
+            Mesa.sincronizar()
         }
+        regla.waitUntil(3_000) { Mesa.reproduciendo }
         regla.onNodeWithTag("pestana-2").performClick()
         regla.waitUntil(2_000) { Analisis.abierto }
         avanzarHasta(8_000, { "no midió el volumen: ${Mesa.volumen.segundos} s" }) {

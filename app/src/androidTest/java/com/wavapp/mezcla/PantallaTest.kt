@@ -508,6 +508,8 @@ class PantallaTest {
         regla.onNodeWithText("Notas").performClick()
         regla.onNodeWithText("Listo").performClick()
         regla.waitUntil(3_000) { Mesa.instrumentoAbierto == 0 }
+        // La tarjeta nueva quedó arriba de lo que se ve (la lista estaba en "Agregar instrumento").
+        regla.onNodeWithTag("listaCrear").performScrollToKey(bateria.id)
         regla.onNodeWithTag("instrumento-${bateria.id}").assertExists()
         regla.runOnUiThread { Mesa.quitar(bateria) }
         regla.waitUntil(5_000) { Mesa.pistas.size == 4 }
@@ -520,6 +522,8 @@ class PantallaTest {
             Mesa.pistas.size == 4 + partes && Mesa.musica.preparando == 0
         }
         assertTrue("tempo ${Mesa.musica.bpm}", Mesa.musica.bpm == 85f)
+        regla.onNodeWithTag("listaCrear").performScrollToKey("instTitulo")
+        avanzarMedidores()
         captura("37-estilo")
         // El piano y sus sonidos.
         val piano = Mesa.pistas.first { it.instrumento == Nucleo.INST_PIANO }
@@ -562,6 +566,17 @@ class PantallaTest {
 
     /** Guarda una captura donde Gradle la recoge (build/outputs/connected_android_test_additional_output). */
     private fun captura(nombre: String) {
+        // La prueba lee la pantalla desde su hilo: antes y después, que no esté a medio dibujar
+        // (Compose no admite leerla mientras el hilo principal dibuja).
+        regla.waitForIdle()
+        try {
+            guardarCaptura(nombre)
+        } finally {
+            regla.waitForIdle()
+        }
+    }
+
+    private fun guardarCaptura(nombre: String) {
         val dir = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir") ?: return
         val modo = regla.activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         val prefijo = if (modo == Configuration.UI_MODE_NIGHT_YES) "oscuro-" else "claro-"

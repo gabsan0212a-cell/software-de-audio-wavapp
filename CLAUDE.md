@@ -23,7 +23,9 @@
   pantalla completa, hojas que suben desde abajo, menús de acciones y alertas de iOS.
 - Lo que cambia en cada cuadro (posición, medidores) se lee al dibujar, no al componer.
 - Nunca `coerceIn` con límites calculados en la pantalla (cierra la app si el rango queda al
-  revés, p. ej. un pedazo angosto): usar `entre` de `ui/Componentes.kt`.
+  revés, p. ej. un pedazo angosto): usar `entre` de `ui/Componentes.kt`. Igual con los textos de un
+  Canvas: nunca `drawText(medidor, "texto", ...)` (falla si el texto empieza en el borde): usar
+  `textoSeguro`.
 - Errores: `Errores.kt` (Kotlin) y `android/Fallas.cpp` (núcleo, señales y excepciones) anotan el
   último cierre en `ultimo-error.txt`; al abrir, la pantalla lo ofrece para copiarlo. Los símbolos
   del núcleo de cada versión van en el release `vX.Y.Z` (`simbolos-nucleo.zip`) para traducir las

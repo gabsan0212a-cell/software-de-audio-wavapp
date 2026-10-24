@@ -238,7 +238,7 @@ private fun GraficaLufs(modifier: Modifier) {
         fun x(i: Int) = i / (m.size - 1f) * size.width
         fondoLufs(p, Mesa.objetivoLufs, ::y)
         for (db in listOf(-10, -20, -30)) {
-            drawText(medidor, textoObjetivo(db), Offset(4 * density, y(db.toFloat()) - 12 * density), estilo)
+            textoSeguro(medidor, textoObjetivo(db), Offset(4 * density, y(db.toFloat()) - 12 * density), estilo)
         }
         Nucleo.loudnessHistory(m, c)
         drawPath(linea(m, ::x, ::y), p.texto2.copy(alpha = 0.55f), style = Stroke(1.2f * density))

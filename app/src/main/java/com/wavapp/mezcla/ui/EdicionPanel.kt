@@ -261,7 +261,7 @@ private fun Regla(modifier: Modifier) {
                 val dec = if (paso < 0.1) 2 else if (paso < 1) 1 else 0
                 val texto = if (m > 0) String.format(Locale.US, "%d:%0${if (dec > 0) dec + 3 else 2}.${dec}f", m, s)
                 else String.format(Locale.US, "%.${dec}f", s)
-                drawText(medidor, texto, Offset(x + 3.dp.toPx(), 1.dp.toPx()), estilo)
+                textoSeguro(medidor, texto, Offset(x + 3.dp.toPx(), 1.dp.toPx()), estilo)
             }
             t += paso
         }
@@ -581,10 +581,10 @@ private fun CarrilAuto(p: Pista, param: Int) {
         drawLine(pal.texto3, Offset(0f, yg), Offset(w, yg), density, pathEffect = raya)
         val margen = 4.dp.toPx()
         if (param == Nucleo.AUTO_PANEO) {
-            drawText(medidor, "L", Offset(margen, 1.dp.toPx()), estiloGuia)
-            drawText(medidor, "R", Offset(margen, h - 14.dp.toPx()), estiloGuia)
+            textoSeguro(medidor, "L", Offset(margen, 1.dp.toPx()), estiloGuia)
+            textoSeguro(medidor, "R", Offset(margen, h - 14.dp.toPx()), estiloGuia)
         } else {
-            drawText(medidor, "0 dB", Offset(margen, yg - 14.dp.toPx()), estiloGuia)
+            textoSeguro(medidor, "0 dB", Offset(margen, yg - 14.dp.toPx()), estiloGuia)
         }
         val activa = p.autoModo != Nucleo.AUTO_APAGADA
         val alfa = if (activa) 1f else 0.45f

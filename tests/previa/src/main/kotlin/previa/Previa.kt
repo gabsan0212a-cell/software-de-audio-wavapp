@@ -504,6 +504,21 @@ fun main(args: Array<String>) {
             esperar(600)
             val despues = Mesa.pistas.first { it.id == bateria }.patron?.n ?: 0
             println("notas de la batería: $antes -> $despues")
+            // Deslizar la cuadrícula de a poquito: en algún momento el número de un compás queda
+            // justo en el borde derecho (así se cerraba la app en la 1.2.0).
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            run {
+                val y = 48f + 24f + 30f + 22f + 200f
+                var x = 380f
+                scene.sendPointerEvent(PointerEventType.Press, Offset(x * DENS, y * DENS))
+                repeat(170) {
+                    x -= 1.5f
+                    scene.sendPointerEvent(PointerEventType.Move, Offset(x * DENS, y * DENS))
+                    dibujar()
+                }
+                scene.sendPointerEvent(PointerEventType.Release, Offset(x * DENS, y * DENS))
+                println("cuadrícula deslizada sin cerrarse")
+            }
             com.wavapp.mezcla.ui.EditorVista.modo = 1
             esperar(600)
             foto("53-bateria-pads")

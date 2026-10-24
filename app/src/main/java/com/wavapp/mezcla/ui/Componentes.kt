@@ -65,6 +65,8 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.text.drawText
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -92,6 +94,17 @@ fun Texto(
         texto, modifier, if (alineacion == null) estilo.copy(color = color) else estilo.copy(color = color, textAlign = alineacion),
         overflow = TextOverflow.Ellipsis, maxLines = lineas,
     )
+}
+
+/**
+ * Un texto en un Canvas que nunca cierra la app. `drawText` acomoda el texto en el espacio que queda
+ * a la derecha y abajo de donde empieza; si no queda nada (empieza justo en el borde o fuera, p. ej.
+ * el número de un compás que llega al final de la vista) Compose falla. Aquí, si no cabe, no se
+ * dibuja.
+ */
+fun DrawScope.textoSeguro(medidor: TextMeasurer, texto: String, arriba: Offset, estilo: TextStyle) {
+    if (size.width - arriba.x < 1f || size.height - arriba.y < 1f) return
+    drawText(medidor, texto, arriba, estilo)
 }
 
 /**

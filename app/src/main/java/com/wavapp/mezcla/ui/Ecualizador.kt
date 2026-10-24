@@ -295,11 +295,11 @@ private fun CurvaEq(p: Pista, sel: Int, alElegir: (Int) -> Unit, modifier: Modif
         for (db in listOf(-12, -6, 0, 6, 12)) {
             val yy = y(db.toFloat())
             drawLine(if (db == 0) pal.texto3 else pal.separador, Offset(0f, yy), Offset(w, yy), d)
-            if (db != 0) drawText(medidor, (if (db > 0) "+" else "") + db, Offset(4 * d, yy - 13 * d), estiloTexto)
+            if (db != 0) textoSeguro(medidor, (if (db > 0) "+" else "") + db, Offset(4 * d, yy - 13 * d), estiloTexto)
         }
         for (f in listOf(50f, 100f, 200f, 500f, 1000f, 2000f, 5000f, 10000f)) {
             drawLine(pal.separador, Offset(x(f), 0f), Offset(x(f), h), d)
-            drawText(medidor, etiquetaHz(f), Offset(x(f) + 3 * d, h - 14 * d), estiloTexto)
+            textoSeguro(medidor, etiquetaHz(f), Offset(x(f) + 3 * d, h - 14 * d), estiloTexto)
         }
 
         val n = max(64, (w / 2).toInt())

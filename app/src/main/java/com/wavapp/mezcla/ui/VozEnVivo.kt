@@ -341,7 +341,7 @@ private fun MedidorReduccion(db: () -> Float, modifier: Modifier) {
         val w = ancho * d / 24f
         if (w > 0f) drawRoundRect(pal.naranja, Offset(ancho - w, y), Size(w, alto), CornerRadius(alto / 2))
         val t = if (d < 0.1f) "0 dB" else "−" + String.format(Locale.US, "%.1f dB", d)
-        drawText(medidor, t, Offset(ancho + 6.dp.toPx(), size.height / 2 - 7.dp.toPx()), estilo)
+        textoSeguro(medidor, t, Offset(ancho + 6.dp.toPx(), size.height / 2 - 7.dp.toPx()), estilo)
     }
 }
 

@@ -346,7 +346,7 @@ private fun Cuadricula(p: Pista, modifier: Modifier) {
                 val x = gx + b * info.pasosCompas * wPaso - vistaX0
                 if (x > size.width) break
                 if (x + info.pasosCompas * wPaso < gx) continue
-                drawText(medidor, "${b + 1}", Offset(x + 4.dp.toPx(), 3.dp.toPx()), estiloRegla)
+                textoSeguro(medidor, "${b + 1}", Offset(x + 4.dp.toPx(), 3.dp.toPx()), estiloRegla)
                 for (beat in 1 until 4) {
                     val xb = x + beat * 4 * wPaso
                     drawLine(pal.texto3, Offset(xb, gy - 6.dp.toPx()), Offset(xb, gy - 1f), 1f)

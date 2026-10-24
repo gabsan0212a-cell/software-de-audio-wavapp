@@ -487,6 +487,12 @@ class PantallaTest {
             click(Offset((88f + 30f * 1.5f) * densidad, (22f + 12f) * densidad))
         }
         regla.waitUntil(5_000) { bateria.patron?.n == notasAntes + 1 }
+        // Deslizar la cuadrícula: los números de los compases pasan por el borde (en la 1.2.0 eso
+        // cerraba la app).
+        regla.onNodeWithTag("cuadricula").performTouchInput {
+            swipe(Offset(width * 0.95f, height * 0.6f), Offset(width * 0.15f, height * 0.6f), 2_000)
+        }
+        regla.waitForIdle()
         avanzarMedidores()
         captura("34-bateria-notas")
         regla.onNodeWithText("Tocar").performClick()

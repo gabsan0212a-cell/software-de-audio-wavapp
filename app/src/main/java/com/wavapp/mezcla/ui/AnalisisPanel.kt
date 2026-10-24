@@ -225,12 +225,12 @@ private fun Goniometro(modifier: Modifier) {
             drawLine(linea, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), d)
             drawLine(linea, Offset(0f, size.height), Offset(size.width, 0f), d)
             drawLine(linea, Offset(0f, 0f), Offset(size.width, size.height), d)
-            drawText(medidor, "M", Offset(size.width / 2 + 5 * d, 4 * d), estilo)
-            drawText(medidor, "L", Offset(6 * d, 4 * d), estilo)
-            drawText(medidor, "R", Offset(size.width - 14 * d, 4 * d), estilo)
-            drawText(medidor, "S", Offset(size.width - 14 * d, size.height / 2 - 17 * d), estilo)
+            textoSeguro(medidor, "M", Offset(size.width / 2 + 5 * d, 4 * d), estilo)
+            textoSeguro(medidor, "L", Offset(6 * d, 4 * d), estilo)
+            textoSeguro(medidor, "R", Offset(size.width - 14 * d, 4 * d), estilo)
+            textoSeguro(medidor, "S", Offset(size.width - 14 * d, size.height / 2 - 17 * d), estilo)
             if (Analisis.activo) {
-                drawText(
+                textoSeguro(
                     medidor, "auto +" + Analisis.gananciaGonio + " dB", Offset(6 * d, size.height - 18 * d),
                     estilo.copy(fontSize = 9.sp, fontWeight = FontWeight.Normal),
                 )
@@ -247,9 +247,9 @@ private fun Goniometro(modifier: Modifier) {
                     style = Stroke(d),
                 )
             }
-            drawText(medidor, "L", Offset(cx - sin(MAXA) * r - 4 * d, cy - cos(MAXA) * r - 18 * d), estilo)
-            drawText(medidor, "R", Offset(cx + sin(MAXA) * r - 4 * d, cy - cos(MAXA) * r - 18 * d), estilo)
-            drawText(medidor, "C", Offset(cx - 3 * d, cy - r - 17 * d), estilo)
+            textoSeguro(medidor, "L", Offset(cx - sin(MAXA) * r - 4 * d, cy - cos(MAXA) * r - 18 * d), estilo)
+            textoSeguro(medidor, "R", Offset(cx + sin(MAXA) * r - 4 * d, cy - cos(MAXA) * r - 18 * d), estilo)
+            textoSeguro(medidor, "C", Offset(cx - 3 * d, cy - r - 17 * d), estilo)
         }
     }
 }
@@ -401,16 +401,16 @@ private fun Espectro(modifier: Modifier) {
         val estilo = TextStyle(color = pal.texto2, fontSize = 9.sp)
         for (f in listOf(100f, 1000f, 10000f)) {
             drawLine(pal.separador, Offset(x(f), 0f), Offset(x(f), h), d)
-            drawText(medidor, etiquetaHz(f), Offset(x(f) + 3 * d, h - 14 * d), estilo)
+            textoSeguro(medidor, etiquetaHz(f), Offset(x(f) + 3 * d, h - 14 * d), estilo)
         }
         for (db in listOf(-90f, -60f, -30f)) {
             drawLine(pal.separador, Offset(0f, y(db)), Offset(w, y(db)), d)
-            drawText(medidor, "${db.toInt()} dB".replace('-', '−'), Offset(4 * d, y(db) - 13 * d), estilo)
+            textoSeguro(medidor, "${db.toInt()} dB".replace('-', '−'), Offset(4 * d, y(db) - 13 * d), estilo)
         }
         val guion = PathEffect.dashPathEffect(floatArrayOf(3 * d, 3 * d))
         for (f in listOf(50f, 60f)) {
             drawLine(pal.texto3, Offset(x(f), 0f), Offset(x(f), h), d, pathEffect = guion)
-            drawText(medidor, "${f.toInt()}", Offset(x(f) + 2 * d, 2 * d), estilo)
+            textoSeguro(medidor, "${f.toInt()}", Offset(x(f) + 2 * d, 2 * d), estilo)
         }
         if (Analisis.activo && Analisis.zumbidoHz > 0) {
             for (k in 1..4) {
@@ -500,7 +500,7 @@ private fun Espectrograma(p: Pista, modifier: Modifier) {
             val estilo = TextStyle(color = pal.texto, fontSize = 9.sp, fontWeight = FontWeight.Medium)
             for (f in listOf(50f, 100f, 200f, 500f, 1000f, 2000f, 5000f, 10000f)) {
                 drawLine(pal.texto2.copy(alpha = 0.3f), Offset(0f, y(f)), Offset(w, y(f)), d)
-                drawText(medidor, etiquetaHz(f), Offset(4 * d, y(f) - 14 * d), estilo)
+                textoSeguro(medidor, etiquetaHz(f), Offset(4 * d, y(f) - 14 * d), estilo)
             }
             val pasos = listOf(1, 2, 5, 10, 15, 30, 60, 120, 300, 600)
             val paso = pasos.firstOrNull { it >= dur / 8 } ?: 600
@@ -509,7 +509,7 @@ private fun Espectrograma(p: Pista, modifier: Modifier) {
                 val x = (t / dur * w).toFloat()
                 drawLine(pal.texto2.copy(alpha = 0.3f), Offset(x, 0f), Offset(x, h), d)
                 val etiqueta = if (t >= 60) "${t / 60}:" + String.format(Locale.US, "%02d", t % 60) else "${t}s"
-                drawText(medidor, etiqueta, Offset(x + 3 * d, h - 15 * d), estilo)
+                textoSeguro(medidor, etiqueta, Offset(x + 3 * d, h - 15 * d), estilo)
                 t += paso
             }
             val px = if (dur > 0) (Mesa.posicion / dur * w).toFloat() else 0f

@@ -141,12 +141,15 @@ object Nucleo {
     const val INST_BAJO = 2
     const val INST_GUITARRA = 3
     const val INST_SINTE = 4
+    const val INST_PIANO = 5
     const val INST_BRILLO = 0
     const val INST_ATAQUE = 1
     const val INST_DURACION = 2
     const val INST_DISTORSION = 3
     const val INST_DESLIZAR = 4
     const val INST_AFINACION = 5
+    const val INST_MOVIMIENTO = 6
+    const val INST_AMBIENTE = 7
 
     // Ajustes de la voz en vivo (iguales a vfx::Param del núcleo).
     const val VOZ_ENCENDIDA = 0
@@ -426,12 +429,17 @@ object Nucleo {
     external fun setTempo(bpm: Float)
     external fun setKey(key: Int, minor: Boolean)
     external fun setMetronome(on: Boolean)
-    /** {"tipos":[{"nombre","presets","ajustes","inicio"}],"piezas","pasoPulsos","pasosCompas","maxCompases","maxVeces"} */
+    /**
+     * {"tipos":[{"nombre","presets","ajustes","inicio"}],"piezas","pasoPulsos","pasosCompas","maxCompases","maxVeces",
+     * "estilos":[{"nombre","detalle","bpm","tonica","menor","partes":[tipo...]}]}
+     */
     external fun instrumentsJson(): String
     /** [mín, máx, inicial, log 1/0] por cada ajuste del sonido. */
     external fun instParamInfo(): FloatArray
     /** Agrega un instrumento (con una idea para empezar); la pista aparece cuando está lista. Devuelve su id o -1. */
     external fun addInstrument(kind: Int, preset: Int): Int
+    /** Agrega todos los instrumentos de un estilo (y, sin canción, su tempo y tonalidad). Id del primero o -1. */
+    external fun addStyle(index: Int): Int
     /** {"tipo","preset","compases","veces","swing","ajustes","notas":[pulso, largo, nota, fuerza, ...],"preparando"} o "". */
     external fun instrumentJson(id: Int): String
     /** Filas de la cuadrícula de arriba a abajo: [[nota, "nombre", tónica, en la escala], ...]. */

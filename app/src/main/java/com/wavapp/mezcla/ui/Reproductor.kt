@@ -45,7 +45,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -78,13 +77,9 @@ private val Blanco3 = Color.White.copy(alpha = 0.45f)
 
 @Composable
 private fun ContenidoReproductor(alCerrar: () -> Unit, alExportar: () -> Unit) {
-    val p = LocalPaleta.current
     val pistas = Mesa.pistas
-    val c1 = pistas.getOrNull(0)?.let { p.pistas[it.color] } ?: p.acento
-    val c2 = pistas.getOrNull(1)?.let { p.pistas[it.color] } ?: c1
-    val fondo = Brush.verticalGradient(
-        listOf(lerp(c1, Color.Black, 0.42f), lerp(c2, Color.Black, 0.70f), Color(0xFF0B0B0D)),
-    )
+    // Los colores de la portada (gris oscuro, como su fondo), como hace Apple Music.
+    val fondo = Brush.verticalGradient(listOf(Color(0xFF2C2C30), Color(0xFF161618), Color(0xFF0B0B0D)))
     val cerrar by rememberUpdatedState(alCerrar)
     var arrastre by remember { mutableFloatStateOf(0f) }
     Column(
@@ -128,8 +123,8 @@ private fun ContenidoReproductor(alCerrar: () -> Unit, alExportar: () -> Unit) {
         )
         BoxWithConstraints(Modifier.fillMaxWidth().weight(4f, fill = false), contentAlignment = Alignment.Center) {
             val lado = min(min(maxWidth.value, maxHeight.value), 380f).dp
-            Mosaico(
-                pistas, lado,
+            PortadaApp(
+                lado,
                 Modifier.graphicsLayer {
                     scaleX = escala
                     scaleY = escala
@@ -137,7 +132,7 @@ private fun ContenidoReproductor(alCerrar: () -> Unit, alExportar: () -> Unit) {
                     shape = RoundedCornerShape(12.dp)
                     clip = true
                 },
-                radio = 12.dp, nombres = true,
+                radio = 12.dp,
             )
         }
         Spacer(Modifier.weight(0.5f))

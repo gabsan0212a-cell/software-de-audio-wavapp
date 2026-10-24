@@ -76,6 +76,8 @@ object Vista {
     var repetir by mutableStateOf(true)
     var abrirInstrumento by mutableIntStateOf(0)
     var borrarNotas by mutableStateOf<Pista?>(null)
+    /** El estilo que se va a agregar (pregunta antes si ya hay instrumentos); -1 = ninguno. */
+    var estilo by mutableIntStateOf(-1)
 
     // Grabar: qué entrada (0 = la primera de la lista), en estéreo o no, y la última toma.
     var entradaId by mutableIntStateOf(0)
@@ -217,6 +219,19 @@ fun PantallaMesa() {
             alConfirmar = { borrar?.let { Mesa.borrarNotas(it) } },
             alCerrar = { Vista.borrarNotas = null },
         )
+        val iEstilo = Vista.estilo
+        val estilo = Mesa.infoInstrumentos.estilos.getOrNull(iEstilo)
+        Alerta(
+            visible = estilo != null,
+            titulo = estilo?.let { "¿Agregar \"${it.nombre}\"?" } ?: "",
+            mensaje = estilo?.let {
+                "Se agregan ${it.partes.size} instrumentos más. Sin canción preparada, el tempo y la tonalidad cambian a " +
+                    "${it.bpm} BPM · ${nombreTonalidad(it.tonica, it.menor)} (también para los que ya hay)."
+            } ?: "",
+            confirmar = "Agregar",
+            alConfirmar = { if (estilo != null) Mesa.agregarEstilo(iEstilo) },
+            alCerrar = { Vista.estilo = -1 },
+        )
         val quitar = Vista.aQuitar
         Alerta(
             visible = quitar != null,
@@ -325,7 +340,7 @@ private fun MiniReproductor() {
             .pulsable(atenuado = 0.75f) { Vista.reproductor = true },
     ) {
         Row(Modifier.fillMaxSize().padding(start = 8.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            Mosaico(Mesa.pistas, 48.dp, radio = 7.dp)
+            PortadaApp(48.dp, radio = 7.dp)
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Texto("Mezcla", Tipo.subtitulo.seminegrita, p.texto, lineas = 1)
                 TiempoMini()

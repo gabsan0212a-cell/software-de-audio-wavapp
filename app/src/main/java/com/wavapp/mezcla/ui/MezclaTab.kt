@@ -144,7 +144,7 @@ private fun SinPistas(abrirArchivos: () -> Unit) {
         Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icono(Iconos.nota, p.texto3, tamano = 64.dp)
+        PortadaApp(128.dp, Modifier.testTag("portada"), radio = 28.dp)
         Texto("Sin pistas", Tipo.titulo2, p.texto, Modifier.padding(top = 16.dp), lineas = 1)
         Texto(
             "Agrega audio de tu celular (WAV, MP3, FLAC, M4A…) para empezar a mezclar.", Tipo.subtitulo, p.texto2,

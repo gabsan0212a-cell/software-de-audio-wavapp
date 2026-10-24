@@ -4762,6 +4762,230 @@ TEST(instrumentosSuenan) {
     CHECK(inst::presetCount(inst::kDrums) >= 5 && inst::presetCount(inst::kSynth) >= 6);
 }
 
+// El piano: se apaga solo (los agudos antes que los graves), el apagador lo calla al soltar y
+// tocar fuerte saca más armónicos.
+TEST(pianoSuena) {
+    const int sr = 48000;
+    auto tocar = [&](int preset, int pitch, float vel, int offAt, int frames, std::vector<float> &m) {
+        inst::Engine e(sr);
+        inst::Sound s;
+        s.kind = inst::kPiano;
+        s.preset = preset;
+        s.values[inst::kSpace] = -1;  // sin reverb: solo la cuerda
+        s.values[inst::kMod] = -1;
+        e.setSound(s);
+        e.noteOn(pitch, vel, 3);
+        std::vector<float> l(frames), r(frames);
+        for (int i = 0; i < frames; i += 256) {
+            if (offAt >= 0 && i == offAt) e.noteOff(pitch);
+            e.render(l.data() + i, r.data() + i, std::min(256, frames - i));
+        }
+        m.resize(frames);
+        for (int i = 0; i < frames; ++i) m[i] = l[i] + r[i];
+    };
+    auto rms = [](const std::vector<float> &m, int a, int b) {
+        double s2 = 0;
+        for (int i = a; i < b; ++i) s2 += static_cast<double>(m[i]) * m[i];
+        return std::sqrt(s2 / std::max(1, b - a));
+    };
+    const int cola = inst::presetIndex(inst::kPiano, "Piano de cola");
+    std::vector<float> grave, agudo, suelto;
+    tocar(cola, 48, 0.8f, -1, 3 * sr, grave);
+    tocar(cola, 84, 0.8f, -1, 3 * sr, agudo);
+    tocar(cola, 48, 0.8f, sr / 2 - sr / 2 % 256, 3 * sr, suelto);
+    // Se apaga solo, el agudo más rápido.
+    const double g0 = rms(grave, 0, sr / 4), g1 = rms(grave, 2 * sr, 2 * sr + sr / 4);
+    const double a0 = rms(agudo, 0, sr / 4), a1 = rms(agudo, 2 * sr, 2 * sr + sr / 4);
+    CHECK(g1 < g0 * 0.7 && g1 > g0 * 0.02);
+    CHECK(a1 / a0 < g1 / g0);
+    // Al soltar, el apagador lo calla en un momento.
+    CHECK(rms(suelto, sr, sr + sr / 4) < rms(grave, sr, sr + sr / 4) * 0.05);
+    // Fuerte: más brillante (más cruces por cero por la energía de los armónicos).
+    auto brillo = [&](const std::vector<float> &m) {
+        double d = 0, e = 0;
+        for (int i = 1; i < sr / 4; ++i) {
+            d += std::fabs(m[i] - m[i - 1]);
+            e += std::fabs(m[i]);
+        }
+        return d / std::max(1e-9, e);
+    };
+    std::vector<float> suave, fuerte;
+    tocar(cola, 60, 0.25f, -1, sr / 2, suave);
+    tocar(cola, 60, 1.0f, -1, sr / 2, fuerte);
+    CHECK(brillo(fuerte) > brillo(suave) * 1.15);
+    CHECK(rms(fuerte, 0, sr / 4) > rms(suave, 0, sr / 4) * 2.0);
+    // Todos los pianos: una nota afinada y sin pasarse.
+    CHECK(inst::presetCount(inst::kPiano) >= 5);
+    CHECK(std::string(inst::kindName(inst::kPiano)) == "Piano");
+}
+
+// Movimiento (chorus, trémolo, vibrato) y ambiente (reverb) dentro del instrumento: la reverb
+// sigue sonando después de la última nota (y el motor sigue activo hasta que termina).
+TEST(instrumentoEfectos) {
+    const int sr = 48000;
+    auto sonar = [&](const inst::Sound &s, int frames, std::vector<float> &l, std::vector<float> &r, bool &activo) {
+        inst::Engine e(sr);
+        e.setSound(s);
+        e.noteOn(s.kind == inst::kDrums ? 1 : 57, 0.9f, 11);
+        l.assign(frames, 0);
+        r.assign(frames, 0);
+        for (int i = 0; i < frames; i += 256) {
+            if (i == 6144) e.noteOff(57);
+            e.render(l.data() + i, r.data() + i, std::min(256, frames - i));
+        }
+        activo = e.active();
+    };
+    auto rms = [](const std::vector<float> &m, int a, int b) {
+        double s2 = 0;
+        for (int i = a; i < b; ++i) s2 += static_cast<double>(m[i]) * m[i];
+        return std::sqrt(s2 / std::max(1, b - a));
+    };
+    // Reverb: la guitarra soñadora suena después de soltarla; sin ambiente, no.
+    inst::Sound g;
+    g.kind = inst::kGuitar;
+    g.preset = inst::presetIndex(inst::kGuitar, "Eléctrica soñadora");
+    CHECK(std::string(inst::presetName(inst::kGuitar, g.preset)) == "Eléctrica soñadora");
+    g.values[inst::kDecay] = 0.25f;
+    std::vector<float> l, r, l2, r2;
+    bool activo = false, activo2 = true;
+    sonar(g, sr * 2, l, r, activo);
+    inst::Sound seca = g;
+    seca.values[inst::kSpace] = -1;
+    seca.values[inst::kMod] = -1;
+    sonar(seca, sr * 2, l2, r2, activo2);
+    CHECK(rms(l, sr, sr + sr / 4) > 20 * rms(l2, sr, sr + sr / 4) + 1e-6);
+    CHECK(activo);  // la cola sigue
+    // El chorus abre el estéreo: izquierda y derecha ya no son iguales en la misma medida.
+    double dif = 0, dif2 = 0;
+    for (int i = 0; i < sr / 4; ++i) {
+        dif += std::fabs(l[i] - r[i]);
+        dif2 += std::fabs(l2[i] - r2[i]);
+    }
+    CHECK(dif > dif2 * 1.5);
+    // Trémolo: el volumen sube y baja unas 5 veces por segundo.
+    std::vector<float> lq, rq;
+    inst::Sound trem;
+    trem.kind = inst::kGuitar;
+    trem.preset = inst::presetIndex(inst::kGuitar, "Eléctrica con trémolo");
+    trem.values[inst::kSpace] = -1;
+    trem.values[inst::kDecay] = 4;
+    sonar(trem, sr, lq, rq, activo);
+    double mn = 1e9, mx = 0;
+    for (int w = 0; w < 10; ++w) {
+        const double v = rms(lq, 2400 + w * 960, 2400 + (w + 1) * 960);  // ventanas de 20 ms
+        mn = std::min(mn, v);
+        mx = std::max(mx, v);
+    }
+    CHECK(mx > 2.0 * mn);
+    // "Movimiento" en un sonido sin movimiento agrega chorus (más ancho).
+    inst::Sound limpia;
+    limpia.kind = inst::kGuitar;
+    limpia.preset = inst::presetIndex(inst::kGuitar, "Eléctrica limpia");
+    sonar(limpia, sr / 2, l2, r2, activo);
+    double antes = 0;
+    for (int i = 0; i < sr / 4; ++i) antes += std::fabs(l2[i] - r2[i]);
+    limpia.values[inst::kMod] = 1;
+    sonar(limpia, sr / 2, l2, r2, activo);
+    double despues = 0;
+    for (int i = 0; i < sr / 4; ++i) despues += std::fabs(l2[i] - r2[i]);
+    CHECK(despues > antes * 1.5);
+    // La batería tiene sala (ambiente) pero no movimiento; el 808, ninguno de los dos.
+    CHECK(inst::paramApplies(inst::kDrums, inst::kSpace) && !inst::paramApplies(inst::kDrums, inst::kMod));
+    CHECK(!inst::paramApplies(inst::k808, inst::kSpace) && !inst::paramApplies(inst::k808, inst::kMod));
+    CHECK(inst::paramApplies(inst::kPiano, inst::kMod) && !inst::paramApplies(inst::kPiano, inst::kGlide));
+    // Sin efectos, al terminar la nota el motor queda en silencio (no sigue calculando).
+    inst::Sound b;
+    b.kind = inst::kDrums;
+    b.preset = 0;
+    sonar(b, sr * 2, l, r, activo);
+    CHECK(!activo);
+    // Los ajustes nuevos se guardan con su nombre.
+    CHECK(std::string(inst::paramInfo(inst::kMod).key) == "movimiento");
+    CHECK(std::string(inst::paramInfo(inst::kSpace).key) == "ambiente");
+}
+
+// Los estilos: cada parte existe, sus ideas están en la tonalidad y usan los mismos acordes.
+TEST(estilos) {
+    CHECK(inst::styleCount() >= 4);
+    CHECK(std::string(inst::style(0).name) == "Indie oscuro");
+    CHECK(inst::style(0).bpm == 85 && inst::style(0).key == 7 && inst::style(0).minor);
+    for (int i = 0; i < inst::styleCount(); ++i) {
+        const inst::Style &st = inst::style(i);
+        CHECK(!st.parts.empty() && st.parts.size() <= 6);
+        CHECK(st.parts[0].kind == inst::kDrums);
+        for (const inst::StylePart &sp : st.parts) {
+            const int p = inst::presetIndex(sp.kind, sp.preset);
+            CHECK(std::string(inst::presetName(sp.kind, p)) == sp.preset);
+            inst::Sound s;
+            s.kind = sp.kind;
+            s.preset = p;
+            const inst::Pattern pat = inst::starter(s, st.key, st.minor, 4, st.variant);
+            CHECK(!pat.notes.empty());
+            if (sp.kind == inst::kDrums) continue;
+            int fuera = 0;
+            for (const inst::Note &n : pat.notes)
+                if (!inst::inScale(n.pitch, st.key, st.minor)) ++fuera;
+            CHECK(fuera == 0);
+            // Ninguna nota se encima con otra igual (se oiría cortada o doble).
+            int encimadas = 0;
+            for (const inst::Note &a : pat.notes)
+                for (const inst::Note &b : pat.notes)
+                    if (a.pitch == b.pitch && b.tick > a.tick && b.tick < a.tick + a.len) ++encimadas;
+            CHECK(encimadas == 0);
+            // El primer compás empieza en la tónica (la misma idea en todos).
+            int grave = 999;
+            for (const inst::Note &n : pat.notes)
+                if (n.tick == 0) grave = std::min(grave, n.pitch);
+            CHECK(grave < 999 && ((grave - st.key) % 12 + 12) % 12 == 0);
+        }
+    }
+    // En el estudio: un toque agrega todo, con su tempo, tonalidad y volúmenes.
+    const std::string dir = nuevaCarpeta("estilos");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.clearProject();
+    const Json info = leerJson(Studio::instrumentsJson());
+    CHECK(info["estilos"].size() == static_cast<size_t>(inst::styleCount()));
+    CHECK(info["estilos"][0]["nombre"].asString() == "Indie oscuro" && info["estilos"][0]["bpm"].asInt() == 85);
+    CHECK(info["estilos"][0]["partes"].size() == inst::style(0).parts.size());
+    const int primero = s.addStyle(0);
+    CHECK(primero > 0);
+    CHECK(s.addStyle(99) == -1);
+    CHECK(s.waitIdle(120000));
+    const size_t n = inst::style(0).parts.size();
+    CHECK(s.trackCount() == static_cast<int>(n));
+    float mu[Studio::kMusicStateCount];
+    s.musicState(mu);
+    CHECK(mu[0] == 85.0f && mu[1] == 7.0f && mu[2] == 1.0f);
+    const Json ps = pistas(s);
+    CHECK(ps.size() == n);
+    for (size_t i = 0; i < ps.size() && i < n; ++i) {
+        CHECK(ps[i]["instrumento"].asInt() == inst::style(0).parts[i].kind);
+        float tp[Studio::kTrackParamCount];
+        CHECK(s.trackParams(static_cast<int>(ps[i]["id"].asInt()), tp));
+        CHECK(std::fabs(tp[0] - inst::style(0).parts[i].volDb) < 0.01f);
+        // 4 compases × 4 veces a 85 BPM ≈ 45 s.
+        CHECK(ps[i]["cuadros"].asInt() >= 45 * 48000);
+    }
+    CHECK(ps[0]["nombre"].asString() == "Batería" && ps[2]["nombre"].asString() == "Guitarra");
+    // No caben dos veces más (12 pistas como máximo): no agrega nada.
+    CHECK(s.addStyle(0) > 0);
+    CHECK(s.waitIdle(120000));
+    CHECK(s.addStyle(0) == -1);
+    CHECK(s.trackCount() == static_cast<int>(2 * n));
+    // Mezclado suena (y no se pasa de 0 dBFS gracias al limitador del master).
+    s.play();
+    std::vector<float> out(480 * 2);
+    float pk = 0;
+    for (int k = 0; k < 200; ++k) {
+        s.mixer().process(out.data(), 480, 2);
+        for (float v : out) pk = std::max(pk, std::fabs(v));
+    }
+    s.pause();
+    CHECK(pk > 0.05f && pk <= 1.0f);
+}
+
 // Las notas suenan donde van (el tempo manda) y el swing corre las de contratiempo.
 TEST(patronEnTiempo) {
     inst::Part part;

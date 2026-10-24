@@ -123,8 +123,23 @@ std::string Studio::instrumentsJson() {
     Json piezas = Json::array();
     for (int i = 0; i < inst::kDrumPieces; ++i) piezas.push(std::string(inst::drumName(i)));
     Json o = Json::object();
+    Json estilos = Json::array();
+    for (int i = 0; i < inst::styleCount(); ++i) {
+        const inst::Style &st = inst::style(i);
+        Json e = Json::object();
+        e.set("nombre", std::string(st.name));
+        e.set("detalle", std::string(st.detail));
+        e.set("bpm", st.bpm);
+        e.set("tonica", st.key);
+        e.set("menor", st.minor);
+        Json partes = Json::array();
+        for (const inst::StylePart &sp : st.parts) partes.push(sp.kind);
+        e.set("partes", std::move(partes));
+        estilos.push(std::move(e));
+    }
     o.set("tipos", std::move(tipos));
     o.set("piezas", std::move(piezas));
+    o.set("estilos", std::move(estilos));
     o.set("pasoPulsos", inst::kStepTicks);
     o.set("pasosCompas", inst::kStepsPerBar);
     o.set("maxCompases", inst::kMaxBars);
@@ -305,12 +320,7 @@ int Studio::addInstrument(int kind, int preset) {
         t.part.pattern = inst::starter(t.part.sound, key, minor, 4, 0);
         t.part.pattern.repeats = 4;
         mIdeas[t.id] = 0;
-        // "Batería", "Batería 2"...
-        const std::string base = inst::kindName(kind);
-        int n = 1;
-        for (const TrackModel &o : mProject.tracks)
-            if (o.isInst && o.part.sound.kind == kind) ++n;
-        t.name = n == 1 ? base : base + " " + std::to_string(n);
+        t.name = instNameLocked(kind, {});
         t.info = std::string("instrumento · ") + inst::presetName(kind, t.part.sound.preset);
         t.fx = fx::defaults();
         ++mPendingAdds;
@@ -319,6 +329,73 @@ int Studio::addInstrument(int kind, int preset) {
     const int id = t.id;
     mInstJobs.post([this, tm = std::move(t)]() mutable { jobAddInstrument(std::move(tm)); });
     return id;
+}
+
+std::string Studio::instNameLocked(int kind, const std::vector<TrackModel> &extra) const {
+    const std::string base = inst::kindName(kind);
+    int n = 1;
+    for (const auto *list : {&mProject.tracks, &extra})
+        for (const TrackModel &o : *list)
+            if (o.isInst && o.part.sound.kind == kind) ++n;
+    return n == 1 ? base : base + " " + std::to_string(n);
+}
+
+int Studio::addStyle(int index) {
+    if (index < 0 || index >= inst::styleCount()) return -1;
+    const inst::Style &st = inst::style(index);
+    const int count = static_cast<int>(st.parts.size());
+    std::vector<TrackModel> add;
+    bool full = false;
+    {
+        std::lock_guard<std::mutex> lk(mModel);
+        if (static_cast<int>(mProject.tracks.size()) + mPendingAdds + count > kMaxTracks) {
+            full = true;
+        } else {
+            // Con una canción preparada se sigue su tempo y su tonalidad (así encaja con ella).
+            if (!mProject.song.ready()) {
+                MusicModel &m = mProject.music;
+                m.bpm = static_cast<float>(st.bpm);
+                m.bpmSet = true;
+                m.key = st.key;
+                m.minor = st.minor;
+                m.keySet = true;
+                applySongToVoiceLocked();  // y los instrumentos que ya estaban, al tempo nuevo
+                for (const TrackModel &t : mProject.tracks)
+                    if (t.isInst) bump(verInst(t.slot));
+            }
+            int key;
+            bool minor;
+            keyLocked(key, minor);
+            for (const inst::StylePart &sp : st.parts) {
+                TrackModel t;
+                t.id = mProject.nextId++;
+                t.isInst = true;
+                inst::Sound s;
+                s.kind = sp.kind;
+                s.preset = inst::presetIndex(sp.kind, sp.preset);
+                t.part.sound = inst::clampSound(s);
+                t.part.pattern = inst::starter(t.part.sound, key, minor, 4, st.variant);
+                t.part.pattern.swing = st.swing;
+                t.part.pattern.repeats = 4;
+                mIdeas[t.id] = st.variant;
+                t.name = instNameLocked(sp.kind, add);
+                t.info = std::string("instrumento · ") + inst::presetName(sp.kind, t.part.sound.preset);
+                t.fx = fx::defaults();
+                t.volDb = sp.volDb;
+                add.push_back(std::move(t));
+            }
+            mPendingAdds += count;
+            bump(kVerMusic);
+            markDirty();
+        }
+    }
+    if (full) {
+        setMessage("No caben los " + std::to_string(count) + " instrumentos de " + st.name + " (máximo 12 pistas)");
+        return -1;
+    }
+    const int first = add.front().id;
+    for (TrackModel &t : add) mInstJobs.post([this, tm = std::move(t)]() mutable { jobAddInstrument(std::move(tm)); });
+    return first;
 }
 
 void Studio::jobAddInstrument(TrackModel t) {

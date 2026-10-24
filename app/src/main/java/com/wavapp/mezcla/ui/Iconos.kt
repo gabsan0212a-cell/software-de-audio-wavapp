@@ -211,6 +211,15 @@ object Iconos {
             relleno("M6 5 H9 V13 H6 Z", "M10.5 5 H13.5 V13 H10.5 Z", "M15 5 H18 V13 H15 Z")
         }
     }
+    val piano by lazy {
+        icono("piano") {
+            trazo(
+                1.7f, "M5 3 H11 C14.5 3 15.2 6.6 16.8 8.8 C18.4 11 20 12.2 20 15 V20 C20 20.55 19.55 21 19 21 H6 " +
+                    "C5.45 21 5 20.55 5 20 V3 Z",
+                "M5 16.5 H20", "M8.75 16.5 V21", "M12.5 16.5 V21", "M16.25 16.5 V21",
+            )
+        }
+    }
     val bateria by lazy {
         icono("bateria") {
             trazo(

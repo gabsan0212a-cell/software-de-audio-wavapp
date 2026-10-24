@@ -122,12 +122,23 @@ Pattern drums(int kitIndex, int bars, int variant) {
                 addLine(p, b, {4, "..x...x...x...x."}, 90, 70);
                 addLine(p, b, {3, "oxoooxoooxoooxoo"}, 80, 52);
                 break;
-            default:  // Lo-fi
+            case 5:  // Lo-fi
                 addLine(p, b, {0, pick({"x.....x...x.....", "x......x..x.....", "x.........x..x.."})}, 105, 85);
                 addLine(p, b, {1, "....x.......x..."}, 100, 75);
                 addLine(p, b, {3, "x.x.x.x.x.x.x.x."}, 80, 60);
                 addLine(p, b, {7, "..o...o...o...o."}, 70, 50);
                 p.swing = 0.45f;
+                break;
+            default:  // Indie / alternativo: caja en 2 y 4, hi-hat en corcheas y pandereta a contratiempo
+                addLine(p, b, {0, pick({"x......x..x.....", "x.....x.x.......", "x......xx.x....."})}, 116, 92);
+                addLine(p, b, {1, "....x.......x..."}, 114, 80);
+                addLine(p, b, {3, last ? "x.o.x.o.x.o....." : "x.o.x.o.x.o.x.o."}, 84, 60);
+                addLine(p, b, {7, "..x...x...x...x."}, 74, 56);
+                if (b == 0) addLine(p, b, {6, "x..............."}, 96, 80);
+                if (last) {
+                    addLine(p, b, {4, "............x..."}, 80, 60);
+                    addLine(p, b, {5, "..............xx"}, 100, 86);
+                }
                 break;
         }
     }
@@ -136,7 +147,8 @@ Pattern drums(int kitIndex, int bars, int variant) {
 }
 
 std::vector<int> progression(bool minor, int variant) {
-    static const std::vector<std::vector<int>> mi = {{0, 5, 2, 6}, {0, 3, 4, 0}, {0, 6, 5, 6}, {0, 5, 3, 4}};
+    // Menor: i–VI–III–VII, i–iv–v–i, i–VII–VI–VII, i–VI–iv–v, i–iv–III–VI (la del indie oscuro).
+    static const std::vector<std::vector<int>> mi = {{0, 5, 2, 6}, {0, 3, 4, 0}, {0, 6, 5, 6}, {0, 5, 3, 4}, {0, 3, 2, 5}};
     static const std::vector<std::vector<int>> ma = {{0, 4, 5, 3}, {0, 5, 3, 4}, {0, 3, 0, 4}, {5, 3, 0, 4}};
     const auto &l = minor ? mi : ma;
     return l[static_cast<size_t>(variant) % l.size()];
@@ -156,6 +168,13 @@ std::vector<int> triad(int key, bool minor, int d, int near) {
 
 void addNote(Pattern &p, int bar, int step, int lenSteps, int pitch, int vel) {
     p.notes.push_back({bar * kBarTicks + step * kStepTicks, std::max(1, lenSteps) * kStepTicks, pitch, vel});
+}
+
+// Una nota que se deja sonar termina donde vuelve a tocarse la misma (sin notas encimadas).
+void trimOverlaps(Pattern &p) {
+    for (Note &n : p.notes)
+        for (const Note &o : p.notes)
+            if (o.pitch == n.pitch && o.tick > n.tick && o.tick < n.tick + n.len) n.len = o.tick - n.tick;
 }
 
 Pattern melodicIdea(const Sound &s, int key, bool minor, int bars, int variant) {
@@ -181,6 +200,12 @@ Pattern melodicIdea(const Sound &s, int key, bool minor, int bars, int variant) 
                     const int st[6] = {0, 3, 6, 8, 11, 14};
                     const int ln[6] = {3, 2, 2, 3, 2, 2};
                     for (int i = 0; i < 6; ++i) addNote(p, b, st[i], ln[i], i == 4 ? root + 7 : root, i == 0 ? 112 : 96);
+                } else if (is("Bajo indie")) {
+                    // Notas largas en la fundamental y la quinta al final, para llegar al siguiente acorde.
+                    const int st[5] = {0, 6, 8, 12, 14};
+                    const int ln[5] = {6, 2, 4, 2, 2};
+                    const int vl[5] = {112, 90, 104, 88, 92};
+                    for (int i = 0; i < 5; ++i) addNote(p, b, st[i], ln[i], i == 4 ? root + 7 : root, vl[i]);
                 } else {
                     for (int st = 0; st < 16; st += 2)
                         addNote(p, b, st, 2, (st % 8 == 6) ? root + 12 : root, st % 4 == 0 ? 112 : 92);
@@ -188,7 +213,20 @@ Pattern melodicIdea(const Sound &s, int key, bool minor, int bars, int variant) 
                 break;
             }
             case kGuitar: {
-                if (is("Eléctrica distorsionada") || is("Muteada")) {
+                if (is("Eléctrica soñadora")) {
+                    // Arpegio en corcheas que deja sonar las cuerdas: con el chorus y la reverb, flota.
+                    const std::vector<int> t = triad(key, minor, deg, 52);
+                    const int v[5] = {t[0], t[2], t[0] + 12, t[1] + 12, t[2] + 12};
+                    static const int up[8] = {0, 1, 2, 3, 4, 3, 2, 1}, alt[8] = {0, 2, 1, 3, 2, 4, 3, 1};
+                    const int *ord = variant % 2 ? alt : up;
+                    for (int i = 0; i < 8; ++i) addNote(p, b, 2 * i, 6, v[ord[i]], i == 0 ? 108 : (i % 2 ? 84 : 96));
+                } else if (is("Eléctrica con trémolo")) {
+                    // Acordes largos: el trémolo los hace latir.
+                    std::vector<int> c = triad(key, minor, deg, 55);
+                    c.insert(c.begin(), c[0] - 12);
+                    for (int st : {0, 8})
+                        for (int n : c) addNote(p, b, st, 8, n, st == 0 ? 104 : 90);
+                } else if (is("Eléctrica distorsionada") || is("Muteada")) {
                     const int root = degreePitch(key, minor, deg, 45);
                     const std::vector<int> power = {root, root + 7, root + 12};
                     const int stepLen = is("Muteada") ? 1 : 2;
@@ -213,7 +251,7 @@ Pattern melodicIdea(const Sound &s, int key, bool minor, int bars, int variant) 
                     const int step = is("Campanas") ? 2 : 1;
                     int k = 0;
                     for (int st = 0; st < 16; st += step, ++k) addNote(p, b, st, step, arp[(k + variant) % 4] + up, st % 4 == 0 ? 108 : 88);
-                } else if (is("Lead")) {
+                } else if (is("Lead") || is("Lead soñador")) {
                     std::uniform_int_distribution<int> pickTone(0, 2), pickRhythm(0, 2);
                     static const int rh[3][5] = {{0, 3, 6, 10, 12}, {0, 4, 6, 8, 12}, {2, 4, 7, 10, 14}};
                     const int *r = rh[pickRhythm(rng)];
@@ -233,13 +271,49 @@ Pattern melodicIdea(const Sound &s, int key, bool minor, int bars, int variant) 
                 } else if (is("Órgano")) {
                     for (int st : {0, 8})
                         for (int n : c) addNote(p, b, st, 8, n, 96);
-                } else {  // Pad, Cuerdas
+                } else if (is("Pad oscuro")) {
+                    // Abajo: más oscuro, con la fundamental una octava más abajo.
+                    const std::vector<int> d = triad(key, minor, deg, 55);
+                    addNote(p, b, 0, 16, d[0] - 12, 88);
+                    for (int n : d) addNote(p, b, 0, 16, n, 88);
+                } else {  // Pad, Cuerdas, Atmósfera
                     for (int n : c) addNote(p, b, 0, 16, n, 92);
+                }
+                break;
+            }
+            case kPiano: {
+                const std::vector<int> c = triad(key, minor, deg, 62);
+                const int bass = degreePitch(key, minor, deg, 45);
+                if (is("Piano suave") || is("Piano oscuro")) {
+                    // Balada: el bajo en la mano izquierda y el acorde despacio, nota por nota.
+                    addNote(p, b, 0, 16, bass, 90);
+                    if (variant % 2) {
+                        for (int st : {0, 8})
+                            for (int n : c) addNote(p, b, st, 8, n, st == 0 ? 82 : 72);
+                    } else {
+                        const int seq[4] = {c[0], c[1], c[2], c[1]};
+                        for (int i = 0; i < 4; ++i) addNote(p, b, 4 * i, 8 - (i == 3 ? 4 : 0), seq[i], i == 0 ? 84 : 74);
+                    }
+                } else if (is("Piano viejo")) {
+                    // Lo-fi: acordes con séptima, el segundo un poco antes del pulso.
+                    std::vector<int> c7 = c;
+                    int sev = degreePitch(key, minor, deg + 6, c[2] + 3);
+                    while (sev <= c[2]) sev += 12;
+                    c7.push_back(sev);
+                    addNote(p, b, 0, 16, bass, 88);
+                    for (int n : c7) addNote(p, b, 0, 6, n, 84);
+                    for (int n : c7) addNote(p, b, 7, 9, n, 74);
+                } else {
+                    // Pop: el bajo en 1 y 3, el acorde en cada pulso.
+                    for (int st : {0, 8}) addNote(p, b, st, 8, bass, 96);
+                    for (int st = 0; st < 16; st += 4)
+                        for (int n : c) addNote(p, b, st, 4, n, st % 8 == 0 ? 96 : 80);
                 }
                 break;
             }
         }
     }
+    trimOverlaps(p);
     return p;
 }
 
@@ -400,7 +474,7 @@ uint64_t renderHash(const Part &part, double bpm) {
         add(n.vel);
     }
     add(std::llround(bpm * 1e3));
-    add(4);  // versión del motor: subirla si cambia cómo suena (así se renderiza de nuevo)
+    add(5);  // versión del motor: subirla si cambia cómo suena (así se renderiza de nuevo)
     return h;
 }
 
@@ -438,6 +512,38 @@ std::string noteName(int midi) {
 std::string keyName(int key, bool minor) {
     return std::string(kNames[((key % 12) + 12) % 12]) + (minor ? " menor" : " mayor");
 }
+
+// ---------------------------------------------------------------- estilos
+
+namespace {
+
+// Do = 0 ... Si = 11.
+const std::vector<Style> &styles() {
+    static const std::vector<Style> v = {
+        // Como "Daddy Issues" de The Neighbourhood: lento, en menor, guitarra limpia que flota con
+        // chorus y reverb, bajo de notas largas, piano opaco, pad oscuro y batería de banda en una
+        // sala (la idea y los sonidos son propios: no copia la canción).
+        {"Indie oscuro", "Guitarra que flota, bajo, piano, pad y batería en una sala", 85, 7, true, 4, 0.0f,
+         {{kDrums, "Indie / alternativo", 0},
+          {kBass, "Bajo indie", -3},
+          {kGuitar, "Eléctrica soñadora", -4},
+          {kPiano, "Piano oscuro", -7},
+          {kSynth, "Pad oscuro", -9}}},
+        {"Trap", "808, campanas y pad", 140, 1, true, 0, 0.0f,
+         {{kDrums, "Trap", 0}, {k808, "808 clásico", -2}, {kSynth, "Campanas", -9}, {kSynth, "Pad", -12}}},
+        {"Reggaetón", "Dembow, bajo, piano y pluck", 95, 9, true, 3, 0.0f,
+         {{kDrums, "Reggaetón", 0}, {kBass, "Bajo sintetizado", -4}, {kPiano, "Piano de cola", -8}, {kSynth, "Pluck", -11}}},
+        {"Lo-fi", "Piano viejo, bajo y batería con swing", 78, 3, false, 1, 0.45f,
+         {{kDrums, "Lo-fi", 0}, {kBass, "Bajo eléctrico", -4}, {kPiano, "Piano viejo", -5}}},
+    };
+    return v;
+}
+
+}  // namespace
+
+int styleCount() { return static_cast<int>(styles().size()); }
+
+const Style &style(int index) { return styles()[static_cast<size_t>(std::clamp(index, 0, styleCount() - 1))]; }
 
 Pattern starter(const Sound &s, int key, bool minor, int bars, int variant) {
     bars = std::clamp(bars, 1, kMaxBars);

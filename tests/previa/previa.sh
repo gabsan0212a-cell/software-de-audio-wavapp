@@ -4,7 +4,7 @@
 # oscuro en tests/previa/capturas. Sirve para revisar el diseño sin esperar al emulador.
 # Uso: tests/previa/previa.sh [escena,escena...]   (inicio, reproduciendo, master, reproductor,
 #      eq, analisis, edicion, automatizacion, efectos, lufs, exportar, menus, tocar, grabar, voz, preparar,
-#      escenario, error, crear, vacio; por omisión todas). Con WAVAPP_MODELO=ruta/voz-kim.wvm, "preparar" usa el modelo real.
+#      escenario, error, crear, estilos, vacio; por omisión todas). Con WAVAPP_MODELO=ruta/voz-kim.wvm, "preparar" usa el modelo real.
 #      tests/previa/previa.sh --compilar   (solo revisa que compile contra Compose 1.7.3)
 set -euo pipefail
 cd "$(dirname "$0")"

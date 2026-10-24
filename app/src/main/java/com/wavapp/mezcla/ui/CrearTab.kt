@@ -2,6 +2,7 @@ package com.wavapp.mezcla.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -46,6 +48,7 @@ internal fun iconoInstrumento(tipo: Int): ImageVector = when (tipo) {
     Nucleo.INST_BATERIA -> Iconos.bateria
     Nucleo.INST_808 -> Iconos.subGrave
     Nucleo.INST_BAJO, Nucleo.INST_GUITARRA -> Iconos.guitarra
+    Nucleo.INST_PIANO -> Iconos.piano
     else -> Iconos.teclado
 }
 
@@ -58,6 +61,7 @@ internal fun colorInstrumento(tipo: Int): Color {
         Nucleo.INST_808 -> p.rojo
         Nucleo.INST_BAJO -> p.azul
         Nucleo.INST_GUITARRA -> p.verde
+        Nucleo.INST_PIANO -> p.pistas[11]  // índigo
         else -> p.pistas[3]  // morado
     }
 }
@@ -86,13 +90,16 @@ fun PestanaCrear(abajo: Dp) {
                 item(key = "vacio") {
                     PieGrupo(
                         "Elige un instrumento: empieza con una idea que suena en la tonalidad y el tempo de arriba. " +
-                            "Después cambia las notas, tócalo en vivo o graba lo que toques.",
+                            "Después cambia las notas, tócalo en vivo o graba lo que toques. O empieza con un estilo " +
+                            "completo de abajo.",
                         Modifier.padding(start = 4.dp, bottom = 10.dp),
                     )
                 }
             }
             items(instrumentos, key = { it.id }) { TarjetaInstrumento(it) }
             item(key = "agregar") { AgregarInstrumento() }
+            item(key = "estilosTitulo") { EncabezadoSeccion("Empezar con un estilo") }
+            item(key = "estilos") { Estilos(instrumentos.isNotEmpty()) }
             item(key = "pie") {
                 PieGrupo(
                     "Cada instrumento es una pista más: en Mezcla le pones volumen, EQ y efectos; en Editar lo cortas y " +
@@ -214,40 +221,87 @@ private fun MiniPatron(pista: Pista, color: Color, modifier: Modifier) {
         for (i in 0 until pat.n) {
             if (pat.pulso(i) >= pulsos) continue
             val x = size.width * pat.pulso(i) / pulsos
-            val w = (size.width * pat.largo(i) / pulsos).coerceAtLeast(1.5.dp.toPx())
+            // Una nota que sigue sonando después del final (se encima con la vuelta siguiente) se
+            // dibuja hasta el borde.
+            val w = minOf(size.width * pat.largo(i) / pulsos, size.width - x).coerceAtLeast(1.5.dp.toPx())
             val y = 2.dp.toPx() + alto * (1f - (pat.nota(i) - lo).toFloat() / rango) - 1.dp.toPx()
             drawRect(color, Offset(x, y.entre(0f, size.height - 2.dp.toPx())), Size(w, 2.dp.toPx()))
         }
     }
 }
 
-/** Los cinco instrumentos para agregar. */
+/** Los instrumentos para agregar, de a tres por fila. */
 @Composable
 private fun AgregarInstrumento() {
     val p = LocalPaleta.current
     val tipos = Mesa.infoInstrumentos.tipos
     Tarjeta(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), PaddingValues(horizontal = 6.dp, vertical = 12.dp)) {
         Texto("Agregar instrumento", Tipo.subtitulo.seminegrita, p.texto, Modifier.padding(start = 10.dp, bottom = 10.dp), lineas = 1)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            tipos.forEachIndexed { i, t ->
-                Column(
-                    Modifier
-                        .width(64.dp)
-                        .testTag("agregarInstrumento-$i")
-                        .semantics { contentDescription = "Agregar ${t.nombre}" }
-                        .pulsable(habilitado = Mesa.pistas.size < Mesa.MAX_PISTAS, atenuado = 0.6f) {
-                            val id = Mesa.agregarInstrumento(i)
-                            if (id > 0) Vista.abrirInstrumento = id
-                        },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    AzulejoIcono(iconoInstrumento(i), colorInstrumento(i), 50.dp, radio = 12.dp)
-                    Spacer(Modifier.height(6.dp))
-                    Texto(t.nombre, Tipo.leyenda, p.texto, lineas = 1, alineacion = TextAlign.Center)
+        tipos.indices.chunked(3).forEach { fila ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                for (i in fila) {
+                    val t = tipos[i]
+                    Column(
+                        Modifier
+                            .width(96.dp)
+                            .testTag("agregarInstrumento-$i")
+                            .semantics { contentDescription = "Agregar ${t.nombre}" }
+                            .pulsable(habilitado = Mesa.pistas.size < Mesa.MAX_PISTAS, atenuado = 0.6f) {
+                                val id = Mesa.agregarInstrumento(i)
+                                if (id > 0) Vista.abrirInstrumento = id
+                            },
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        AzulejoIcono(iconoInstrumento(i), colorInstrumento(i), 50.dp, radio = 12.dp)
+                        Spacer(Modifier.height(6.dp))
+                        Texto(t.nombre, Tipo.leyenda, p.texto, lineas = 1, alineacion = TextAlign.Center)
+                    }
                 }
+                repeat(3 - fila.size) { Spacer(Modifier.width(96.dp)) }
             }
         }
     }
+}
+
+/**
+ * Estilos: con un toque agrega varios instrumentos con ideas que suenan juntas (y, sin canción
+ * preparada, su tempo y su tonalidad). Si ya hay instrumentos, antes pregunta.
+ */
+@Composable
+private fun Estilos(preguntar: Boolean) {
+    val p = LocalPaleta.current
+    val estilos = Mesa.infoInstrumentos.estilos
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        estilos.forEachIndexed { i, e ->
+            Column(
+                Modifier
+                    .width(232.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(p.tarjeta)
+                    .testTag("estilo-$i")
+                    .semantics { contentDescription = "Estilo ${e.nombre}" }
+                    .pulsable(habilitado = Mesa.pistas.size + e.partes.size <= Mesa.MAX_PISTAS, atenuado = 0.6f) {
+                        if (preguntar) Vista.estilo = i else Mesa.agregarEstilo(i)
+                    }
+                    .padding(14.dp),
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    for (tipo in e.partes) AzulejoIcono(iconoInstrumento(tipo), colorInstrumento(tipo), 30.dp, radio = 8.dp)
+                }
+                Texto(e.nombre, Tipo.encabezado, p.texto, Modifier.padding(top = 10.dp), lineas = 1)
+                Texto("${e.bpm} BPM · ${nombreTonalidad(e.tonica, e.menor)}", Tipo.nota.numeros, p.acento, lineas = 1)
+                Texto(e.detalle, Tipo.nota, p.texto2, Modifier.padding(top = 4.dp).height(36.dp), lineas = 2)
+            }
+        }
+    }
+    PieGrupo(
+        "Cada estilo agrega sus instrumentos con ideas en los mismos acordes. Sin canción preparada, también pone su tempo " +
+            "y su tonalidad. Después cambia lo que quieras.",
+        Modifier.padding(start = 4.dp),
+    )
 }
 
 /** Elegir la tonalidad de lo que se crea (la cuadrícula muestra sus notas y el auto-tune la sigue). */

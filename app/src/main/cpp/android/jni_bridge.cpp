@@ -483,6 +483,7 @@ JNI(void, setMetronome)(JNIEnv *, jobject, jboolean on) { gStudio.setMetronome(o
 JNI(jstring, instrumentsJson)(JNIEnv *env, jobject) { return jstr(env, Studio::instrumentsJson()); }
 JNI(jfloatArray, instParamInfo)(JNIEnv *env, jobject) { return floats(env, Studio::instParamInfo()); }
 JNI(jint, addInstrument)(JNIEnv *, jobject, jint kind, jint preset) { return gStudio.addInstrument(kind, preset); }
+JNI(jint, addStyle)(JNIEnv *, jobject, jint index) { return gStudio.addStyle(index); }
 JNI(jstring, instrumentJson)(JNIEnv *env, jobject, jint id) { return jstr(env, gStudio.instrumentJson(id)); }
 JNI(jstring, instRowsJson)(JNIEnv *env, jobject, jint id, jboolean scaleOnly) {
     return jstr(env, gStudio.instRowsJson(id, scaleOnly == JNI_TRUE));

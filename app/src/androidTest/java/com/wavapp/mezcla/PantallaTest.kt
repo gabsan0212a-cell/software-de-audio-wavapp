@@ -511,6 +511,30 @@ class PantallaTest {
         regla.onNodeWithTag("instrumento-${bateria.id}").assertExists()
         regla.runOnUiThread { Mesa.quitar(bateria) }
         regla.waitUntil(5_000) { Mesa.pistas.size == 4 }
+
+        // Un estilo (Indie oscuro): todos sus instrumentos de un toque, con su tempo y tonalidad.
+        regla.onNodeWithTag("listaCrear").performScrollToKey("estilos")
+        regla.onNodeWithTag("estilo-0").performClick()
+        val partes = Mesa.infoInstrumentos.estilos[0].partes.size
+        avanzarHasta(180_000, { "el estilo no quedó listo: ${Mesa.pistas.size} pistas, ${Mesa.musica.preparando} preparando" }) {
+            Mesa.pistas.size == 4 + partes && Mesa.musica.preparando == 0
+        }
+        assertTrue("tempo ${Mesa.musica.bpm}", Mesa.musica.bpm == 85f)
+        captura("37-estilo")
+        // El piano y sus sonidos.
+        val piano = Mesa.pistas.first { it.instrumento == Nucleo.INST_PIANO }
+        regla.runOnUiThread { Mesa.instrumentoAbierto = piano.id }
+        regla.onNodeWithTag("editorInstrumento").assertIsDisplayed()
+        regla.onNodeWithText("Sonido").performClick()
+        regla.onNodeWithContentDescription("Sonido Piano oscuro").assertExists()
+        assertTrue(piano.patron?.preset == 3 && (piano.patron?.n ?: 0) > 0)
+        avanzarMedidores()
+        captura("38-piano-sonido")
+        regla.onNodeWithText("Notas").performClick()
+        regla.onNodeWithText("Listo").performClick()
+        regla.waitUntil(3_000) { Mesa.instrumentoAbierto == 0 }
+        regla.runOnUiThread { Mesa.pistas.filter { it.esInstrumento }.forEach { Mesa.quitar(it) } }
+        regla.waitUntil(5_000) { Mesa.pistas.size == 4 }
         regla.onNodeWithTag("pestana-${Vista.MEZCLA}").performClick()
         regla.waitUntil(3_000) { Vista.pestana == Vista.MEZCLA }
     }

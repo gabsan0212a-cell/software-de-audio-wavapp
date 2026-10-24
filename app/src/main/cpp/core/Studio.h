@@ -288,12 +288,16 @@ public:
     void setKey(int key, bool minor);   // la escala de la cuadrícula y del auto-tune
     void setMetronome(bool on);
     // {"tipos":[{"nombre","presets":[...],"ajustes":[...]}...],"piezas":[...],"pasoPulsos",
-    //  "pasosCompas","maxCompases","maxVeces"}
+    //  "pasosCompas","maxCompases","maxVeces","estilos":[{"nombre","detalle","bpm","tonica",
+    //  "menor","partes":[tipo...]}...]}
     static std::string instrumentsJson();
     static std::vector<float> instParamInfo();  // [mín, máx, inicial, log] por ajuste
     // Agrega un instrumento (con una idea para empezar). La pista aparece cuando su audio está
     // listo. Devuelve su id o -1 (el motivo queda en el mensaje).
     int addInstrument(int kind, int preset);
+    // Agrega todos los instrumentos de un estilo (inst::style) con ideas que suenan juntas. Sin
+    // canción preparada, también pone su tempo y su tonalidad. Devuelve el id del primero o -1.
+    int addStyle(int index);
     // {"tipo","preset","compases","veces","swing","ajustes":[...],"notas":[pulso, largo, nota,
     //  fuerza, ...],"preparando"}; "" si no es un instrumento.
     std::string instrumentJson(int id) const;
@@ -440,6 +444,8 @@ private:
     std::string renderInstrument(const inst::Part &part, double bpm, const std::string &audioDir, std::string &file,
                                  std::unique_ptr<MappedAudio> &audio, std::vector<float> &peaks);
     void jobAddInstrument(TrackModel t);
+    // "Batería", "Batería 2"... (cuenta también los que se van a agregar en `extra`).
+    std::string instNameLocked(int kind, const std::vector<TrackModel> &extra) const;
     void jobRenderInstrument(int id);
     int64_t instFileFrameLocked(const TrackModel &t, int64_t timelineFrame) const;  // -1 = no suena ahí
     void applyLoopLocked();  // repetir la vuelta del instrumento mLoopId (si se está creando)

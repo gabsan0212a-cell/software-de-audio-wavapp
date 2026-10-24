@@ -77,4 +77,26 @@ std::string keyName(int key, bool minor);  // "La menor"
 // da otras ideas.
 Pattern starter(const Sound &s, int key, bool minor, int bars, int variant);
 
+// ---------- Estilos: varios instrumentos que suenan bien juntos, con su tempo y tonalidad (se
+// agregan con un toque y después se cambia todo lo que se quiera).
+struct StylePart {
+    int kind;
+    const char *preset;
+    float volDb;
+};
+
+struct Style {
+    const char *name;
+    const char *detail;  // qué trae
+    int bpm;
+    int key;
+    bool minor;
+    int variant;  // la misma idea para todos: los acordes coinciden
+    float swing;  // el mismo en todos
+    std::vector<StylePart> parts;
+};
+
+int styleCount();
+const Style &style(int index);
+
 }  // namespace inst

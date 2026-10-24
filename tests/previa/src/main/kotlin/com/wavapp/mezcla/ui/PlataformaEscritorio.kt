@@ -6,10 +6,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asComposeImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import org.jetbrains.skia.Bitmap
 import org.jetbrains.skia.ColorAlphaType
 import org.jetbrains.skia.ColorType
+import org.jetbrains.skia.Image
 import org.jetbrains.skia.ImageInfo
+import java.io.File
 
 // Versión de escritorio de Plataforma.kt (solo para la vista previa).
 
@@ -36,6 +39,14 @@ var errorDePrueba by mutableStateOf<String?>(null)
 
 @Composable
 internal fun recordarUltimoError(): UltimoError = UltimoError(errorDePrueba) { errorDePrueba = null }
+
+// La misma imagen que la app (se corre desde tests/previa).
+private val portada: ImageBitmap by lazy {
+    Image.makeFromEncoded(File("../../app/src/main/res/drawable-nodpi/portada.webp").readBytes()).toComposeImageBitmap()
+}
+
+@Composable
+internal fun imagenPortada(): ImageBitmap = portada
 
 internal fun imagenDePixeles(px: IntArray, ancho: Int, alto: Int): ImageBitmap {
     val bmp = Bitmap()

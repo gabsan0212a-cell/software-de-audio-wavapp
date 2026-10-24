@@ -22,7 +22,7 @@ fun HojaExportar(visible: Boolean, alCerrar: () -> Unit, alGuardar: () -> Unit) 
     ) {
         val p = LocalPaleta.current
         Row(Modifier.padding(start = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Mosaico(Mesa.pistas, 56.dp, radio = 8.dp)
+            PortadaApp(56.dp, radio = 8.dp)
             Column(Modifier.padding(start = 14.dp)) {
                 Texto("Mezcla", Tipo.encabezado, p.texto, lineas = 1)
                 val n = Mesa.pistas.size

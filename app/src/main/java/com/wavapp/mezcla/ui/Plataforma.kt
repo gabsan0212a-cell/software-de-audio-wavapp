@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -25,10 +26,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import com.wavapp.mezcla.Errores
 import com.wavapp.mezcla.Mesa
+import com.wavapp.mezcla.R
 
 // Lo que obliga Android (y nada más): botón "atrás", pantalla encendida, selector de archivos,
-// color de los íconos de la barra de estado, imágenes desde píxeles, permisos (micrófono y
-// avisos) y qué entradas y salidas de audio hay conectadas.
+// color de los íconos de la barra de estado, la portada, imágenes desde píxeles, permisos
+// (micrófono y avisos) y qué entradas y salidas de audio hay conectadas.
 
 @Composable
 internal fun AlRegresar(activo: Boolean, accion: () -> Unit) = BackHandler(activo, accion)
@@ -116,6 +118,21 @@ internal fun recordarUltimoError(): UltimoError {
         Errores.borrar(context)
         texto = null
     }
+}
+
+/** La portada de la app (res/drawable-nodpi/portada.webp), una sola vez. */
+@Composable
+internal fun imagenPortada(): ImageBitmap {
+    val context = LocalContext.current
+    return remember { portada ?: cargarPortada(context).also { portada = it } }
+}
+
+private var portada: ImageBitmap? = null
+
+private fun cargarPortada(context: Context): ImageBitmap {
+    val bmp = BitmapFactory.decodeResource(context.resources, R.drawable.portada) ?: return ImageBitmap(1, 1)
+    bmp.setHasMipMap(true)  // en chico (el mini reproductor) las líneas finas no se cortan
+    return bmp.asImageBitmap()
 }
 
 /** Imagen a partir de píxeles ARGB (el espectrograma). */

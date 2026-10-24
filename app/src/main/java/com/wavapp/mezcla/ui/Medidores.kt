@@ -1,12 +1,10 @@
 package com.wavapp.mezcla.ui
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -24,10 +22,12 @@ import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -275,32 +275,11 @@ fun Portada(numero: Int, color: Color, lado: Dp, modifier: Modifier = Modifier, 
     }
 }
 
-/** Portada de la mezcla: mosaico de 2×2 con las primeras pistas (como las listas de Apple Music). */
+/** La portada de la app (la imagen de tools/portada): la de la mezcla en los reproductores y al exportar. */
 @Composable
-fun Mosaico(pistas: List<Pista>, lado: Dp, modifier: Modifier = Modifier, radio: Dp = 8.dp, nombres: Boolean = false) {
-    val p = LocalPaleta.current
-    Box(modifier.size(lado).clip(RoundedCornerShape(radio))) {
-        when {
-            pistas.isEmpty() -> Box(
-                Modifier.fillMaxSize().background(
-                    Brush.linearGradient(listOf(lerp(p.acento, Color.White, 0.2f), lerp(p.acento, Color.Black, 0.25f))),
-                ),
-                contentAlignment = Alignment.Center,
-            ) { Icono(Iconos.nota, Color.White, tamano = lado * 0.46f) }
-            pistas.size < 4 -> {
-                val a = pistas[0]
-                Portada(a.id, p.pistas[a.color], lado, radio = 0.dp, nombre = if (nombres) a.nombre else null)
-            }
-            else -> Column {
-                for (fila in 0..1) {
-                    Row {
-                        for (col in 0..1) {
-                            val t = pistas[fila * 2 + col]
-                            Portada(t.id, p.pistas[t.color], lado / 2, radio = 0.dp, nombre = if (nombres) t.nombre else null)
-                        }
-                    }
-                }
-            }
-        }
-    }
+fun PortadaApp(lado: Dp, modifier: Modifier = Modifier, radio: Dp = 8.dp) {
+    Image(
+        imagenPortada(), null, modifier.size(lado).clip(RoundedCornerShape(radio)),
+        contentScale = ContentScale.Crop, filterQuality = FilterQuality.High,
+    )
 }

@@ -112,6 +112,9 @@ class Fila(val nota: Int, val nombre: String, val tonica: Boolean, val enEscala:
 /** Un tipo de instrumento: su nombre, sus presets y qué ajustes usa (vienen del núcleo). */
 class TipoInstrumento(val nombre: String, val presets: List<String>, val ajustes: List<Int>, val inicio: Int)
 
+/** Un estilo: varios instrumentos que suenan juntos, con su tempo y tonalidad (vienen del núcleo). */
+class Estilo(val nombre: String, val detalle: String, val bpm: Int, val tonica: Int, val menor: Boolean, val partes: List<Int>)
+
 /** Lo que el núcleo sabe de los instrumentos (no cambia). */
 class InfoInstrumentos(
     val tipos: List<TipoInstrumento>,
@@ -120,6 +123,7 @@ class InfoInstrumentos(
     val pasosCompas: Int,
     val maxCompases: Int,
     val maxVeces: Int,
+    val estilos: List<Estilo>,
 )
 
 /** La música que se crea: tempo, tonalidad y metrónomo, como los tiene el núcleo. */
@@ -420,6 +424,16 @@ object Mesa {
             },
             lista(o.getJSONArray("piezas")), o.optInt("pasoPulsos", 24), o.optInt("pasosCompas", 16),
             o.optInt("maxCompases", 16), o.optInt("maxVeces", 64),
+            o.optJSONArray("estilos")?.let { e ->
+                List(e.length()) {
+                    val x = e.getJSONObject(it)
+                    val p = x.getJSONArray("partes")
+                    Estilo(
+                        x.getString("nombre"), x.optString("detalle"), x.optInt("bpm"), x.optInt("tonica"),
+                        x.optBoolean("menor"), List(p.length()) { k -> p.getInt(k) },
+                    )
+                }
+            } ?: emptyList(),
         )
     }
     val infoAjustesInst: FloatArray by lazy { Nucleo.instParamInfo() }
@@ -819,6 +833,12 @@ object Mesa {
     /** Agrega un instrumento (el núcleo lo prepara con una idea para empezar). Devuelve su id o -1. */
     fun agregarInstrumento(tipo: Int, preset: Int = 0): Int {
         val id = Nucleo.addInstrument(tipo, preset)
+        sincronizar()
+        return id
+    }
+    /** Agrega los instrumentos de un estilo. Devuelve el id del primero o -1. */
+    fun agregarEstilo(indice: Int): Int {
+        val id = Nucleo.addStyle(indice)
         sincronizar()
         return id
     }

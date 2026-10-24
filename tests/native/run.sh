@@ -25,7 +25,7 @@ $CXX $FLAGS -fsanitize=thread $FILES -o "$OUT/tests-tsan" -lpthread
 if [ "$#" -eq 0 ]; then
     "$OUT/tests-tsan" concurrencia concurrenciaEstudio concurrenciaEntrada hilosReparten separadorMini \
         separadorSigueDondeQuedo estudioSepararVoz grabadorDePresentacion estudioPresentacion estudioInstrumentos \
-        tocarEnVivo
+        tocarEnVivo estilos
 else
     "$OUT/tests-tsan" "$@"
 fi

@@ -552,6 +552,56 @@ fun main(args: Array<String>) {
             Vista.efectos = null
             esperar(500)
         }
+        if (quiere("estilos")) {
+            // Empezar con un estilo (Indie oscuro): todos sus instrumentos de un toque, el piano y
+            // sus ajustes nuevos (movimiento y ambiente), y la pregunta cuando ya hay instrumentos.
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            Nucleo.clearProject()
+            Mesa.sincronizar()
+            Mesa.instrumentoAbierto = 0
+            Vista.abrirInstrumento = 0
+            Vista.pestana = Vista.CREAR
+            esperar(700)
+            foto("60-crear-estilos")
+            rueda(600f, 12)
+            esperar(700)
+            foto("60b-tarjetas-estilos", ambos = false)
+            rueda(600f, -12)
+            esperar(300)
+            val primero = Mesa.agregarEstilo(0)
+            hasta(60_000, "estilo listo") {
+                Mesa.pistas.size == Mesa.infoInstrumentos.estilos[0].partes.size && Mesa.musica.preparando == 0
+            }
+            println("estilo: ${Mesa.pistas.joinToString { it.nombre }} · ${Mesa.musica.bpm} BPM")
+            esperar(800)
+            foto("61-estilo-indie")
+            val piano = Mesa.pistas.first { it.instrumento == Nucleo.INST_PIANO }
+            Mesa.instrumentoAbierto = piano.id
+            com.wavapp.mezcla.ui.EditorVista.modo = 0
+            Mesa.saltar(0.0)
+            if (!Mesa.reproduciendo) Mesa.reproducirPausar()
+            esperar(1500)
+            foto("62-piano-notas")
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            com.wavapp.mezcla.ui.EditorVista.modo = 2
+            esperar(700)
+            foto("63-piano-sonido")
+            Mesa.instrumentoAbierto = Mesa.pistas.first { it.instrumento == Nucleo.INST_GUITARRA }.id
+            com.wavapp.mezcla.ui.EditorVista.modo = 0
+            esperar(800)
+            foto("64-guitarra-sonadora", ambos = false)
+            Mesa.instrumentoAbierto = 0
+            esperar(500)
+            Vista.estilo = 1
+            esperar(600)
+            foto("65-estilo-pregunta", ambos = false)
+            Vista.estilo = -1
+            esperar(400)
+            Vista.pestana = Vista.MEZCLA
+            esperar(700)
+            foto("66-mezcla-portada")
+            println("primer instrumento del estilo: $primero")
+        }
         if (quiere("vacio")) {
             if (Mesa.reproduciendo) Mesa.reproducirPausar()
             Nucleo.clearProject()

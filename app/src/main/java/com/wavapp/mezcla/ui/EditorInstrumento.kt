@@ -576,6 +576,8 @@ private fun Sonido(p: Pista) {
                 Nucleo.INST_DURACION -> "Duración" to { v: Float -> String.format(Locale.US, "×%.2f", v) }
                 Nucleo.INST_DISTORSION -> "Distorsión" to { v: Float -> "${(v * 100).roundToInt()} %" }
                 Nucleo.INST_DESLIZAR -> "Deslizar entre notas" to { v: Float -> "${(v * 100).roundToInt()} %" }
+                Nucleo.INST_MOVIMIENTO -> "Movimiento" to { v: Float -> (if (v > 0.005f) "+" else "") + "${(v * 100).roundToInt()} %".replace('-', '−') }
+                Nucleo.INST_AMBIENTE -> "Ambiente" to { v: Float -> (if (v > 0.005f) "+" else "") + "${(v * 100).roundToInt()} %".replace('-', '−') }
                 else -> "Afinación" to { v: Float -> (if (v > 0.5f) "+" else "") + "${v.roundToInt()} st".replace('-', '−') }
             }
             AjusteInst(p, pat, a, etiqueta, texto)
@@ -584,8 +586,10 @@ private fun Sonido(p: Pista) {
     PieGrupo(
         when (p.instrumento) {
             Nucleo.INST_808 -> "Deja dos notas encimadas para que una se deslice a la otra (con \"Deslizar\"). La distorsión hace que se oiga en bocinas chicas."
-            Nucleo.INST_GUITARRA -> "Los acordes suenan rasgueados (una cuerda tras otra). La distorsión es la del amplificador."
-            Nucleo.INST_BATERIA -> "Afinación sube o baja toda la batería; Duración alarga o acorta cada golpe."
+            Nucleo.INST_GUITARRA -> "Los acordes suenan rasgueados (una cuerda tras otra). La distorsión es la del amplificador; " +
+                "Movimiento es su chorus o trémolo y Ambiente su reverb."
+            Nucleo.INST_BATERIA -> "Afinación sube o baja toda la batería; Duración alarga o acorta cada golpe; Ambiente es la sala."
+            Nucleo.INST_PIANO -> "Toca fuerte o suave: el martillo saca más o menos brillo. Al soltar, el apagador calla la nota."
             else -> "Cambia el sonido sin perder las notas: cada cambio se vuelve a preparar al momento."
         },
     )

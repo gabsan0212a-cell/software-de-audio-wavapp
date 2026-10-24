@@ -21,10 +21,23 @@ struct DrumPatch {
     float pan;           // -1 .. 1
 };
 
+// ---------- Efectos dentro del instrumento: movimiento y ambiente (los ajustes "Movimiento" y
+// "Ambiente" los suben o los bajan).
+enum ModType : int { modNone = 0, modChorus, modTremolo, modVibrato };
+
+struct FxPatch {
+    int mod;         // el tipo de movimiento (sin tipo, "Movimiento" agrega chorus)
+    float modDepth;  // 0..1
+    float modHz;     // 0 = la velocidad de cada tipo
+    float space;     // 0..1: cuánta reverb
+    float spaceS;    // T60 de la reverb (0 = 1.8 s)
+};
+
 struct Kit {
     const char *name;
     DrumPatch piece[8];
     float lowpassHz;  // 0 = sin filtro (lo-fi: más oscuro)
+    FxPatch fx;       // la sala
 };
 
 // ---------- 808: un seno con golpe de afinación, larga caída y saturación.
@@ -81,14 +94,32 @@ struct SynthPatch {
     float glideMs;
 };
 
+// ---------- Piano: cada nota es una suma de parciales (un poco desafinados hacia arriba, como
+// las cuerdas de verdad) que se apagan solos, los agudos antes; una segunda cuerda desafinada
+// apenas da el batimiento y la cola larga; el martillo suma su golpe.
+struct PianoPatch {
+    float t60;        // s que suena un Do4 (los graves más, los agudos menos)
+    float bright;     // 0..1: cuántos armónicos saca el martillo
+    float strike;     // dónde golpea el martillo (fracción de la cuerda)
+    float detune;     // cents entre las cuerdas de una nota
+    float unison;     // 0..1: nivel de la segunda cuerda
+    float thump;      // 0..1: el golpe del martillo y la mecánica
+    float releaseS;   // al soltar (el apagador)
+    float inharm;     // qué tan estiradas (metálicas) suenan
+    float lowpassHz;  // 0 = sin filtro
+    float gain;
+};
+
 // Un preset de un instrumento melódico: qué motor usa y sus datos.
-enum Voicing : int { vSynth = 0, vString, vBoom };
+enum Voicing : int { vSynth = 0, vString, vBoom, vPiano };
 struct MelodicPreset {
     const char *name;
     int voicing;
     SynthPatch synth;
     StringPatch str;
     BoomPatch boom;
+    PianoPatch piano;
+    FxPatch fx;
 };
 
 const Kit &kit(int preset);

@@ -10,8 +10,10 @@ La versión web ("Mesa de Audio") es el prototipo de referencia: la app nativa c
 comportamiento (volumen, paneo, limitador, medidores, análisis, edición).
 
 La pantalla tiene el estilo de Apple Music con toques de estudio (como GarageBand): pestañas
-abajo (Mezcla, Grabar, Editar, Análisis), mini reproductor que se abre a pantalla completa, títulos
-grandes, acento rojo, colores por pista y regiones de color. Claro u oscuro según el celular.
+abajo (Mezcla, Crear, Grabar, Editar, Análisis), mini reproductor que se abre a pantalla completa,
+títulos grandes, acento rojo, colores por pista y regiones de color. Claro u oscuro según el
+celular. La portada (la onda que forma un círculo) es el ícono, la pantalla al abrir y la portada
+de la mezcla en los reproductores.
 
 ## Cómo instalar en el celular
 1. Cada push compila y prueba solo (pestaña **Actions**).
@@ -80,6 +82,15 @@ internet).
 - [x] 15. Los efectos de la voz en vivo también en las pistas grabadas (botón FX → **Voz**): auto-tune
       (sin retraso: la voz queda en su lugar), quitar graves, compuerta, de-esser y doblaje, con
       presets ("Voz con auto-tune", "Voz trap (robot)"...)
+- [x] 16. Más instrumentos con "Daddy Issues" (The Neighbourhood) de referencia (1.3.0): **piano**
+      (de cola, vertical, suave, oscuro y viejo: parciales que se apagan solos, martillo y
+      apagador), guitarras **soñadora** (chorus y mucha reverb), **con trémolo** e **indie**, bajo
+      indie, pad oscuro, atmósfera, lead soñador y la batería **Indie / alternativo** (en una sala,
+      con pandereta). Dos ajustes nuevos en todos: **Movimiento** (chorus, trémolo o vibrato) y
+      **Ambiente** (reverb), dentro del instrumento: suena igual al tocarlo que en la pista.
+      **Estilos** de un toque: "Indie oscuro" (85 BPM, Sol menor: guitarra que flota, bajo, piano,
+      pad y batería), "Trap", "Reggaetón" y "Lo-fi", con ideas en los mismos acordes. La imagen de
+      la portada como ícono de la app
 
 Sin plugins VST en Android.
 
@@ -99,6 +110,9 @@ Sin plugins VST en Android.
 6. **Guardar** deja la presentación en el teléfono como WAV (con el formato de exportar).
 
 ## Cómo crear un beat
+0. Lo más rápido: en **Empezar con un estilo** toca **Indie oscuro** (como "Daddy Issues": lento,
+   en menor, guitarra limpia que flota, piano opaco y batería en una sala). Llegan todos los
+   instrumentos sonando juntos; después cambia lo que quieras.
 1. Pestaña **Crear**: elige el **tempo** y la **tonalidad** (por omisión 90 BPM y La menor; con una
    canción preparada se usan los suyos).
 2. Toca un instrumento en **Agregar instrumento** (por ejemplo la batería): llega con una idea que
@@ -106,8 +120,9 @@ Sin plugins VST en Android.
 3. **Notas**: toca un cuadro para poner o quitar una nota; en la batería deja el dedo para un
    redoble (hi-hats del trap). En los melódicos elige el largo (1/16 a 1 compás) y **Acordes**.
 4. **Tocar**: pads para probar; con **Grabar notas** lo que toques entra al patrón mientras suena.
-5. **Sonido**: el preset y los ajustes (brillo, duración, distorsión, deslizar, afinación).
-6. Suma 808, bajo, guitarra o sintetizador igual; después graba tu voz en **Grabar** y exporta.
+5. **Sonido**: el preset y los ajustes (brillo, duración, distorsión, deslizar, afinación,
+   movimiento y ambiente).
+6. Suma 808, bajo, guitarra, sintetizador o piano igual; después graba tu voz en **Grabar** y exporta.
 
 ## Cómo está hecho
 - `app/src/main/cpp/core/`: **el núcleo**, C++17 sin nada de Android (se prueba en Linux).
@@ -133,9 +148,10 @@ Sin plugins VST en Android.
     fundidos, cortar, imán).
   - `inst/`: crear música. `Instruments` (los presets) y `Engine` (la síntesis: batería con tonos y
     ruido filtrado, 808 con golpe y saturación, cuerdas Karplus-Strong para guitarras y bajo,
-    sintetizador de resta, FM y órgano), `Pattern` (notas en pulsos, ideas para empezar, filas de
-    la escala; una vuelta se renderiza una vez y las repeticiones suman su cola) y `Live` (tocar en
-    vivo: cola sin bloqueos hacia el hilo de audio). `StudioCrear.cpp`: las pistas de instrumento se
+    sintetizador de resta, FM y órgano, piano con parciales que se apagan solos; al final
+    movimiento y ambiente con `dsp/Delay` y `dsp/Reverb`), `Pattern` (notas en pulsos, ideas para
+    empezar, estilos, filas de la escala; una vuelta se renderiza una vez y las repeticiones suman
+    su cola) y `Live` (tocar en vivo: cola sin bloqueos hacia el hilo de audio). `StudioCrear.cpp`: las pistas de instrumento se
     renderizan en otro hilo a un WAV y `Mixer::replaceAudio` cambia el archivo sin cortes; tempo,
     tonalidad, metrónomo y repetir el patrón.
   - `sep/`: quitar la voz. `ModelFile` (el modelo `.wvm`, mapeado en memoria directo del APK),
@@ -152,6 +168,8 @@ Sin plugins VST en Android.
     presets). `dsp/DriftFifo` une el reloj de la entrada (p. ej. un micrófono USB) con el de la
     salida sin cortes.
 - `app/src/main/cpp/third_party/eigen/`: Eigen 3.4 (álgebra lineal, licencia MPL2).
+- `tools/portada/`: la imagen original y `hacer_portada.py`, que hace el ícono (capas del ícono
+  adaptativo y el de un color), la pantalla al abrir y `res/drawable-nodpi/portada.webp`.
 - `tools/modelos/` y `.github/workflows/modelos.yml`: convierten el modelo original (PyTorch) al
   formato `.wvm` y generan las referencias con las que se compara el C++; se publican en
   Releases → `modelos`. El código de terceros corre en un trabajo sin permisos de escritura, con
@@ -175,7 +193,7 @@ Sin plugins VST en Android.
     cantar en vivo), `CrearTab.kt` (la pestaña Crear y la tonalidad) y `EditorInstrumento.kt`
     (cuadrícula de notas, pads y sonido).
   - `Plataforma.kt`: lo único que obliga Android en la pantalla (atrás, pantalla encendida,
-    selector de archivos, barra de estado).
+    selector de archivos, barra de estado, cargar la portada).
   - `Errores.kt` y `android/Fallas.cpp`: si la app se cierra por un error (de la pantalla o del
     núcleo), queda anotado y la próxima vez la app ofrece copiarlo para mandarlo.
   - `src/main/baseline-prof.txt` + `profileinstaller`: Android precompila la pantalla al instalar.

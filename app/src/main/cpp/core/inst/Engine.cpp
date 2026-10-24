@@ -3,6 +3,8 @@
 #include <cstring>
 #include <vector>
 
+#include "dsp/Delay.h"
+#include "dsp/Reverb.h"
 #include "inst/Instruments.h"
 #include "inst/Patches.h"
 
@@ -10,6 +12,7 @@ namespace inst {
 
 namespace {
 
+constexpr double kPi = 3.141592653589793;
 constexpr double kTwoPi = 6.283185307179586;
 constexpr int kStringBuf = 4096;  // cuadros por cuerda: alcanza para notas de ~12 Hz
 constexpr int kControl = 16;      // los filtros del sintetizador se recalculan cada 16 muestras
@@ -239,6 +242,13 @@ struct Voice {
     int64_t w = 0;
     double delay = 0;
     float S = 0.5f, rho = 0.99f, rhoMute = 0.9f, rhoNow = 0.99f, dcX = 0, dcY = 0, peak = 0;
+    // Piano: cada parcial es un número complejo que gira (su tono) y se achica (se apaga solo).
+    static constexpr int kPartials = 40, kSecond = 8;
+    int np = 0, nq = 0;  // parciales que todavía suenan (de la primera y la segunda cuerda)
+    bool damped = false;
+    float thump = 0;
+    float zr[kPartials], zi[kPartials], cr[kPartials], ci[kPartials];
+    float qr[kSecond], qi[kSecond], dr[kSecond], di[kSecond];
 };
 
 struct Engine::Impl {
@@ -257,10 +267,21 @@ struct Engine::Impl {
     BQ toneL, toneR, lpL, lpR, b1L, b1R, b2L, b2R, b3L, b3R, cab1L, cab1R, cab2L, cab2R, cabHL, cabHR, midL, midR;
     bool toneOn = false, lpOn = false, bodyOn = false, cabOn = false;
     float driveGain = 0, outGain = 1;
+    // Movimiento (chorus, trémolo o vibrato) y ambiente (reverb), al final.
+    int modType = modNone;
+    float modDepth = 0, modHz = 1, space = 0;
+    double modPh = 0;
+    DelayLine chL, chR;
+    Reverb reverb;
+    ReverbSettings rv;
+    int64_t tail = 0;  // cuadros que todavía suena la cola después de la última nota
 
     explicit Impl(int rate) : sr(rate), strings(static_cast<size_t>(kVoices) * kStringBuf, 0.0f) {
         for (int i = 0; i < kVoices; ++i) v[i].buf = strings.data() + static_cast<size_t>(i) * kStringBuf;
         (void)sineTable();
+        chL.allocate(static_cast<int>(0.03 * rate) + 4);
+        chR.allocate(static_cast<int>(0.03 * rate) + 4);
+        reverb.allocate(rate);
     }
 
     float rate() const { return static_cast<float>(sr); }
@@ -299,6 +320,14 @@ struct Engine::Impl {
                 lpL.set(BQ::kLP, mp.boom.toneHz, 0.7, 0, sr);
                 lpR = lpL;
                 outGain = mp.boom.gain;
+            } else if (voicing == vPiano) {
+                driveGain = drive * 6.0f;
+                outGain = mp.piano.gain;
+                if (mp.piano.lowpassHz > 0) {
+                    lpOn = true;
+                    lpL.set(BQ::kLP, mp.piano.lowpassHz, 0.7, 0, sr);
+                    lpR = lpL;
+                }
             } else {
                 const StringPatch &st = mp.str;
                 if (st.body > 0) {
@@ -335,12 +364,45 @@ struct Engine::Impl {
             toneL.set(BQ::kHighShelf, 2500, 0.7, tone * 8.0, sr);
         }
         toneR = toneL;
+        configureFx(kind == kDrums ? kit.fx : mp.fx, p);
+    }
+
+    void configureFx(const FxPatch &base, const Values &p) {
+        const int oldMod = modType;
+        const float oldSpace = space;
+        const bool modOk = kind != kDrums && kind != k808;
+        modDepth = modOk ? std::clamp(base.modDepth + p[kMod], 0.0f, 1.0f) : 0.0f;
+        modType = modDepth < 0.005f ? modNone : base.mod != modNone ? base.mod : modChorus;
+        modHz = base.modHz > 0 ? base.modHz : modType == modChorus ? 0.8f : 5.0f;
+        space = kind != k808 ? std::clamp(base.space + p[kSpace], 0.0f, 1.0f) : 0.0f;
+        if (space < 0.005f) space = 0;
+        rv.decayS = base.spaceS > 0 ? base.spaceS : 1.8f;
+        rv.toneHz = 6500.0f;
+        rv.predelayMs = kind == kDrums ? 8.0f : 22.0f;
+        // Lo que quedó en las memorias de antes no debe sonar al volver a prenderlas.
+        if (oldMod == modNone && modType != modNone) {
+            chL.restart();
+            chR.restart();
+        }
+        if (oldSpace <= 0 && space > 0) reverb.restart();
+    }
+
+    int64_t tailFrames() const {
+        int64_t t = 0;
+        if (space > 0) t += static_cast<int64_t>((rv.decayS * 1.3f + rv.predelayMs * 0.001f) * rate());
+        if (modType == modChorus || modType == modVibrato) t += sr / 50;
+        return t;
     }
 
     void resetPost() {
         for (BQ *b : {&toneL, &toneR, &lpL, &lpR, &b1L, &b1R, &b2L, &b2R, &b3L, &b3R, &cab1L, &cab1R, &cab2L, &cab2R,
                       &cabHL, &cabHR, &midL, &midR})
             b->reset();
+        chL.restart();
+        chR.restart();
+        reverb.restart();
+        modPh = 0;
+        tail = 0;
     }
 
     // ---------------------------------------------------------------- notas
@@ -471,9 +533,72 @@ struct Engine::Impl {
                 for (int k = 0; k < 8; ++k) x.ph[k] = static_cast<double>(rnd(x.rng) * 0.5f + 0.5f);
             }
             x.pan = p.mode == mSub ? 0.0f : std::clamp((pitch - 60) / 36.0f, -1.0f, 1.0f) * p.spread;
+        } else if (voicing == vPiano) {
+            startPiano(x, pitch, vel);
         } else {
             startString(x, pitch, vel);
         }
+    }
+
+    void startPiano(Voice &x, int pitch, float vel) {
+        const PianoPatch &pp = mp.piano;
+        const double f0 = midiHz(pitch + tune);
+        // Las cuerdas agudas son más rígidas: sus armónicos suben un poco más (estiramiento).
+        const double B = 1.4e-4 * pp.inharm * std::exp2((pitch - 60) / 14.0);
+        const double bright = std::clamp(pp.bright + tone * 0.35f, 0.0f, 1.0f);
+        // Un golpe suave saca menos armónicos.
+        const double tilt = std::max(0.6, 2.2 - 1.1 * bright - 0.6 * vel);
+        const double fc = 1200.0 + 7000.0 * bright * (0.35 + 0.65 * vel);
+        const double t60 = std::clamp(pp.t60 * std::pow(261.63 / f0, 0.55), 0.4, 30.0) * decayMul;
+        const double s1 = 6.91 / t60;
+        const double maxHz = std::min(0.45 * sr, 15000.0);
+        const double uni = std::clamp(static_cast<double>(pp.unison), 0.0, 1.0);
+        const double det = std::exp2(pp.detune / 1200.0);
+        auto loss = [&](int k, double fk) { return s1 * (1.0 + 0.12 * (k - 1)) + 2.4e-7 * fk * fk; };
+        double amp[Voice::kPartials];
+        double sum2 = 0;
+        int n = 0;
+        for (int k = 1; k <= Voice::kPartials; ++k) {
+            const double fk = k * f0 * std::sqrt(1.0 + B * k * k);
+            if (fk >= maxHz) break;
+            // Donde golpea el martillo faltan algunos armónicos (los que tienen un nodo ahí).
+            const double a = (std::fabs(std::sin(kPi * k * pp.strike)) + 0.06) * std::pow(k, -tilt) * std::exp(-fk / fc);
+            const double rr = std::exp(-loss(k, fk) / sr), w = kTwoPi * fk / sr;
+            x.cr[n] = static_cast<float>(rr * std::cos(w));
+            x.ci[n] = static_cast<float>(rr * std::sin(w));
+            amp[n] = a;
+            sum2 += a * a;
+            ++n;
+        }
+        x.np = n;
+        x.nq = std::min(n, Voice::kSecond);
+        // La segunda cuerda, desafinada apenas: batimiento y la cola larga (se apaga más lento).
+        for (int j = 0; j < x.nq; ++j) {
+            const int k = j + 1;
+            const double fk = k * f0 * std::sqrt(1.0 + B * k * k) * det;
+            const double rr = std::exp(-0.45 * loss(k, fk) / sr), w = kTwoPi * fk / sr;
+            x.dr[j] = static_cast<float>(rr * std::cos(w));
+            x.di[j] = static_cast<float>(rr * std::sin(w));
+        }
+        const double level = (0.18 + 0.82 * std::pow(vel, 1.4)) / std::sqrt(std::max(1e-12, sum2));
+        for (int j = 0; j < n; ++j) {
+            x.zr[j] = static_cast<float>(amp[j] * level * (j < x.nq ? 1.0 - 0.35 * uni : 1.0));
+            x.zi[j] = 0;
+        }
+        for (int j = 0; j < x.nq; ++j) {
+            x.qr[j] = static_cast<float>(amp[j] * level * uni * 0.8);
+            x.qi[j] = 0;
+        }
+        x.damped = false;
+        x.pan = std::clamp((pitch - 60) / 42.0f, -1.0f, 1.0f) * 0.45f;
+        // El martillo: un golpe corto de ruido (más brillante si se toca fuerte).
+        x.thump = static_cast<float>(pp.thump * 0.3 * level * std::sqrt(sum2) * (0.3 + 0.7 * vel));
+        x.envNoise = 1.0f;
+        x.kNoise = std::exp(-1.0f / (0.010f * rate()));
+        x.f1.set(BQ::kLP, 250.0 + 2200.0 * vel * (0.4 + bright), 0.7, 0, sr);
+        x.attack = 0.0f;
+        x.kAttack = 1.0f / std::max(1.0f, (0.0012f + attack * 0.4f) * rate());
+        x.peak = 1;
     }
 
     void startString(Voice &x, int pitch, float vel) {
@@ -780,17 +905,139 @@ struct Engine::Impl {
         if (x.peak < kSilent && x.t > sr / 20) x.on = false;
     }
 
+    void renderPiano(Voice &x, float *l, float *r, int n) {
+        const PianoPatch &pp = mp.piano;
+        // Al soltar, el apagador calla la cuerda (las más agudas no tienen apagador).
+        if (!x.held && !x.damped && x.pitch < 89) {
+            const float k = std::exp(-6.91f / std::max(1.0f, pp.releaseS * decayMul * rate()));
+            for (int j = 0; j < x.np; ++j) {
+                x.cr[j] *= k;
+                x.ci[j] *= k;
+            }
+            for (int j = 0; j < x.nq; ++j) {
+                x.dr[j] *= k;
+                x.di[j] *= k;
+            }
+            x.damped = true;
+        }
+        const float gl = balanceL(x.pan), gr = balanceR(x.pan);
+        constexpr int kChunk = 64;
+        float acc[kChunk];
+        float peak = 0;
+        for (int i0 = 0; i0 < n; i0 += kChunk) {
+            const int m = std::min(kChunk, n - i0);
+            std::fill(acc, acc + m, 0.0f);
+            // Cada parcial en su propio ciclo: su estado se queda en registros.
+            for (int j = 0; j < x.np; ++j) {
+                float a = x.zr[j], b = x.zi[j];
+                const float c = x.cr[j], d = x.ci[j];
+                for (int i = 0; i < m; ++i) {
+                    const float na = a * c - b * d;
+                    b = a * d + b * c;
+                    a = na;
+                    acc[i] += b;
+                }
+                x.zr[j] = a;
+                x.zi[j] = b;
+            }
+            for (int j = 0; j < x.nq; ++j) {
+                float a = x.qr[j], b = x.qi[j];
+                const float c = x.dr[j], d = x.di[j];
+                for (int i = 0; i < m; ++i) {
+                    const float na = a * c - b * d;
+                    b = a * d + b * c;
+                    a = na;
+                    acc[i] += b;
+                }
+                x.qr[j] = a;
+                x.qi[j] = b;
+            }
+            for (int i = 0; i < m; ++i) {
+                float s = acc[i];
+                if (x.envNoise > kSilent) {
+                    s += x.f1.run(rnd(x.rng)) * x.envNoise * x.thump;
+                    x.envNoise *= x.kNoise;
+                }
+                x.attack = std::min(1.0f, x.attack + x.kAttack);
+                s *= x.attack;
+                l[i0 + i] += s * gl;
+                r[i0 + i] += s * gr;
+                peak = std::max(peak, std::fabs(s));
+                ++x.t;
+            }
+        }
+        // Los parciales de arriba que ya se apagaron dejan de calcularse.
+        auto quiet = [](float a, float b) { return std::fabs(a) + std::fabs(b) < 1e-6f; };
+        while (x.np > 0 && quiet(x.zr[x.np - 1], x.zi[x.np - 1])) --x.np;
+        while (x.nq > 0 && quiet(x.qr[x.nq - 1], x.qi[x.nq - 1])) --x.nq;
+        x.f1.flush();
+        x.peak = std::max(peak, x.peak * 0.5f);
+        if (x.peak < kSilent && x.t > sr / 20) x.on = false;
+    }
+
     void render(float *l, float *r, int n) {
         std::fill(l, l + n, 0.0f);
         std::fill(r, r + n, 0.0f);
+        bool any = false;
         for (Voice &x : v) {
             if (!x.on) continue;
+            any = true;
             if (kind == kDrums) renderDrum(x, l, r, n);
             else if (voicing == vBoom) renderBoom(x, l, r, n);
             else if (voicing == vSynth) renderSynth(x, l, r, n);
+            else if (voicing == vPiano) renderPiano(x, l, r, n);
             else renderString(x, l, r, n);
         }
         post(l, r, n);
+        tail = any ? tailFrames() : std::max<int64_t>(0, tail - n);
+    }
+
+    // Movimiento: trémolo (volumen que sube y baja), chorus (copias que se mueven, más ancho) o
+    // vibrato (solo la copia que se mueve: la afinación ondula).
+    void modulate(float *l, float *r, int n) {
+        if (modType == modNone) return;
+        const double inc = modHz / sr;
+        if (modType == modTremolo) {
+            for (int i = 0; i < n; ++i) {
+                modPh += inc;
+                if (modPh >= 1.0) modPh -= 1.0;
+                const float g = 1.0f - 0.85f * modDepth * (0.5f + 0.5f * sine01(modPh));
+                l[i] *= g;
+                r[i] *= g;
+            }
+            return;
+        }
+        const bool vib = modType == modVibrato;
+        const float base = (vib ? 0.006f : 0.011f) * rate();
+        // El vibrato mueve la afinación lo mismo a cualquier velocidad (±1/3 de semitono como máximo).
+        const float depth = std::min(base - 2.0f, (vib ? 0.0006f * 5.0f / modHz : 0.003f) * modDepth * rate());
+        const float mix = std::min(1.0f, modDepth * 1.6f);
+        const float wet = vib ? 1.0f : 0.55f * mix, dry = vib ? 0.0f : 1.0f - 0.3f * mix;
+        for (int i = 0; i < n; ++i) {
+            modPh += inc;
+            if (modPh >= 1.0) modPh -= 1.0;
+            const double phR = modPh < 0.75 ? modPh + 0.25 : modPh - 0.75;
+            chL.write(l[i]);
+            chR.write(r[i]);
+            l[i] = dry * l[i] + wet * chL.readFrac(base + depth * sine01(modPh));
+            r[i] = dry * r[i] + wet * chR.readFrac(base + depth * sine01(phR));
+        }
+    }
+
+    // Ambiente: la reverb se suma a lo que sale.
+    void ambience(float *l, float *r, int n) {
+        if (space <= 0) return;
+        const float wet = space * 0.5f;
+        constexpr int kChunk = 128;
+        float wl[kChunk], wr[kChunk];
+        for (int i0 = 0; i0 < n; i0 += kChunk) {
+            const int m = std::min(kChunk, n - i0);
+            reverb.process(l + i0, r + i0, m, wl, wr, rv);
+            for (int i = 0; i < m; ++i) {
+                l[i0 + i] += wl[i] * wet;
+                r[i0 + i] += wr[i] * wet;
+            }
+        }
     }
 
     void post(float *l, float *r, int n) {
@@ -847,6 +1094,8 @@ struct Engine::Impl {
                 r[i] = toneR.run(r[i]);
             }
         }
+        modulate(l, r, n);
+        ambience(l, r, n);
         for (BQ *b : {&toneL, &toneR, &lpL, &lpR, &b1L, &b1R, &b2L, &b2R, &b3L, &b3R, &cab1L, &cab1R, &cab2L, &cab2R,
                       &cabHL, &cabHR, &midL, &midR})
             b->flush();
@@ -897,7 +1146,7 @@ void Engine::render(float *l, float *r, int n) { mImpl->render(l, r, n); }
 bool Engine::active() const {
     for (const Voice &x : mImpl->v)
         if (x.on) return true;
-    return false;
+    return mImpl->tail > 0;
 }
 
 }  // namespace inst

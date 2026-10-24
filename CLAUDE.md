@@ -20,7 +20,8 @@
   y `ui/Superpuestos.kt`, colores y tipografía de iOS en `ui/Tema.kt`, íconos con rutas en
   `ui/Iconos.kt`. Claro u oscuro según el celular.
 - Pestañas abajo (Mezcla, Crear, Grabar, Editar, Análisis), mini reproductor que abre el reproductor a
-  pantalla completa, hojas que suben desde abajo, menús de acciones y alertas de iOS.
+  pantalla completa (con la portada de la app), hojas que suben desde abajo, menús de acciones y
+  alertas de iOS.
 - Lo que cambia en cada cuadro (posición, medidores) se lee al dibujar, no al componer.
 - Nunca `coerceIn` con límites calculados en la pantalla (cierra la app si el rango queda al
   revés, p. ej. un pedazo angosto): usar `entre` de `ui/Componentes.kt`. Igual con los textos de un
@@ -71,6 +72,14 @@
   `ui/EditorInstrumento.kt` (las filas y los nombres de las notas los da el núcleo).
 - Efectos de voz en pistas: `TrackFx` también tiene graves, compuerta y auto-tune (antes del EQ;
   el `Mixer` lee la pista `TrackFx::kTuneLatency` adelante), de-esser y doblaje.
+- Instrumentos (1.3.0): piano (`vPiano`, parciales que se apagan solos), ajustes `kMod`
+  (movimiento: chorus/trémolo/vibrato) y `kSpace` (ambiente: reverb) dentro de `inst::Engine` (la
+  cola cuenta en `active()`), y estilos (`inst::style`, `Studio::addStyle`: varias pistas con la
+  misma idea; sin canción, su tempo y tonalidad). Los presets se buscan por nombre
+  (`presetIndex`); los tipos nuevos van al final de `inst::Kind` (la sesión guarda el número).
+- Portada: `tools/portada/hacer_portada.py` (desde `original.jpg`) hace el ícono adaptativo, la
+  pantalla al abrir (tema `Tema`, Android 12+) y `res/drawable-nodpi/portada.webp`, que la pantalla
+  carga con `imagenPortada()` de `ui/Plataforma.kt` (`PortadaApp` en `ui/Medidores.kt`).
 - El modelo: `tools/modelos/` lo convierte en `modelos.yml` (release `modelos`). El código de
   terceros (repo de Kim, checkpoint) corre solo en el trabajo de solo lectura, con
   `weights_only=True` y huellas SHA-256 fijas; nunca en trabajos con permisos de escritura. El CI

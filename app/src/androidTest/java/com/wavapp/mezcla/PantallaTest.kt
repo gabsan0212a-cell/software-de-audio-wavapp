@@ -466,17 +466,20 @@ class PantallaTest {
         regla.waitUntil(3_000) { Vista.pestana == Vista.CREAR }
         avanzarMedidores()
         captura("33-crear")
-        regla.onNodeWithTag("agregarInstrumento-0").performScrollTo().performClick()
+        regla.onNodeWithTag("listaCrear").performScrollToKey("agregar")
+        regla.onNodeWithTag("agregarInstrumento-0").performClick()
         regla.waitUntil(30_000) { Mesa.instrumentoAbierto > 0 }
         regla.onNodeWithTag("editorInstrumento").assertIsDisplayed()
         val bateria = Mesa.pistas.first { it.id == Mesa.instrumentoAbierto }
         assertTrue(bateria.esInstrumento && bateria.instrumento == Nucleo.INST_BATERIA)
         regla.waitUntil(5_000) { (bateria.patron?.n ?: 0) > 0 }
-        val antes = bateria.patron!!.n
+        val notasAntes = bateria.patron!!.n
         // La fila de arriba (el platillo), segundo paso.
-        val d = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
-        regla.onNodeWithTag("cuadricula").performTouchInput { click(Offset((88f + 30f * 1.5f) * d, (22f + 12f) * d)) }
-        regla.waitUntil(5_000) { bateria.patron?.n == antes + 1 }
+        val densidad = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+        regla.onNodeWithTag("cuadricula").performTouchInput {
+            click(Offset((88f + 30f * 1.5f) * densidad, (22f + 12f) * densidad))
+        }
+        regla.waitUntil(5_000) { bateria.patron?.n == notasAntes + 1 }
         avanzarMedidores()
         captura("34-bateria-notas")
         regla.onNodeWithText("Tocar").performClick()

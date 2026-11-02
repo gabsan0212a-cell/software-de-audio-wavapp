@@ -13,6 +13,8 @@
     <!-- Escuchar lo que suena en el celular (otras apps) para analizarlo: con el permiso de
          grabar o transmitir que da el usuario, en un servicio en primer plano. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Escucharlo de forma nativa (Visualizer sobre lo que sale), sin grabar la pantalla. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <application
         android:label="WavApp"
         android:icon="@mipmap/ic_launcher"

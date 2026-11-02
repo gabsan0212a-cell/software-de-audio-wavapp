@@ -96,6 +96,12 @@ internet).
       YouTube, TikTok, juegos…; Android 10 o más nuevo) y lo muestra en vivo: espectro, espectrograma
       en vivo (los últimos 12 s), fase y paneo, zumbido y volumen percibido (LUFS). No suena, no se
       graba ni se guarda. Las apps que protegen su contenido no se dejan escuchar
+- [x] 18. Escuchar el celular de forma nativa (1.5.0): al tocar **Celular** ya está escuchando,
+      sin el permiso de grabar la pantalla ni avisos (el Visualizer de Android, como los
+      visualizadores de música; solo pide el micrófono una vez). Espectro, espectrograma en vivo y
+      nivel; se pide un pedazo por cuadro de pantalla y se apaga cuando no se mira. La captura
+      completa queda como opción para fase, paneo, zumbido y LUFS. Análisis más liviano: el
+      espectrograma pinta solo las columnas nuevas y el espectro se lee una vez por cuadro
 
 Sin plugins VST en Android.
 
@@ -115,12 +121,13 @@ Sin plugins VST en Android.
 6. **Guardar** deja la presentación en el teléfono como WAV (con el formato de exportar).
 
 ## Cómo ver lo que suena en el celular
-1. Pestaña **Análisis** → **Celular** → **Empezar a escuchar**. Android pide el micrófono (lo exige
-   para esto) y el permiso de "grabar o transmitir la pantalla": WavApp solo escucha el sonido.
-2. Pon música o un video en otra app. En Análisis lo ves en vivo: LUFS (a cuánto suena, comparado con
-   Spotify o YouTube), fase y paneo, espectro y el espectrograma de los últimos 12 segundos.
-3. **Dejar de escuchar** (o desde el aviso) termina. Si dice "no llega sonido" con algo sonando, esa
-   app no deja que otras la escuchen.
+1. Pon música o un video en otra app (Spotify, YouTube, TikTok…).
+2. Pestaña **Análisis** → **Celular**. Ya está escuchando: espectro, espectrograma de los últimos 12
+   segundos y nivel. La primera vez Android pide el permiso del micrófono (lo exige para esto; no se
+   usa el micrófono). Al salir de Celular deja de escuchar.
+3. Para fase, paneo, zumbido y LUFS: **Captura completa…** (Android pide el permiso de "grabar o
+   transmitir la pantalla"; WavApp solo escucha el sonido). **Volver a la escucha normal** la termina.
+   Si dice "no llega sonido" con algo sonando, esa app (o el celular) no deja escuchar así.
 
 ## Cómo crear un beat
 0. Lo más rápido: en **Empezar con un estilo** toca **Indie oscuro** (como "Daddy Issues": lento,
@@ -173,8 +180,9 @@ Sin plugins VST en Android.
     con fundidos; cada trozo se guarda para seguir si se interrumpe).
   - `dsp/Pitch` (tono con YIN) y `dsp/SongAnalysis` (tonalidad con perfiles de Krumhansl,
     tempo y pulsos, dónde canta la voz).
-  - Lo que suena en el celular: `engine/MediaListen` (recibe lo capturado, lo pasa al análisis y
-    mide sus LUFS) y `dsp/LiveSpectrogram` (el espectrograma en vivo de lo que se analiza).
+  - Lo que suena en el celular: `engine/MediaListen` (los pedazos sueltos de la forma nativa, o lo
+    capturado seguido, que pasa al análisis y a los LUFS), `SnapshotSpectrum` en `dsp/Analyzer` (el
+    espectro de cada pedazo) y `dsp/LiveSpectrogram` (el espectrograma en vivo de lo que se analiza).
   - La voz en vivo: `dsp/PitchTracker` (tono en vivo cada 4 ms con YIN anclado a lo más
     reciente), `dsp/PitchShifter` (cambia el tono leyendo una línea de retardo a otra velocidad y
     saltando períodos completos con fundido: 1 a 6 ms de retraso), `dsp/AutoTune` (la nota de la
@@ -196,9 +204,9 @@ Sin plugins VST en Android.
 - `app/src/main/java/.../`: **solo pantalla**. `Nucleo.kt` (el puente), `Mesa.kt` (espejo del
   estado del núcleo para Compose), `Analisis.kt` y `Edicion.kt` (lo que recuerda cada panel),
   `TrabajoLargo.kt` (lo que obliga Android para que quitar la voz siga con la pantalla apagada:
-  servicio en primer plano con su aviso), `EscucharCelular.kt` (el permiso de grabar o transmitir y
-  la captura de lo que suena en otras apps, que pasa tal cual al núcleo) y `ui/` (Compose, solo
-  `foundation`: sin Material).
+  servicio en primer plano con su aviso), `OidoNativo.kt` (el Visualizer de Android sobre lo que
+  sale: un pedazo por cuadro de pantalla), `EscucharCelular.kt` (la captura completa, con el permiso
+  de grabar o transmitir) y `ui/` (Compose, solo `foundation`: sin Material).
   - `Tema.kt` (colores y tipografía de iOS), `Iconos.kt` (íconos dibujados con rutas),
     `Componentes.kt` (botones, píldoras, interruptor, segmentado, deslizadores, tarjetas) y
     `Superpuestos.kt` (hojas, menús de acciones, alertas, barra de arriba).

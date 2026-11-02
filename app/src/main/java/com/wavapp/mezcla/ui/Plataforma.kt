@@ -27,9 +27,11 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import com.wavapp.mezcla.Analisis
 import com.wavapp.mezcla.Errores
 import com.wavapp.mezcla.EscucharCelular
 import com.wavapp.mezcla.Mesa
+import com.wavapp.mezcla.OidoNativo
 import com.wavapp.mezcla.R
 
 // Lo que obliga Android (y nada más): botón "atrás", pantalla encendida, selector de archivos,
@@ -145,48 +147,88 @@ internal fun imagenDePixeles(px: IntArray, ancho: Int, alto: Int): ImageBitmap =
     Bitmap.createBitmap(px, ancho, alto, Bitmap.Config.ARGB_8888).asImageBitmap()
 
 /**
- * Escuchar lo que suena en el celular (Android 10 o más nuevo): pide el micrófono (Android lo
- * exige para capturar lo que se reproduce) y el permiso de grabar o transmitir; con eso el
- * servicio [EscucharCelular] pasa el audio al núcleo.
+ * Escuchar lo que suena en el celular mientras `escuchar` (la fuente Celular de Análisis a la
+ * vista): de forma nativa ([OidoNativo]: solo pide el permiso del micrófono, que Android exige
+ * para esto) o, si se elige, con la captura completa ([EscucharCelular]: el permiso de grabar o
+ * transmitir, Android 10+). Al dejar de mirar, se apaga.
  */
 @Composable
-internal fun recordarEscucharCelular(): EscuchaCelular {
+internal fun recordarEscucharCelular(escuchar: Boolean): EscuchaCelular {
     val context = LocalContext.current
+    var respuesta by remember { mutableStateOf<Boolean?>(null) }
+    var completa by remember { mutableStateOf(false) }  // se pidió la captura completa
+    var fallo by remember { mutableStateOf(false) }     // la forma nativa no se pudo
+    // Se revisa cada vez (por si se dio en Ajustes y se volvió a la app).
+    val permiso = respuesta == true ||
+        context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    val microfono = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { respuesta = it }
     val proyectar = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val datos = r.data
         if (r.resultCode == Activity.RESULT_OK && datos != null && Build.VERSION.SDK_INT >= 29) {
             EscucharCelular.empezar(context, r.resultCode, datos)
-        }
-    }
-    val pedirProyeccion: () -> Unit = {
-        val gestor = context.getSystemService(MediaProjectionManager::class.java)
-        // Android 14+: la pantalla completa (así se oye lo de cualquier app, no de una sola).
-        val pedido = if (Build.VERSION.SDK_INT >= 34) {
-            gestor.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
         } else {
-            gestor.createScreenCaptureIntent()
-        }
-        try {
-            proyectar.launch(pedido)
-        } catch (e: Exception) {
+            completa = false  // dijo que no: sigue la forma nativa
         }
     }
-    val microfono = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) pedirProyeccion()
+    val nativo = escuchar && permiso && !completa
+    DisposableEffect(nativo) {
+        if (nativo) {
+            fallo = !OidoNativo.empezar()
+            Analisis.alCuadro = { OidoNativo.pedir() }
+        }
+        onDispose {
+            if (nativo) {
+                Analisis.alCuadro = null
+                OidoNativo.detener()
+            }
+        }
+    }
+    // Al dejar la fuente Celular, la captura completa también termina (no queda escuchando).
+    DisposableEffect(escuchar) {
+        onDispose {
+            if (escuchar && completa) {
+                if (Build.VERSION.SDK_INT >= 29) EscucharCelular.detener(context)
+                completa = false
+            }
+        }
     }
     return EscuchaCelular(
-        disponible = Build.VERSION.SDK_INT >= 29,
-        empezar = {
+        permiso = permiso,
+        pedirPermiso = { microfono.launch(Manifest.permission.RECORD_AUDIO) },
+        nativoFallo = nativo && fallo,
+        completaDisponible = Build.VERSION.SDK_INT >= 29,
+        completaPedida = completa,
+        empezarCompleta = {
             if (Build.VERSION.SDK_INT >= 29) {
-                if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    pedirProyeccion()
+                completa = true  // la forma nativa se apaga sola (DisposableEffect)
+                val gestor = context.getSystemService(MediaProjectionManager::class.java)
+                // Android 14+: la pantalla completa (así se oye lo de cualquier app, no de una sola).
+                val pedido = if (Build.VERSION.SDK_INT >= 34) {
+                    gestor.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
                 } else {
-                    microfono.launch(Manifest.permission.RECORD_AUDIO)
+                    gestor.createScreenCaptureIntent()
+                }
+                try {
+                    proyectar.launch(pedido)
+                } catch (e: Exception) {
+                    completa = false
                 }
             }
         },
-        detener = { if (Build.VERSION.SDK_INT >= 29) EscucharCelular.detener(context) },
+        detenerCompleta = {
+            if (Build.VERSION.SDK_INT >= 29) EscucharCelular.detener(context)
+            completa = false
+        },
     )
+}
+
+/** Una imagen que se va pintando por columnas (el espectrograma en vivo), sin crearla de nuevo. */
+internal class ImagenViva(val ancho: Int, val alto: Int) {
+    private val bmp = Bitmap.createBitmap(ancho, alto, Bitmap.Config.ARGB_8888)
+    val imagen: ImageBitmap = bmp.asImageBitmap()
+
+    /** Pasa a la imagen las columnas [x, x + n) de `px` (ancho × alto, por filas). */
+    fun escribir(px: IntArray, x: Int, n: Int) = bmp.setPixels(px, x, ancho, x, 0, n, alto)
 }
 
 /** Pide (una vez que se toca el botón) el permiso del micrófono. */

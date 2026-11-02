@@ -4804,10 +4804,10 @@ TEST(escucharCelular) {
     CHECK(std::fabs(meter.integrated() + 20.0f) < 0.5f);
     if (std::fabs(meter.integrated() + 20.0f) >= 0.5f) std::printf("    integrado %.2f LUFS\n", meter.integrated());
     media.readState(st);
-    CHECK(st[0] == 1.0f && std::fabs(st[1] - 0.1f) < 0.01f && std::fabs(st[2] - 0.1f) < 0.01f && st[3] < 0.05f);
-    // Los picos son desde la lectura anterior.
+    CHECK(st[0] == 1.0f && std::fabs(st[1] + 20.0f) < 0.5f && std::fabs(st[2] + 20.0f) < 0.5f && st[3] < 0.05f);
+    // Lo mostrado cae poco a poco (no se va de golpe a nada).
     media.readState(st);
-    CHECK(st[1] == 0.0f);
+    CHECK(st[1] > -21.0f && st[1] <= -19.5f);
     // 2 s de silencio.
     std::vector<int16_t> nada(960 * 2, 0);
     for (int k = 0; k < 100; ++k) media.push(nada.data(), 960);
@@ -4828,7 +4828,7 @@ TEST(escucharCelular) {
     CHECK(std::fabs(l[1] - 479 * 10 / 32768.0f) < 1e-6f && l[1] == r[1]);
     media.setActive(false, 2);
     media.readState(st);
-    CHECK(st[0] == 0.0f && st[3] == 0.0f);
+    CHECK(st[0] == 0.0f && st[3] == 0.0f && st[1] == MediaListen::kFloorDb);
 }
 
 // El espectrograma en vivo: una columna cada 50 ms, la más nueva a la derecha, y la banda del
@@ -4861,6 +4861,113 @@ TEST(espectrogramaEnVivo) {
     CHECK(sg.count() == 4);
     sg.reset();
     CHECK(sg.count() == 0);
+}
+
+// Un pedazo de 8 bits sin signo (como los da el Visualizer de Android): un seno a `hz`.
+static std::vector<uint8_t> pedazoNativo(int n, double amp, double hz, int64_t from = 0) {
+    std::vector<uint8_t> v(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i)
+        v[i] = static_cast<uint8_t>(std::clamp(128L + std::lround(amp * 127.0 * std::sin(2 * M_PI * hz * (from + i) / 48000.0)), 0L, 255L));
+    return v;
+}
+
+// La forma nativa: pedazos sueltos (mono, 8 bits) con el nivel que mide Android; cada pedazo se
+// analiza solo y el espectro queda en la misma escala que el del análisis normal.
+TEST(celularNativo) {
+    Mixer m(48000);
+    MediaListen media(m, 48000);
+    std::vector<uint8_t> p = pedazoNativo(1024, 0.5, 1000.0);
+    media.pushSnapshot(p.data(), 1024, 48000, -20.0f, -23.0f);  // cerrado: no cuenta
+    float mono[MediaListen::kMaxSnapshot], rms = 0;
+    int n = 0, rate = 0;
+    CHECK(!media.takeSnapshot(mono, n, rate, rms));
+    media.setActive(true, 2, true);
+    CHECK(media.isNative() && media.channels() == 1);
+    media.pushSnapshot(p.data(), 1024, 48000, -20.0f, -23.0f);
+    CHECK(media.takeSnapshot(mono, n, rate, rms));
+    CHECK(n == 1024 && rate == 48000 && std::fabs(rms - std::pow(10.0f, -23.0f / 20.0f)) < 1e-4f);
+    CHECK(std::fabs(mono[0] - 0.0f) < 0.01f);
+    CHECK(!media.takeSnapshot(mono, n, rate, rms));  // no llegó otro
+    float st[MediaListen::kStateCount];
+    media.readState(st);
+    CHECK(st[0] == 1.0f && st[4] == 1.0f && std::fabs(st[1] + 20.0f) < 0.01f && std::fabs(st[5] + 23.0f) < 0.01f &&
+          st[3] < 0.5f);
+    // Sin el nivel de Android, el del pedazo.
+    media.pushSnapshot(p.data(), 1024, 48000, MediaListen::kNoLevel, MediaListen::kNoLevel);
+    CHECK(media.takeSnapshot(mono, n, rate, rms) && std::fabs(rms - 0.5f / std::sqrt(2.0f)) < 0.02f);
+    // En modo nativo, el audio seguido no se usa (y al revés).
+    std::vector<int16_t> tono = tonoCelular(480, 0.1);
+    float l[4], r[4];
+    m.setAnalysisSource(Mixer::kTapMedia);
+    media.push(tono.data(), 480);
+    CHECK(m.readTap(l, r, 0) == 0);
+    media.setActive(true, 2, false);
+    media.pushSnapshot(p.data(), 1024, 48000, -20.0f, -23.0f);
+    CHECK(!media.takeSnapshot(mono, n, rate, rms));
+    media.readState(st);
+    CHECK(st[4] == 0.0f);
+    media.setActive(false, 2);
+    // El espectro de los pedazos: pico en 1 kHz y la misma escala que Analyzer (A · 0.21).
+    SnapshotSpectrum sp;
+    std::vector<float> x(1024);
+    for (int k = 0; k < 40; ++k) {
+        const std::vector<uint8_t> q = pedazoNativo(1024, 0.5, 1000.0, static_cast<int64_t>(k) * 777);
+        for (int i = 0; i < 1024; ++i) x[i] = (q[i] - 128) / 128.0f;
+        sp.update(x.data(), 1024, 48000);
+    }
+    const SpectrumView v = sp.spectrum();
+    int mejor = 0;
+    for (int i = 1; i < v.bins; ++i)
+        if (v.db[i] > v.db[mejor]) mejor = i;
+    CHECK(std::fabs(mejor * v.binHz - 1000.0f) < 15.0f);
+    CHECK(std::fabs(v.db[mejor] - 20.0f * std::log10(0.5f * 127 / 128 * 0.21f)) < 1.5f);
+    if (std::fabs(v.db[mejor] - 20.0f * std::log10(0.5f * 127 / 128 * 0.21f)) >= 1.5f) std::printf("    pico %.2f dB\n", v.db[mejor]);
+    // Baja despacio al callar (no se corta de golpe), y después de un rato queda abajo.
+    std::fill(x.begin(), x.end(), 0.0f);
+    sp.update(x.data(), 1024, 48000);
+    CHECK(sp.spectrum().db[mejor] > v.db[mejor] - 3.0f);
+    for (int k = 0; k < 60; ++k) sp.update(x.data(), 1024, 48000);
+    CHECK(sp.spectrum().db[mejor] < -80.0f);
+}
+
+// En el estudio, la forma nativa: análisis, espectro y espectrograma en vivo (que se puede leer
+// solo con las columnas nuevas).
+TEST(estudioCelularNativo) {
+    const std::string dir = nuevaCarpeta("celular-nativo");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.clearProject();
+    s.setAnalysisSource(Studio::kMediaId);
+    s.mediaOpenedNative();
+    float stats[AnalysisView::kStatCount];
+    int64_t now = 5000;
+    for (int k = 0; k < 120; ++k) {  // 2 s a 60 pedazos por segundo
+        const std::vector<uint8_t> q = pedazoNativo(1024, 0.6, 1000.0, static_cast<int64_t>(k) * 800);
+        s.mediaSnapshot(q.data(), 1024, 48000, -12.0f, -15.0f);
+        now += 16;
+        s.analysisUpdate(now, false, stats);
+    }
+    CHECK(stats[0] != 0.0f && stats[1] != 0.0f);
+    std::vector<float> cols(200);
+    s.spectrumColumns(cols.data(), 200);
+    const int pico = static_cast<int>(std::max_element(cols.begin(), cols.end()) - cols.begin());
+    const double fPico = 20.0 * std::pow(1000.0, (pico + 0.5) / 200.0);
+    CHECK(fPico > 850 && fPico < 1150);
+    std::vector<uint8_t> sg(static_cast<size_t>(LiveSpectrogram::kCols) * LiveSpectrogram::kRows);
+    int escritas = 0;
+    const uint64_t total = s.liveSpectrogram(sg.data(), 0, &escritas);
+    CHECK(total >= 30 && total <= 45 && escritas == static_cast<int>(total));
+    CHECK(s.liveSpectrogram(sg.data(), total - 2, &escritas) == total && escritas == 2);
+    CHECK(s.liveSpectrogram(sg.data(), total, &escritas) == total && escritas == 0);
+    float ms[Studio::kMediaStateCount];
+    s.mediaState(ms);
+    CHECK(ms[0] == 1.0f && ms[4] == 1.0f && std::fabs(ms[5] + 15.0f) < 0.01f && std::fabs(ms[1] + 12.0f) < 0.01f);
+    // Sin pedazos nuevos no hay análisis nuevo; al cerrar, reposo.
+    CHECK(!s.analysisUpdate(now + 16, false, stats));
+    s.mediaClosed();
+    CHECK(s.analysisUpdate(now + 32, false, stats));
+    CHECK(stats[0] == 0.0f);
 }
 
 // En el estudio: el celular como fuente del análisis, del volumen percibido y del espectrograma
@@ -4899,7 +5006,7 @@ TEST(estudioCelular) {
     CHECK(std::fabs(lo[0] + 20.0f) < 0.6f && lo[7] > 3.0f);
     float ms[Studio::kMediaStateCount];
     s.mediaState(ms);
-    CHECK(ms[0] == 1.0f && ms[1] > 0.09f);
+    CHECK(ms[0] == 1.0f && ms[1] > -21.0f);
     // Volver a la mezcla: la medición y el espectrograma empiezan de nuevo.
     s.setAnalysisSource(-1);
     s.loudness(lo);
@@ -4948,8 +5055,32 @@ TEST(celularEnOtroHilo) {
     }
     seguir.store(false);
     captura.join();
+    // Igual con la forma nativa (pedazos del Visualizer desde otro hilo).
+    s.mediaOpenedNative();
+    seguir.store(true);
+    std::thread oido([&] {
+        int64_t t = 0;
+        while (seguir.load()) {
+            const std::vector<uint8_t> q = pedazoNativo(1024, 0.5, 440.0, t);
+            s.mediaSnapshot(q.data(), 1024, 48000, -10.0f, -13.0f);
+            t += 800;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
+    bool nativo = false;
+    for (int k = 0; k < 200; ++k) {
+        s.setAnalysisSource(k % 50 < 45 ? Studio::kMediaId : -1);
+        s.analysisUpdate(10000 + k * 16, false, stats);
+        nativo = nativo || stats[0] != 0.0f;
+        s.mediaState(ms);
+        int escritas = 0;
+        s.liveSpectrogram(sg.data(), 0, &escritas);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    seguir.store(false);
+    oido.join();
     s.mediaClosed();
-    CHECK(activo);
+    CHECK(activo && nativo);
 }
 
 // El piano: se apaga solo (los agudos antes que los graves), el apagador lo calla al soltar y

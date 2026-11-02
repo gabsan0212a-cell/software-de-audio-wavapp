@@ -254,17 +254,30 @@ JNI(jbyteArray, spectrogram)(JNIEnv *env, jobject, jint id) {
     return a;
 }
 
-JNI(jlong, liveSpectrogram)(JNIEnv *env, jobject, jbyteArray out) {
+// Solo las columnas nuevas (después de las primeras `since`); devuelve cuántas van en total.
+JNI(jlong, liveSpectrogram)(JNIEnv *env, jobject, jlong since, jbyteArray out) {
     static uint8_t buf[LiveSpectrogram::kCols * LiveSpectrogram::kRows];  // solo el hilo de la pantalla
-    const uint64_t n = gStudio.liveSpectrogram(buf);
-    const jsize len = std::min<jsize>(env->GetArrayLength(out), static_cast<jsize>(sizeof buf));
-    env->SetByteArrayRegion(out, 0, len, reinterpret_cast<const jbyte *>(buf));
+    int written = 0;
+    const uint64_t n = gStudio.liveSpectrogram(buf, static_cast<uint64_t>(std::max<jlong>(0, since)), &written);
+    const jsize len = std::min<jsize>(env->GetArrayLength(out), static_cast<jsize>(written * LiveSpectrogram::kRows));
+    if (len > 0) env->SetByteArrayRegion(out, 0, len, reinterpret_cast<const jbyte *>(buf));
     return static_cast<jlong>(n);
 }
 
 // ---------- Lo que suena en el celular: la plataforma lo captura (con permiso) y lo manda aquí.
 JNI(void, mediaOpened)(JNIEnv *, jobject, jint channels) { gStudio.mediaOpened(channels); }
+JNI(void, mediaOpenedNative)(JNIEnv *, jobject) { gStudio.mediaOpenedNative(); }
 JNI(void, mediaClosed)(JNIEnv *, jobject) { gStudio.mediaClosed(); }
+// Forma nativa: el pedazo (8 bits) que dio Android, su frecuencia (mHz) y su pico y RMS (mB;
+// Int.MIN_VALUE = no se sabe).
+JNI(void, mediaSnapshot)(JNIEnv *env, jobject, jbyteArray wave, jint n, jint rateMilliHz, jint peakMb, jint rmsMb) {
+    uint8_t buf[MediaListen::kMaxSnapshot];
+    const jsize len = std::min<jsize>(std::min<jsize>(n, env->GetArrayLength(wave)), MediaListen::kMaxSnapshot);
+    if (len <= 0) return;
+    env->GetByteArrayRegion(wave, 0, len, reinterpret_cast<jbyte *>(buf));
+    auto db = [](jint mb) { return mb == INT32_MIN ? MediaListen::kNoLevel : static_cast<float>(mb) / 100.0f; };
+    gStudio.mediaSnapshot(buf, len, rateMilliHz / 1000, db(peakMb), db(rmsMb));
+}
 JNI(void, mediaPush)(JNIEnv *env, jobject, jshortArray pcm, jint frames) {
     const jsize n = env->GetArrayLength(pcm);
     const int f = std::min<int>(frames, n / std::max(1, gStudio.mediaChannels()));

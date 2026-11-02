@@ -1328,17 +1328,35 @@ void Studio::setAnalysisSource(int id) {
 }
 
 bool Studio::analysisUpdate(int64_t now, bool classic, float *stats) {
-    // La entrada y el celular se analizan aunque la mezcla no suene.
     const int source = mMixer.analysisSource();
-    const bool live = (source == Mixer::kTapInput && mInput.active()) || (source == Mixer::kTapMedia && mMedia.active());
-    const bool changed = mView.update(mAnalyzer, mMixer, mMixer.isPlaying() || live, now, classic);
+    // Lo que suena en el celular en pedazos sueltos: cada uno se analiza solo.
+    const bool snap = source == Mixer::kTapMedia && mMedia.isNative();
+    if (snap != mSnapMode) {
+        mSnapMode = snap;
+        mSnapSpec.reset();
+        mLiveSg.reset();
+    }
+    bool changed;
+    if (snap) {
+        int n = 0, rate = kRate;
+        float rms = 0.0f;
+        const bool fresh = mMedia.takeSnapshot(mSnapBuf.data(), n, rate, rms);
+        if (fresh) mSnapSpec.update(mSnapBuf.data(), n, rate);
+        changed = mView.updateSnapshot(fresh, mMedia.active(), rms, now);
+        if (changed && mView.active()) mLiveSg.push(mSnapSpec.spectrum(), now);
+    } else {
+        // La entrada y el celular se analizan aunque la mezcla no suene.
+        const bool live = (source == Mixer::kTapInput && mInput.active()) || (source == Mixer::kTapMedia && mMedia.active());
+        changed = mView.update(mAnalyzer, mMixer, mMixer.isPlaying() || live, now, classic);
+        if (changed && mView.active() && source < 0) mLiveSg.push(mAnalyzer, now);
+    }
     mView.stats(stats);
-    if (changed && mView.active() && source < 0) mLiveSg.push(mAnalyzer, now);
     return changed;
 }
 
-uint64_t Studio::liveSpectrogram(uint8_t *out) const {
-    mLiveSg.read(out);
+uint64_t Studio::liveSpectrogram(uint8_t *out, uint64_t since, int *written) const {
+    const int n = mLiveSg.readSince(since, out);
+    if (written) *written = n;
     return mLiveSg.count();
 }
 
@@ -1347,7 +1365,8 @@ void Studio::spectrumColumns(float *out, int cols) const {
         std::fill(out, out + cols, -200.0f);
         return;
     }
-    AnalysisView::spectrumColumns(mAnalyzer, out, cols);
+    if (mSnapMode) AnalysisView::spectrumColumns(mSnapSpec.spectrum(), out, cols);
+    else AnalysisView::spectrumColumns(mAnalyzer, out, cols);
 }
 
 bool Studio::spectrogram(int id, std::vector<uint8_t> &out) {

@@ -603,28 +603,27 @@ fun main(args: Array<String>) {
             println("primer instrumento del estilo: $primero")
         }
         if (quiere("celular")) {
-            // Escuchar lo que suena en el celular (aquí, una canción de prueba): el análisis, el
-            // volumen percibido y el espectrograma en vivo la siguen.
+            // Lo que suena en el celular (aquí, una canción de prueba): de forma nativa (pedazos
+            // sueltos, uno por cuadro) y después la captura completa.
             if (Mesa.reproduciendo) Mesa.reproducirPausar()
             Mesa.instrumentoAbierto = 0
             Vista.abrirInstrumento = 0
             Vista.pestana = Vista.ANALISIS
             Analisis.fuenteId = Nucleo.ID_CELULAR
-            esperar(700)
+            hasta(10_000, "escuchando el celular") { Mesa.celular.escuchando && Mesa.celular.nativo && Analisis.activo }
+            esperar(6000)
+            println("celular nativo: ${Mesa.celular.rmsDb} dB RMS, ${Analisis.columnasVivo} columnas")
             foto("70-celular")
-            com.wavapp.mezcla.ui.CelularDePrueba.empezar()
-            hasta(10_000, "escuchando el celular") { Mesa.celular.escuchando && Analisis.activo }
-            esperar(7000)
-            println("celular: ${Mesa.volumen.corto} LUFS corto, veredicto ${Analisis.codigoVeredicto}")
-            foto("71-celular-escuchando")
-            rueda(500f, 24)
+            rueda(500f, 30)
             esperar(500)
-            foto("72-celular-diagnostico", ambos = false)
-            rueda(500f, 40)
+            foto("71-celular-espectrograma")
+            rueda(500f, -60)
+            com.wavapp.mezcla.ui.completaDePrueba = true
+            hasta(10_000, "captura completa") { Mesa.celular.escuchando && !Mesa.celular.nativo && Analisis.activo }
+            esperar(5000)
+            foto("72-celular-completa", ambos = false)
+            com.wavapp.mezcla.ui.completaDePrueba = false
             esperar(500)
-            foto("73-celular-espectrograma")
-            rueda(500f, -80)
-            com.wavapp.mezcla.ui.CelularDePrueba.detener()
             Analisis.fuenteId = -1
             esperar(400)
         }

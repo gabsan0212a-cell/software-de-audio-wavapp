@@ -251,9 +251,10 @@ public:
     bool analysisUpdate(int64_t nowMs, bool classic, float *stats);  // AnalysisView::kStatCount
     int goniometer(float *out, int max) const { return mView.goniometer(out, max); }
     void spectrumColumns(float *out, int cols) const;
-    // Espectrograma en vivo de lo que se analiza (no de una pista: esas tienen el del archivo),
-    // LiveSpectrogram::kCols × kRows. Devuelve cuántas columnas van (si no cambió, es el mismo).
-    uint64_t liveSpectrogram(uint8_t *out) const;
+    // Espectrograma en vivo de lo que se analiza (no de una pista: esas tienen el del archivo).
+    // Escribe las columnas que llegaron después de las primeras `since` (hasta kCols, de la más
+    // vieja a la más nueva, kRows cada una) y devuelve cuántas van en total.
+    uint64_t liveSpectrogram(uint8_t *out, uint64_t since = 0, int *written = nullptr) const;
     // Espectrograma de la pista (antes del EQ), kSpectrogramCols × kSpectrogramRows. La primera
     // vez se calcula aparte y devuelve false; cuando está listo cambia kVerBackground.
     bool spectrogram(int id, std::vector<uint8_t> &out);
@@ -262,8 +263,13 @@ public:
     // La plataforma empezó a capturarlo (1 o 2 canales) o paró; push() desde su hilo, cuadros
     // intercalados de 16 bits a la frecuencia del proyecto.
     void mediaOpened(int channels) { mMedia.setActive(true, channels); }
+    // La forma nativa (Android da pedazos sueltos de lo que sale; ver MediaListen).
+    void mediaOpenedNative() { mMedia.setActive(true, 1, true); }
     void mediaClosed() { mMedia.setActive(false, 2); }
     void mediaPush(const int16_t *pcm, int frames) { mMedia.push(pcm, frames); }
+    void mediaSnapshot(const uint8_t *wave, int n, int sampleRate, float peakDb, float rmsDb) {
+        mMedia.pushSnapshot(wave, n, sampleRate, peakDb, rmsDb);
+    }
     int mediaChannels() const { return mMedia.channels(); }
     void mediaState(float *out) { mMedia.readState(out); }  // kMediaStateCount valores
 
@@ -576,6 +582,10 @@ private:
     Analyzer mAnalyzer{kRate};
     AnalysisView mView;
     LiveSpectrogram mLiveSg;
+    // Lo que suena en el celular en pedazos sueltos (forma nativa): solo el hilo de la pantalla.
+    SnapshotSpectrum mSnapSpec;
+    bool mSnapMode = false;
+    std::vector<float> mSnapBuf = std::vector<float>(MediaListen::kMaxSnapshot);
     MeterBallistics mMeters;
 
     std::mutex mSgMutex;

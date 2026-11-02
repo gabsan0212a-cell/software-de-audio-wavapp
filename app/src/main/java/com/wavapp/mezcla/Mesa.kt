@@ -276,8 +276,13 @@ class Entrada {
 /** Lo que suena en el celular (otras apps), mientras se escucha para analizarlo. */
 class Celular {
     var escuchando by mutableStateOf(false)
+    /** De forma nativa (pedazos sueltos, mono); si no, la captura completa. */
+    var nativo by mutableStateOf(false)
     /** Hace rato que no llega sonido (nada suena, o la app que suena no deja escucharla). */
     var callado by mutableStateOf(false)
+    /** Nivel (dB, con caída: lo da el núcleo). Cambia en cada cuadro: se lee al dibujar. */
+    var picoDb by mutableFloatStateOf(-120f)
+    var rmsDb by mutableFloatStateOf(-120f)
 }
 
 /**
@@ -1088,7 +1093,10 @@ object Mesa {
         Nucleo.mediaState(bufCelular)
         val c = celular
         c.escuchando = bufCelular[0] != 0f
+        c.nativo = c.escuchando && bufCelular[4] != 0f
         c.callado = c.escuchando && bufCelular[3] > 3f
+        c.picoDb = maxOf(bufCelular[1], bufCelular[2])
+        c.rmsDb = bufCelular[5]
     }
 
     private fun leerMedidoresVoz() {

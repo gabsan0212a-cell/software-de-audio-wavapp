@@ -129,16 +129,45 @@ void AnalysisView::sourceRays(const Analyzer &a) {
     }
 }
 
-void AnalysisView::spectrumColumns(const Analyzer &a, float *out, int cols) {
-    const float hz = a.binHz();
-    const float *sp = a.spectrumDb();
+void AnalysisView::spectrumColumns(const SpectrumView &s, float *out, int cols) {
+    if (cols <= 0) return;
+    const float step = std::pow(1000.0f, 1.0f / cols);
+    float f0 = 20.0f;
     for (int c = 0; c < cols; ++c) {
-        const float f0 = 20.0f * std::pow(1000.0f, static_cast<float>(c) / cols);
-        const float f1 = 20.0f * std::pow(1000.0f, static_cast<float>(c + 1) / cols);
-        const int i0 = std::max(0, static_cast<int>(f0 / hz));
-        const int i1 = std::min(Analyzer::kSpecBins - 1, std::max(i0, static_cast<int>(f1 / hz)));
+        const float f1 = f0 * step;
+        const float b0 = f0 / s.binHz, b1 = f1 / s.binHz;
+        const int i0 = std::clamp(static_cast<int>(std::ceil(b0)), 0, s.bins - 1);
+        const int i1 = std::clamp(static_cast<int>(b1), 0, s.bins - 1);
         float m = -200.0f;
-        for (int i = i0; i <= i1; ++i) m = std::max(m, sp[i]);
+        if (i1 >= i0) {
+            for (int i = i0; i <= i1; ++i) m = std::max(m, s.db[i]);
+        } else {  // más angosta que un bin: entre los dos vecinos
+            const float x = std::clamp(0.5f * (b0 + b1), 0.0f, static_cast<float>(s.bins - 1));
+            const int k = std::min(static_cast<int>(x), s.bins - 2);
+            const float t = x - static_cast<float>(k);
+            m = s.db[k] + (s.db[k + 1] - s.db[k]) * t;
+        }
         out[c] = m;
+        f0 = f1;
     }
+}
+
+bool AnalysisView::updateSnapshot(bool fresh, bool open, float level, int64_t nowMs) {
+    if (!open) {
+        if (!mActive) return false;
+        mActive = mLoud = false;
+        mGonioCount = 0;
+        mHum = HumInfo();
+        mLastMs = -1;
+        return true;
+    }
+    if (!fresh) return false;
+    mLastMs = nowMs;
+    mActive = true;
+    mLoud = level > 1e-3f;  // -60 dB
+    mCorrelation = 1.0f;
+    mPan = 0.0f;
+    mHum = HumInfo();
+    mGonioCount = 0;
+    return true;
 }

@@ -215,3 +215,35 @@ std::vector<uint8_t> spectrogram(const MappedAudio &a, int cols, int rows, float
     }
     return out;
 }
+
+// ---------------------------------------------------------------- instantáneas
+
+SnapshotSpectrum::SnapshotSpectrum()
+    : mFft(kFft), mRe(kFft), mIm(kFft), mWin(kMaxSamples), mMag(kBins, 0.0), mDb(kBins, -200.0f) {}
+
+void SnapshotSpectrum::reset() {
+    std::fill(mMag.begin(), mMag.end(), 0.0);
+    std::fill(mDb.begin(), mDb.end(), -200.0f);
+}
+
+void SnapshotSpectrum::update(const float *mono, int n, int sampleRate) {
+    n = std::clamp(n, 0, kMaxSamples);
+    if (n < 16 || sampleRate <= 0) return;
+    if (n != mWinN) {
+        for (int i = 0; i < n; ++i) mWin[i] = 0.5 - 0.5 * std::cos(2 * kPi * i / n);
+        mWinN = n;
+    }
+    mBinHz = static_cast<float>(sampleRate) / kFft;
+    for (int i = 0; i < n; ++i) mRe[i] = mono[i] * mWin[i];
+    std::fill(mRe.begin() + n, mRe.end(), 0.0);
+    std::fill(mIm.begin(), mIm.end(), 0.0);
+    mFft.forward(mRe.data(), mIm.data());
+    // Un seno de amplitud A da A · 0.21, como con la Blackman de Analyzer (|X| / N).
+    const double norm = 0.84 / n;
+    for (int k = 0; k < kBins; ++k) {
+        const double m = std::hypot(mRe[k], mIm[k]) * norm;
+        double &s = mMag[k];
+        s = m > s ? s + 0.6 * (m - s) : 0.8 * s + 0.2 * m;  // sube rápido, baja lento
+        mDb[k] = static_cast<float>(20 * std::log10(s + 1e-30));
+    }
+}

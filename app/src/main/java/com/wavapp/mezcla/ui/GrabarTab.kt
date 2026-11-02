@@ -319,8 +319,9 @@ private fun TarjetaEspectroEntrada() {
         ) {
             @Suppress("UNUSED_VARIABLE") val v = Analisis.version
             if (Analisis.activo && Mesa.entrada.abierta) {
-                lineaEspectro(p.acento.copy(alpha = 0.16f), relleno = true)
-                lineaEspectro(p.acento, relleno = false)
+                val (linea, area) = rutasEspectro(size.height)
+                drawPath(area, p.acento.copy(alpha = 0.16f))
+                drawPath(linea, p.acento, style = Stroke(1.6f * density))
             }
         }
         Texto(

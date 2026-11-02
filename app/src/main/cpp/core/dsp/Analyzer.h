@@ -8,6 +8,13 @@
 class Mixer;
 class MappedAudio;
 
+// Un espectro listo para leer: dB por bin, cuántos bins hay y cuántos Hz mide cada uno.
+struct SpectrumView {
+    const float *db;
+    int bins;
+    float binHz;
+};
+
 struct HumInfo {
     int freq = 0;      // 50 o 60; 0 = sin zumbido
     int count = 0;     // armónicos marcados (de 4)
@@ -43,6 +50,7 @@ public:
     const float *timeL() const { return mL.data() + (kSpecSize - kTime); }
     const float *timeR() const { return mR.data() + (kSpecSize - kTime); }
     float binHz() const { return static_cast<float>(mRate) / kSpecSize; }
+    SpectrumView spectrum() const { return {mSpecDb.data(), kSpecBins, binHz()}; }
 
     float peakL = 0, peakR = 0, rmsL = 0, rmsR = 0;
     float correlation = 1;  // de -1 a 1 (instantánea; sin señal queda la anterior)
@@ -60,6 +68,28 @@ private:
     std::vector<float> mL, mR;
     std::vector<double> mSpecMag, mFanMagL, mFanMagR;  // suavizados (lineal)
     std::vector<float> mSpecDb, mFanE, mFanP;
+};
+
+// Lo que suena en el celular "de forma nativa" (el Visualizer de Android): pedazos sueltos de
+// ~1024 muestras mono, no un flujo seguido. Cada pedazo se analiza solo: ventana Hann, FFT de
+// 4096 puntos (con ceros: la curva queda suave) y un suavizado que sube rápido y baja lento, como
+// un analizador de barras. Misma escala en dB que Analyzer. Se usa desde un solo hilo.
+class SnapshotSpectrum {
+public:
+    static constexpr int kMaxSamples = 2048, kFft = 4096, kBins = kFft / 2;
+
+    SnapshotSpectrum();
+    void reset();
+    // n ≤ kMaxSamples muestras (-1..1) a `sampleRate`.
+    void update(const float *mono, int n, int sampleRate);
+    SpectrumView spectrum() const { return {mDb.data(), kBins, mBinHz}; }
+
+private:
+    FFT mFft;
+    std::vector<double> mRe, mIm, mWin, mMag;
+    std::vector<float> mDb;
+    int mWinN = 0;
+    float mBinHz = 48000.0f / kFft;
 };
 
 // Espectrograma del archivo completo, como el prototipo: `cols` momentos × `rows` bandas

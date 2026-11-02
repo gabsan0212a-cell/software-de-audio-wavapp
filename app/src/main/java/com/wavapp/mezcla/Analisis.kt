@@ -3,6 +3,7 @@ package com.wavapp.mezcla
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -57,11 +58,18 @@ object Analisis {
 
     private val stats = FloatArray(Nucleo.DATOS_ANALISIS)
 
-    /** Espectrograma en vivo (de lo que no es una pista): cambia `versionVivo` cuando llega otra columna. */
+    /**
+     * Espectrograma en vivo (de lo que no es una pista): anillo con las columnas del núcleo (la
+     * número k va en k % SG_VIVO_COLUMNAS). `columnasVivo` cuenta las que llegaron (cambia cuando
+     * llega otra: se lee al dibujar).
+     */
     val espectrogramaVivo = ByteArray(Nucleo.SG_VIVO_COLUMNAS * Nucleo.SG_VIVO_FILAS)
-    var versionVivo by mutableIntStateOf(0)
+    private val nuevasVivo = ByteArray(Nucleo.SG_VIVO_COLUMNAS * Nucleo.SG_VIVO_FILAS)
+    var columnasVivo by mutableLongStateOf(0L)
         private set
-    private var columnasVivo = -1L
+
+    /** Lo pone la plataforma mientras escucha el celular: cada cuadro pide lo último que sonó. */
+    var alCuadro: (() -> Unit)? = null
 
     /** Espectrogramas que ya llegaron del núcleo, por id de pista. */
     val espectrogramas = mutableStateMapOf<Int, ByteArray>()
@@ -71,6 +79,7 @@ object Analisis {
 
     /** Se llama en cada cuadro de pantalla. */
     fun tick(ahoraMs: Long) {
+        alCuadro?.invoke()
         val eq = Mesa.eqAbierta
         val forzada = fuenteForzada
         // Qué escucha el analizador: la pista (o la entrada) del EQ abierto, lo que pida la
@@ -98,13 +107,27 @@ object Analisis {
         gananciaGonio = Math.round(stats[10])
         version++
         // La mezcla, el micrófono y el celular tienen espectrograma en vivo (las pistas, el del archivo).
-        if (fuente == -1 || fuente == Nucleo.ID_ENTRADA || fuente == Nucleo.ID_CELULAR) {
-            val n = Nucleo.liveSpectrogram(espectrogramaVivo)
-            if (n != columnasVivo) {
-                columnasVivo = n
-                versionVivo++
-            }
+        if (fuente == -1 || fuente == Nucleo.ID_ENTRADA || fuente == Nucleo.ID_CELULAR) leerEspectrogramaVivo()
+    }
+
+    // Solo las columnas nuevas (una o dos por vez), al anillo.
+    private fun leerEspectrogramaVivo() {
+        val cols = Nucleo.SG_VIVO_COLUMNAS
+        val filas = Nucleo.SG_VIVO_FILAS
+        var desde = columnasVivo
+        var total = Nucleo.liveSpectrogram(desde, nuevasVivo)
+        if (total < desde) {  // empezó de nuevo (otra fuente)
+            espectrogramaVivo.fill(0)
+            desde = 0
+            total = Nucleo.liveSpectrogram(0, nuevasVivo)
         }
+        if (total == desde && total == columnasVivo) return
+        val n = minOf(total - desde, cols.toLong()).toInt()
+        for (c in 0 until n) {
+            val k = ((total - n + c) % cols).toInt()
+            System.arraycopy(nuevasVivo, c * filas, espectrogramaVivo, k * filas, filas)
+        }
+        columnasVivo = total
     }
 
     /** Veredicto de fase y paneo, con los mismos textos que el prototipo. */

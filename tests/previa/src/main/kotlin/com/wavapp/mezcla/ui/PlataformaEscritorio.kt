@@ -1,6 +1,8 @@
 package com.wavapp.mezcla.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -74,17 +76,80 @@ internal fun recordarPermisoMicrofono(): PermisoMicrofono = PermisoMicrofono(tru
 @Composable
 internal fun recordarPermisoAvisos(): () -> Unit = {}
 
+/** La vista previa puede pedir la captura completa (como el botón). */
+internal var completaDePrueba by mutableStateOf(false)
+
 @Composable
-internal fun recordarEscucharCelular(): EscuchaCelular =
-    EscuchaCelular(true, { CelularDePrueba.empezar() }, { CelularDePrueba.detener() })
+internal fun recordarEscucharCelular(escuchar: Boolean): EscuchaCelular {
+    var completa by remember { mutableStateOf(false) }
+    if (completaDePrueba != completa) completa = completaDePrueba
+    val nativo = escuchar && !completa
+    DisposableEffect(nativo) {
+        if (nativo) {
+            CelularDePrueba.empezarNativo()
+            com.wavapp.mezcla.Analisis.alCuadro = { CelularDePrueba.pedir() }
+        }
+        onDispose {
+            if (nativo) {
+                com.wavapp.mezcla.Analisis.alCuadro = null
+                CelularDePrueba.detener()
+            }
+        }
+    }
+    DisposableEffect(completa) {
+        if (completa) CelularDePrueba.empezar()
+        onDispose { if (completa) CelularDePrueba.detener() }
+    }
+    return EscuchaCelular(
+        permiso = true, pedirPermiso = {}, nativoFallo = false, completaDisponible = true, completaPedida = completa,
+        empezarCompleta = { completaDePrueba = true }, detenerCompleta = { completaDePrueba = false },
+    )
+}
+
+internal class ImagenViva(val ancho: Int, val alto: Int) {
+    var imagen: ImageBitmap = imagenDePixeles(IntArray(ancho * alto), ancho, alto)
+        private set
+
+    fun escribir(px: IntArray, x: Int, n: Int) {
+        imagen = imagenDePixeles(px, ancho, alto)
+    }
+}
 
 /**
  * En la vista previa no hay otras apps: "lo que suena en el celular" es una canción de prueba
- * (bombo, bajo, acordes y hi-hats a 85 BPM en Sol menor) que se manda al núcleo a tiempo real.
+ * (bombo, bajo, acordes y hi-hats a 85 BPM en Sol menor): seguida a tiempo real (captura
+ * completa) o en pedazos de 1024 muestras de 8 bits, uno por cuadro (como el Visualizer).
  */
 internal object CelularDePrueba {
     @Volatile private var seguir = false
     private var hilo: Thread? = null
+    private var nativo = false
+    private var inicioNativo = 0L
+    private val rndNativo = java.util.Random(11)
+    private val pedazo = ByteArray(1024)
+
+    fun empezarNativo() {
+        nativo = true
+        inicioNativo = System.nanoTime()
+        com.wavapp.mezcla.Nucleo.mediaOpenedNative()
+    }
+
+    /** Un cuadro pide lo último: los 1024 cuadros que terminan ahora. */
+    fun pedir() {
+        if (!nativo) return
+        val fin = (System.nanoTime() - inicioNativo) * 48000 / 1_000_000_000L
+        var pico = 0.0
+        var s2 = 0.0
+        for (i in 0 until 1024) {
+            val (l, r) = muestra(fin - 1024 + i, rndNativo)
+            val m = ((l + r) / 2).coerceIn(-1.0, 1.0)
+            pico = maxOf(pico, Math.abs(m))
+            s2 += m * m
+            pedazo[i] = (128 + Math.round(m * 127)).toInt().coerceIn(0, 255).toByte()
+        }
+        val mb = { x: Double -> if (x > 1e-6) (2000 * Math.log10(x)).toInt() else -9600 }
+        com.wavapp.mezcla.Nucleo.mediaSnapshot(pedazo, 1024, 48_000_000, mb(pico), mb(Math.sqrt(s2 / 1024)))
+    }
 
     fun empezar() {
         if (seguir) return
@@ -114,6 +179,7 @@ internal object CelularDePrueba {
     }
 
     fun detener() {
+        nativo = false
         seguir = false
         hilo?.join()
         hilo = null

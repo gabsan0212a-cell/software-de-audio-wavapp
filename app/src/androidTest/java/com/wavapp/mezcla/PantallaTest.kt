@@ -141,15 +141,43 @@ class PantallaTest {
         avanzarMedidores()
         captura("8-espectrograma")
 
-        // Lo que suena en el celular: el permiso de grabar o transmitir no se puede dar desde una
-        // prueba, así que la prueba manda el audio al núcleo como lo hace el servicio.
+        // Lo que suena en el celular. La forma nativa (el Visualizer de Android) arranca sola; para
+        // no depender de lo que suene en el emulador, la prueba manda los pedazos como Android.
         val fuenteAntes = Analisis.fuenteId
         panel.performScrollToKey("fuentes")
         regla.onNodeWithTag("fuenteCelular").performClick()
         regla.waitUntil(2_000) { Analisis.fuenteId == Nucleo.ID_CELULAR }
-        regla.onNodeWithTag("empezarAEscuchar").assertIsDisplayed()
-        Nucleo.mediaOpened(2)
+        regla.onNodeWithTag("tarjetaCelular").assertIsDisplayed()
+        regla.runOnUiThread { OidoNativo.detener() }
+        Nucleo.mediaOpenedNative()
         val sonando = java.util.concurrent.atomic.AtomicBoolean(true)
+        val oido = Thread {
+            val pedazo = ByteArray(1024)
+            var t = 0L
+            while (sonando.get()) {
+                for (i in 0 until 1024) pedazo[i] = (128 + 80 * Math.sin(2 * Math.PI * 440.0 * (t + i) / 48000.0)).toInt().toByte()
+                Nucleo.mediaSnapshot(pedazo, 1024, 48_000_000, -1200, -1500)
+                t += 768
+                Thread.sleep(16)
+            }
+        }.apply { start() }
+        try {
+            avanzarHasta(10_000, {
+                "no analizó el celular (nativo): escuchando=${Mesa.celular.escuchando}, nativo=${Mesa.celular.nativo}, " +
+                    "activo=${Analisis.activo}, espectrograma=${Analisis.columnasVivo}"
+            }) { Mesa.celular.escuchando && Mesa.celular.nativo && Analisis.activo && Analisis.columnasVivo > 0 }
+            assertTrue("nivel ${Mesa.celular.rmsDb}", Mesa.celular.rmsDb > -20f && Mesa.celular.rmsDb < -10f)
+            regla.onNodeWithTag("capturaCompleta").assertExists()
+            avanzarMedidores()
+            captura("8b-celular")
+        } finally {
+            sonando.set(false)
+            oido.join()
+            Nucleo.mediaClosed()
+        }
+        // La captura completa (lo que manda su servicio): estéreo y seguida.
+        Nucleo.mediaOpened(2)
+        sonando.set(true)
         val otraApp = Thread {
             val pedazo = ShortArray(2 * 960)
             var t = 0L
@@ -166,12 +194,11 @@ class PantallaTest {
         }.apply { start() }
         try {
             avanzarHasta(10_000, {
-                "no analizó el celular: escuchando=${Mesa.celular.escuchando}, activo=${Analisis.activo}, " +
-                    "espectrograma=${Analisis.versionVivo}"
-            }) { Mesa.celular.escuchando && Analisis.activo && Analisis.versionVivo > 0 }
+                "no analizó el celular (completa): escuchando=${Mesa.celular.escuchando}, activo=${Analisis.activo}"
+            }) { Mesa.celular.escuchando && !Mesa.celular.nativo && Analisis.activo }
             regla.onNodeWithTag("dejarDeEscuchar").assertIsDisplayed()
             avanzarMedidores()
-            captura("8b-celular")
+            captura("8c-celular-completa")
         } finally {
             sonando.set(false)
             otraApp.join()

@@ -33,8 +33,13 @@ public:
     void stats(float *out) const;
     // Copia el goniómetro a `out` (hasta `max` valores) y devuelve cuántos puntos o rayos hay.
     int goniometer(float *out, int max) const;
-    // Espectro de 20 Hz a 20 kHz en `cols` columnas logarítmicas: el máximo (dB) de cada una.
-    static void spectrumColumns(const Analyzer &a, float *out, int cols);
+    // Espectro de 20 Hz a 20 kHz en `cols` columnas logarítmicas: el máximo (dB) de cada una
+    // (donde una columna es más angosta que un bin, el valor entre los dos más cercanos).
+    static void spectrumColumns(const SpectrumView &s, float *out, int cols);
+    static void spectrumColumns(const Analyzer &a, float *out, int cols) { spectrumColumns(a.spectrum(), out, cols); }
+    // Lo que suena en el celular en instantáneas (ver SnapshotSpectrum): `fresh` = llegó una
+    // nueva; `open` = se está escuchando; `level` = RMS lineal. Sin estéreo ni zumbido.
+    bool updateSnapshot(bool fresh, bool open, float level, int64_t nowMs);
 
     bool active() const { return mActive; }
     float correlation() const { return mCorrelation; }

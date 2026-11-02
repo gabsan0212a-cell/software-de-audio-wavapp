@@ -283,15 +283,23 @@ object Nucleo {
     external fun spectrumColumns(out: FloatArray)
     /** 0..255 [col * filas + fila], fila 0 = 20 Hz. null mientras se calcula. */
     external fun spectrogram(id: Int): ByteArray?
-    /** Espectrograma en vivo (SG_VIVO_COLUMNAS × SG_VIVO_FILAS, igual que spectrogram); devuelve cuántas columnas van. */
-    external fun liveSpectrogram(out: ByteArray): Long
+    /**
+     * Espectrograma en vivo: las columnas que llegaron después de las primeras `since` (hasta
+     * SG_VIVO_COLUMNAS, de la más vieja a la más nueva, SG_VIVO_FILAS cada una, fila 0 = 20 Hz).
+     * Devuelve cuántas van en total.
+     */
+    external fun liveSpectrogram(since: Long, out: ByteArray): Long
 
     // Lo que suena en el celular (la plataforma lo captura con permiso y lo manda; el núcleo lo analiza).
     external fun mediaOpened(channels: Int)
+    /** La forma nativa: Android (Visualizer) da pedazos sueltos de lo que sale. */
+    external fun mediaOpenedNative()
     external fun mediaClosed()
+    /** Un pedazo de 8 bits (128 = 0), su frecuencia en mHz y su pico y RMS en mB (Int.MIN_VALUE = no se sabe). */
+    external fun mediaSnapshot(wave: ByteArray, n: Int, rateMilliHz: Int, peakMb: Int, rmsMb: Int)
     /** Cuadros intercalados de 16 bits, a 48 kHz. */
     external fun mediaPush(pcm: ShortArray, frames: Int)
-    /** [escuchando, pico L, pico R (desde la lectura anterior), segundos sin sonido]. */
+    /** [escuchando, pico L, pico R (dB, con caída), segundos sin sonido, nativa, RMS (dB, con caída)]. */
     external fun mediaState(out: FloatArray)
 
     // ---------- Entrada en vivo (micrófono o interfaz USB) y grabación

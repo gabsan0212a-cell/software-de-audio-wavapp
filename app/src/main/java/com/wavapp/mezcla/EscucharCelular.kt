@@ -23,8 +23,9 @@ import android.os.Looper
 import android.os.Process
 
 /**
- * Escuchar lo que suena en el celular (la música o los videos de otras apps) para verlo en
- * Análisis. Es lo que obliga Android: el permiso de "grabar o transmitir" (MediaProjection), un
+ * La captura completa de lo que suena en el celular (la otra forma es [OidoNativo], sin permiso
+ * de grabar): estéreo y seguida, para fase, paneo y LUFS. Es lo que obliga Android: el permiso de
+ * "grabar o transmitir" (MediaProjection), un
  * servicio en primer plano con su aviso y AudioRecord con la captura de lo que se reproduce
  * (Android 10 o más nuevo). El audio pasa tal cual al núcleo, que lo analiza: no suena, no se
  * graba ni se guarda. Se va al tocar "Dejar de escuchar", desde el aviso o desde Android.
@@ -171,7 +172,10 @@ class EscucharCelular : Service() {
         }
         grabador?.release()
         grabador = null
-        Nucleo.mediaClosed()
+        // Si ya volvió la escucha nativa, esa sigue.
+        val estado = FloatArray(Nucleo.DATOS_CELULAR)
+        Nucleo.mediaState(estado)
+        if (estado[4] == 0f) Nucleo.mediaClosed()
         proyeccion?.stop()
         proyeccion = null
         super.onDestroy()

@@ -142,13 +142,13 @@ class PantallaTest {
         captura("8-espectrograma")
 
         // Lo que suena en el celular. La forma nativa (el Visualizer de Android) arranca sola; para
-        // no depender de lo que suene en el emulador, la prueba manda los pedazos como Android.
+        // no depender de lo que suene en el emulador, se apaga y la prueba manda los pedazos como Android.
         val fuenteAntes = Analisis.fuenteId
+        OidoNativo.deshabilitado = true
         panel.performScrollToKey("fuentes")
         regla.onNodeWithTag("fuenteCelular").performClick()
         regla.waitUntil(2_000) { Analisis.fuenteId == Nucleo.ID_CELULAR }
         regla.onNodeWithTag("tarjetaCelular").assertIsDisplayed()
-        regla.runOnUiThread { OidoNativo.detener() }
         Nucleo.mediaOpenedNative()
         val sonando = java.util.concurrent.atomic.AtomicBoolean(true)
         val oido = Thread {
@@ -164,9 +164,11 @@ class PantallaTest {
         try {
             avanzarHasta(10_000, {
                 "no analizó el celular (nativo): escuchando=${Mesa.celular.escuchando}, nativo=${Mesa.celular.nativo}, " +
-                    "activo=${Analisis.activo}, espectrograma=${Analisis.columnasVivo}"
-            }) { Mesa.celular.escuchando && Mesa.celular.nativo && Analisis.activo && Analisis.columnasVivo > 0 }
-            assertTrue("nivel ${Mesa.celular.rmsDb}", Mesa.celular.rmsDb > -20f && Mesa.celular.rmsDb < -10f)
+                    "activo=${Analisis.activo}, espectrograma=${Analisis.columnasVivo}, nivel=${Mesa.celular.rmsDb}"
+            }) {
+                Mesa.celular.escuchando && Mesa.celular.nativo && Analisis.activo && Analisis.columnasVivo > 0 &&
+                    Mesa.celular.rmsDb > -20f && Mesa.celular.rmsDb < -10f
+            }
             regla.onNodeWithTag("capturaCompleta").assertExists()
             avanzarMedidores()
             captura("8b-celular")
@@ -205,6 +207,7 @@ class PantallaTest {
             Nucleo.mediaClosed()
         }
         regla.runOnUiThread { Analisis.fuenteId = fuenteAntes }
+        OidoNativo.deshabilitado = false
         avanzarMedidores()
 
         // Edición en la primera pista: elegir, cortar, mover, borrar, deshacer y rehacer.

@@ -12,6 +12,8 @@ import android.media.AudioManager
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.WindowInsetsController
 import androidx.activity.compose.BackHandler
@@ -173,7 +175,9 @@ internal fun recordarEscucharCelular(escuchar: Boolean): EscuchaCelular {
     val nativo = escuchar && permiso && !completa
     DisposableEffect(nativo) {
         if (nativo) {
-            fallo = !OidoNativo.empezar()
+            fallo = false
+            val principal = Handler(Looper.getMainLooper())
+            OidoNativo.empezar { principal.post { fallo = true } }
             Analisis.alCuadro = { OidoNativo.pedir() }
         }
         onDispose {

@@ -72,11 +72,19 @@ private const val SG_TOPE = 20000f  // el espectrograma del núcleo llega hasta 
 /** Fondo de las gráficas de análisis (como la pantalla de un instrumento). */
 private fun fondoGrafica(p: Paleta) = if (p.oscuro) Color(0xFF0B0B0C) else Color(0xFFF6F6F8)
 
-/** Pestaña "Análisis": diagnóstico de fase y paneo, espectro con zumbido y espectrograma. */
+/** Escuchar lo que suena en el celular: si este Android lo permite, empezar y dejar de escuchar. */
+class EscuchaCelular(val disponible: Boolean, val empezar: () -> Unit, val detener: () -> Unit)
+
+/**
+ * Pestaña "Análisis": qué se analiza (la mezcla, una pista, el micrófono o lo que suena en el
+ * celular), volumen percibido, diagnóstico de fase y paneo, espectro con zumbido y espectrograma.
+ */
 @Composable
 fun PestanaAnalisis(abajo: Dp) {
     val lista = rememberLazyListState()
     val fuente = Mesa.pistas.firstOrNull { it.id == Analisis.fuenteId }
+    val celular = Analisis.fuenteId == Nucleo.ID_CELULAR
+    val escucha = recordarEscucharCelular()
     LaunchedEffect(fuente?.id) { fuente?.let { Analisis.pedirEspectrograma(it) } }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
@@ -86,25 +94,42 @@ fun PestanaAnalisis(abajo: Dp) {
         ) {
             item(key = "espacio") { EspacioEncabezado() }
             item(key = "titulo") { TituloGrande("Análisis") }
-            if (Mesa.pistas.isEmpty()) {
-                item(key = "vacio") { PieGrupo("Agrega pistas en Mezcla para analizarlas.", Modifier.padding(top = 12.dp)) }
-                return@LazyColumn
-            }
-            item(key = "lufsTitulo") { EncabezadoSeccion("Volumen percibido", detalle = "LUFS · la mezcla") }
-            item(key = "lufs") { TarjetaLufs() }
-            item(key = "lufsCancionTitulo") { EncabezadoSeccion("Canción completa") }
-            item(key = "lufsCancion") { TarjetaLufsCancion() }
-            item(key = "lufsPie") {
-                PieGrupo(
-                    "LUFS es el volumen como lo oye la gente (no solo los picos). Se mide lo que sale, después del " +
-                        "master. Spotify y YouTube ponen todo a −14 LUFS: más fuerte no suena más fuerte allá.",
-                )
-            }
             item(key = "fuentesTitulo") { EncabezadoSeccion("Analizar") }
             item(key = "fuentes") { Fuentes(fuente) }
+            if (celular) {
+                item(key = "celular") { TarjetaCelular(escucha) }
+            } else if (Mesa.pistas.isEmpty() && Analisis.fuenteId != Nucleo.ID_ENTRADA) {
+                item(key = "vacio") {
+                    PieGrupo(
+                        "La mezcla está vacía: agrega pistas en Mezcla, o toca Celular para ver lo que suena en otras " +
+                            "apps (Spotify, YouTube…).",
+                        Modifier.padding(start = 4.dp),
+                    )
+                }
+            }
+            item(key = "lufsTitulo") {
+                EncabezadoSeccion("Volumen percibido", detalle = if (celular) "LUFS · el celular" else "LUFS · la mezcla")
+            }
+            item(key = "lufs") { TarjetaLufs() }
+            if (!celular && Mesa.pistas.isNotEmpty()) {
+                item(key = "lufsCancionTitulo") { EncabezadoSeccion("Canción completa") }
+                item(key = "lufsCancion") { TarjetaLufsCancion() }
+            }
+            item(key = "lufsPie") {
+                PieGrupo(
+                    if (celular) {
+                        "LUFS es el volumen como lo oye la gente (no solo los picos). Aquí se mide lo que suena en el " +
+                            "celular, antes de su volumen. Así ves a cuánto deja Spotify o YouTube cada canción."
+                    } else {
+                        "LUFS es el volumen como lo oye la gente (no solo los picos). Se mide lo que sale, después del " +
+                            "master. Spotify y YouTube ponen todo a −14 LUFS: más fuerte no suena más fuerte allá."
+                    },
+                )
+            }
             item(key = "diagTitulo") {
                 val detalle = when {
                     Analisis.fuenteId == Nucleo.ID_ENTRADA -> if (Mesa.entrada.abierta) "Micrófono en vivo" else "Micrófono (cerrado)"
+                    celular -> if (Mesa.celular.escuchando) "El celular en vivo" else "El celular (sin escuchar)"
                     else -> fuente?.nombre ?: "Mezcla completa"
                 }
                 EncabezadoSeccion("Diagnóstico", detalle = detalle)
@@ -127,42 +152,51 @@ fun PestanaAnalisis(abajo: Dp) {
                     Espectro(Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(10.dp)))
                     Spacer(Modifier.height(10.dp))
                     TextoZumbido()
-                    Spacer(Modifier.height(12.dp))
-                    Segmentado(
-                        listOf("Sin notch", "50 Hz", "60 Hz"), when (Analisis.notch) { 50 -> 1; 60 -> 2; else -> 0 },
-                        { Analisis.ponerNotch(listOf(0, 50, 60)[it]) }, Modifier.fillMaxWidth(),
-                    )
+                    // El notch es de la mezcla: a lo que suena en otra app no le llega.
+                    if (!celular) {
+                        Spacer(Modifier.height(12.dp))
+                        Segmentado(
+                            listOf("Sin notch", "50 Hz", "60 Hz"), when (Analisis.notch) { 50 -> 1; 60 -> 2; else -> 0 },
+                            { Analisis.ponerNotch(listOf(0, 50, 60)[it]) }, Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             }
-            item(key = "espPie") {
-                PieGrupo("El notch quita 50 o 60 Hz y 3 armónicos de toda la mezcla (también al exportar).")
+            if (!celular) {
+                item(key = "espPie") {
+                    PieGrupo("El notch quita 50 o 60 Hz y 3 armónicos de toda la mezcla (también al exportar).")
+                }
             }
             item(key = "sgTitulo") {
-                EncabezadoSeccion("Espectrograma", detalle = if (fuente != null) "antes del EQ" else null)
+                EncabezadoSeccion("Espectrograma", detalle = if (fuente != null) "antes del EQ" else "en vivo")
             }
             item(key = "sg") {
                 Tarjeta(Modifier.padding(horizontal = 16.dp)) {
                     if (fuente == null) {
-                        Texto("Elige una pista arriba para ver su espectrograma.", Tipo.subtitulo, LocalPaleta.current.texto2)
+                        EspectrogramaVivo(Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(10.dp)))
                     } else {
                         Espectrograma(fuente, Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(10.dp)))
                     }
                 }
             }
-            if (fuente != null) {
-                item(key = "sgPie") {
-                    PieGrupo(
+            item(key = "sgPie") {
+                PieGrupo(
+                    if (fuente != null) {
                         "El fondo es silencio; verde suena bajo, naranja medio y rojo fuerte. Una línea horizontal " +
-                            "constante en 50/60 Hz o múltiplos suele ser zumbido. Toca para saltar a ese momento.",
-                    )
-                }
+                            "constante en 50/60 Hz o múltiplos suele ser zumbido. Toca para saltar a ese momento."
+                    } else {
+                        "Los últimos 12 segundos de lo que se analiza; lo más nuevo, a la derecha. Abajo los graves y " +
+                            "arriba los agudos: el bombo y el bajo abajo, la voz en medio, platillos y \"s\" arriba. " +
+                            "Elige una pista arriba para ver la canción completa."
+                    },
+                )
             }
         }
         EncabezadoFlotante(lista, "Análisis")
     }
 }
 
-/** Qué se analiza: la mezcla o una pista. */
+/** Qué se analiza: la mezcla, el micrófono, lo que suena en el celular o una pista. */
 @Composable
 private fun Fuentes(fuente: Pista?) {
     val p = LocalPaleta.current
@@ -170,7 +204,11 @@ private fun Fuentes(fuente: Pista?) {
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Chip("Mezcla", fuente == null && !Analisis.deEntrada, { Analisis.fuenteId = -1 })
+        Chip("Mezcla", Analisis.fuenteId == -1, { Analisis.fuenteId = -1 })
+        Chip(
+            "Celular", Analisis.fuenteId == Nucleo.ID_CELULAR, { Analisis.fuenteId = Nucleo.ID_CELULAR },
+            Modifier.testTag("fuenteCelular"), icono = Iconos.celular,
+        )
         Chip(
             "Micrófono", Analisis.fuenteId == Nucleo.ID_ENTRADA, { Analisis.fuenteId = Nucleo.ID_ENTRADA },
             icono = Iconos.microfono,
@@ -181,6 +219,122 @@ private fun Fuentes(fuente: Pista?) {
                 colorActivo = p.pistas[pista.color],
             )
         }
+    }
+}
+
+/**
+ * Escuchar lo que suena en el celular (la música o los videos de otras apps): empezar, el
+ * estado y dejar de escuchar.
+ */
+@Composable
+private fun TarjetaCelular(escucha: EscuchaCelular) {
+    val p = LocalPaleta.current
+    val c = Mesa.celular
+    Tarjeta(Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag("tarjetaCelular")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AzulejoIcono(Iconos.celular, if (c.escuchando) p.rojo else p.acento, 44.dp)
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Texto("Lo que suena en el celular", Tipo.encabezado, p.texto, lineas = 1)
+                Texto(
+                    when {
+                        !escucha.disponible -> "Hace falta Android 10 o más nuevo"
+                        !c.escuchando -> "Spotify, YouTube, TikTok, juegos…"
+                        c.callado -> "Escuchando · no llega sonido"
+                        else -> "● Escuchando en vivo"
+                    },
+                    Tipo.nota, if (c.escuchando && !c.callado) p.rojo else p.texto2, lineas = 1,
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        when {
+            !escucha.disponible -> Texto(
+                "Este Android no deja que una app escuche lo que suena en las otras.", Tipo.subtitulo, p.texto2,
+            )
+            c.escuchando -> {
+                if (c.callado) {
+                    Texto(
+                        "Pon música o un video en otra app. Si ya suena y no llega nada, esa app no deja que otras la " +
+                            "escuchen (algunas protegen su contenido).",
+                        Tipo.subtitulo, p.texto2, Modifier.padding(bottom = 12.dp),
+                    )
+                }
+                BotonRelleno(
+                    "Dejar de escuchar", escucha.detener, Modifier.fillMaxWidth().testTag("dejarDeEscuchar"),
+                    icono = Iconos.detener, principal = false,
+                )
+            }
+            else -> {
+                Texto(
+                    "Pon algo a sonar en otra app y míralo aquí: espectro, espectrograma en vivo, fase, paneo y volumen " +
+                        "percibido. Android lo llama \"grabar o transmitir\": WavApp solo escucha el sonido mientras " +
+                        "está aquí, no graba ni guarda nada.",
+                    Tipo.subtitulo, p.texto2, Modifier.padding(bottom = 12.dp),
+                )
+                BotonRelleno(
+                    "Empezar a escuchar", escucha.empezar, Modifier.fillMaxWidth().testTag("empezarAEscuchar"),
+                    icono = Iconos.celular,
+                )
+            }
+        }
+    }
+}
+
+/** Espectrograma en vivo (los últimos 12 s de lo que se analiza; el núcleo da los valores). */
+@Composable
+private fun EspectrogramaVivo(modifier: Modifier) {
+    val pal = LocalPaleta.current
+    val medidor = rememberTextMeasurer()
+    val fondo = fondoGrafica(pal)
+    val lut = remember(pal) { tablaColores(pal, fondo) }
+    val estado = remember { EstadoVivo() }
+    Canvas(modifier.background(fondo).semantics { contentDescription = "Espectrograma en vivo" }) {
+        // Se rehace al dibujar cuando llega otra columna (no al componer).
+        val v = Analisis.versionVivo
+        if (estado.version != v || estado.lut !== lut) {
+            estado.version = v
+            estado.lut = lut
+            val cols = Nucleo.SG_VIVO_COLUMNAS
+            val filas = Nucleo.SG_VIVO_FILAS
+            val datos = Analisis.espectrogramaVivo
+            val px = estado.pixeles(cols * filas)
+            for (c in 0 until cols) for (r in 0 until filas) {
+                px[(filas - 1 - r) * cols + c] = lut[datos[c * filas + r].toInt() and 0xFF]
+            }
+            estado.imagen = imagenDePixeles(px, cols, filas)
+        }
+        val w = size.width
+        val h = size.height
+        val d = density
+        estado.imagen?.let {
+            drawImage(it, srcOffset = IntOffset.Zero, srcSize = IntSize(it.width, it.height), dstOffset = IntOffset.Zero, dstSize = IntSize(w.toInt().coerceAtLeast(1), h.toInt().coerceAtLeast(1)))
+        }
+        val y = { f: Float -> h - ln(f / 20f) / ln(SG_TOPE / 20f) * h }
+        val estilo = TextStyle(color = pal.texto, fontSize = 9.sp, fontWeight = FontWeight.Medium)
+        for (f in listOf(50f, 100f, 200f, 500f, 1000f, 2000f, 5000f, 10000f)) {
+            drawLine(pal.texto2.copy(alpha = 0.3f), Offset(0f, y(f)), Offset(w, y(f)), d)
+            textoSeguro(medidor, etiquetaHz(f), Offset(4 * d, y(f) - 14 * d), estilo)
+        }
+        // Cada 2 s, contando desde ahora (a la derecha) hacia atrás.
+        val segundos = Nucleo.SG_VIVO_COLUMNAS * 0.05f
+        var t = 2
+        while (t < segundos) {
+            val x = w - t / segundos * w
+            drawLine(pal.texto2.copy(alpha = 0.3f), Offset(x, 0f), Offset(x, h), d)
+            textoSeguro(medidor, "−${t}s", Offset(x + 3 * d, h - 15 * d), estilo)
+            t += 2
+        }
+    }
+}
+
+private class EstadoVivo {
+    var version = -1
+    var lut: IntArray? = null
+    var imagen: ImageBitmap? = null
+    private var px = IntArray(0)
+    fun pixeles(n: Int): IntArray {
+        if (px.size != n) px = IntArray(n)
+        return px
     }
 }
 

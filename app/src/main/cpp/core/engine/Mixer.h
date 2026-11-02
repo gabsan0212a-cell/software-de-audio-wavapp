@@ -99,8 +99,9 @@ public:
 
     // Análisis: qué se manda al analizador. -1 = la mezcla (bus, antes del volumen master);
     // 0..11 = esa pista después de volumen y paneo (antes de mute/solo), como el prototipo;
-    // kTapInput = la entrada en vivo (después de su EQ; la escribe su hilo con writeInputTap).
-    static constexpr int kTapInput = -2;
+    // kTapInput = la entrada en vivo (después de su EQ; la escribe su hilo con writeInputTap);
+    // kTapMedia = lo que suena en el celular (lo escribe el hilo de la captura con writeMediaTap).
+    static constexpr int kTapInput = -2, kTapMedia = -3;
     void setAnalysisSource(int slot) { mTapSource.store(slot); }
     int analysisSource() const { return mTapSource.load(); }
     static constexpr int kTapSize = 32768;
@@ -139,7 +140,9 @@ public:
     // presentación.
     bool needsOutput() const;
     // Lo llama el hilo de la entrada (solo si el análisis es de la entrada).
-    void writeInputTap(const float *l, const float *r, int n);
+    void writeInputTap(const float *l, const float *r, int n) { writeExternalTap(kTapInput, l, r, n); }
+    // Lo llama el hilo de la captura del celular (solo si el análisis es de lo que suena ahí).
+    void writeMediaTap(const float *l, const float *r, int n) { writeExternalTap(kTapMedia, l, r, n); }
 
     void play();
     void pause();
@@ -159,6 +162,8 @@ public:
     void process(float *out, int frames, int channels);
 
 private:
+    // Lo que escribe otro hilo al análisis (la entrada o el celular), si es la fuente elegida.
+    void writeExternalTap(int source, const float *l, const float *r, int n);
     static constexpr int kBlock = 64;
 
     // Pedazo listo para el hilo de audio: con los fundidos ya resueltos.

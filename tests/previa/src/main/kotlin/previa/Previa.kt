@@ -602,6 +602,32 @@ fun main(args: Array<String>) {
             foto("66-mezcla-portada")
             println("primer instrumento del estilo: $primero")
         }
+        if (quiere("celular")) {
+            // Escuchar lo que suena en el celular (aquí, una canción de prueba): el análisis, el
+            // volumen percibido y el espectrograma en vivo la siguen.
+            if (Mesa.reproduciendo) Mesa.reproducirPausar()
+            Mesa.instrumentoAbierto = 0
+            Vista.abrirInstrumento = 0
+            Vista.pestana = Vista.ANALISIS
+            Analisis.fuenteId = Nucleo.ID_CELULAR
+            esperar(700)
+            foto("70-celular")
+            com.wavapp.mezcla.ui.CelularDePrueba.empezar()
+            hasta(10_000, "escuchando el celular") { Mesa.celular.escuchando && Analisis.activo }
+            esperar(7000)
+            println("celular: ${Mesa.volumen.corto} LUFS corto, veredicto ${Analisis.codigoVeredicto}")
+            foto("71-celular-escuchando")
+            rueda(500f, 24)
+            esperar(500)
+            foto("72-celular-diagnostico", ambos = false)
+            rueda(500f, 40)
+            esperar(500)
+            foto("73-celular-espectrograma")
+            rueda(500f, -80)
+            com.wavapp.mezcla.ui.CelularDePrueba.detener()
+            Analisis.fuenteId = -1
+            esperar(400)
+        }
         if (quiere("vacio")) {
             if (Mesa.reproduciendo) Mesa.reproducirPausar()
             Nucleo.clearProject()

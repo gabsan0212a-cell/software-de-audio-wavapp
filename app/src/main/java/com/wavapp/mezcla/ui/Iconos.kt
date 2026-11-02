@@ -183,6 +183,17 @@ object Iconos {
             )
         }
     }
+    val celular by lazy {
+        icono("celular") {
+            trazo(
+                1.7f,
+                "M7 3 H11 A2 2 0 0 1 13 5 V19 A2 2 0 0 1 11 21 H7 A2 2 0 0 1 5 19 V5 A2 2 0 0 1 7 3 Z",
+                "M8 18 H10",
+                "M16 9 A4 4 0 0 1 16 15",
+                "M18.5 6.5 A7.5 7.5 0 0 1 18.5 17.5",
+            )
+        }
+    }
     val audifonos by lazy {
         icono("audifonos") {
             trazo(1.8f, "M4.5 15 V12 A7.5 7.5 0 0 1 19.5 12 V15")

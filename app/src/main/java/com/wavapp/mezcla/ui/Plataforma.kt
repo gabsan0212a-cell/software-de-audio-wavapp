@@ -1,6 +1,7 @@
 package com.wavapp.mezcla.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -8,6 +9,8 @@ import android.graphics.BitmapFactory
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.projection.MediaProjectionConfig
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.view.View
 import android.view.WindowInsetsController
@@ -25,12 +28,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import com.wavapp.mezcla.Errores
+import com.wavapp.mezcla.EscucharCelular
 import com.wavapp.mezcla.Mesa
 import com.wavapp.mezcla.R
 
 // Lo que obliga Android (y nada más): botón "atrás", pantalla encendida, selector de archivos,
 // color de los íconos de la barra de estado, la portada, imágenes desde píxeles, permisos
-// (micrófono y avisos) y qué entradas y salidas de audio hay conectadas.
+// (micrófono, avisos y grabar o transmitir para escuchar el celular) y qué entradas y salidas de
+// audio hay conectadas.
 
 @Composable
 internal fun AlRegresar(activo: Boolean, accion: () -> Unit) = BackHandler(activo, accion)
@@ -138,6 +143,51 @@ private fun cargarPortada(context: Context): ImageBitmap {
 /** Imagen a partir de píxeles ARGB (el espectrograma). */
 internal fun imagenDePixeles(px: IntArray, ancho: Int, alto: Int): ImageBitmap =
     Bitmap.createBitmap(px, ancho, alto, Bitmap.Config.ARGB_8888).asImageBitmap()
+
+/**
+ * Escuchar lo que suena en el celular (Android 10 o más nuevo): pide el micrófono (Android lo
+ * exige para capturar lo que se reproduce) y el permiso de grabar o transmitir; con eso el
+ * servicio [EscucharCelular] pasa el audio al núcleo.
+ */
+@Composable
+internal fun recordarEscucharCelular(): EscuchaCelular {
+    val context = LocalContext.current
+    val proyectar = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        val datos = r.data
+        if (r.resultCode == Activity.RESULT_OK && datos != null && Build.VERSION.SDK_INT >= 29) {
+            EscucharCelular.empezar(context, r.resultCode, datos)
+        }
+    }
+    val pedirProyeccion: () -> Unit = {
+        val gestor = context.getSystemService(MediaProjectionManager::class.java)
+        // Android 14+: la pantalla completa (así se oye lo de cualquier app, no de una sola).
+        val pedido = if (Build.VERSION.SDK_INT >= 34) {
+            gestor.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            gestor.createScreenCaptureIntent()
+        }
+        try {
+            proyectar.launch(pedido)
+        } catch (e: Exception) {
+        }
+    }
+    val microfono = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) pedirProyeccion()
+    }
+    return EscuchaCelular(
+        disponible = Build.VERSION.SDK_INT >= 29,
+        empezar = {
+            if (Build.VERSION.SDK_INT >= 29) {
+                if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    pedirProyeccion()
+                } else {
+                    microfono.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
+        },
+        detener = { if (Build.VERSION.SDK_INT >= 29) EscucharCelular.detener(context) },
+    )
+}
 
 /** Pide (una vez que se toca el botón) el permiso del micrófono. */
 @Composable

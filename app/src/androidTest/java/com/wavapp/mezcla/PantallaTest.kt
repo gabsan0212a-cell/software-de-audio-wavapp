@@ -141,6 +141,45 @@ class PantallaTest {
         avanzarMedidores()
         captura("8-espectrograma")
 
+        // Lo que suena en el celular: el permiso de grabar o transmitir no se puede dar desde una
+        // prueba, así que la prueba manda el audio al núcleo como lo hace el servicio.
+        val fuenteAntes = Analisis.fuenteId
+        panel.performScrollToKey("fuentes")
+        regla.onNodeWithTag("fuenteCelular").performClick()
+        regla.waitUntil(2_000) { Analisis.fuenteId == Nucleo.ID_CELULAR }
+        regla.onNodeWithTag("empezarAEscuchar").assertIsDisplayed()
+        Nucleo.mediaOpened(2)
+        val sonando = java.util.concurrent.atomic.AtomicBoolean(true)
+        val otraApp = Thread {
+            val pedazo = ShortArray(2 * 960)
+            var t = 0L
+            while (sonando.get()) {
+                for (i in 0 until 960) {
+                    val x = (8000 * Math.sin(2 * Math.PI * 440.0 * (t + i) / 48000.0)).toInt().toShort()
+                    pedazo[2 * i] = x
+                    pedazo[2 * i + 1] = x
+                }
+                Nucleo.mediaPush(pedazo, 960)
+                t += 960
+                Thread.sleep(20)
+            }
+        }.apply { start() }
+        try {
+            avanzarHasta(10_000, {
+                "no analizó el celular: escuchando=${Mesa.celular.escuchando}, activo=${Analisis.activo}, " +
+                    "espectrograma=${Analisis.versionVivo}"
+            }) { Mesa.celular.escuchando && Analisis.activo && Analisis.versionVivo > 0 }
+            regla.onNodeWithTag("dejarDeEscuchar").assertIsDisplayed()
+            avanzarMedidores()
+            captura("8b-celular")
+        } finally {
+            sonando.set(false)
+            otraApp.join()
+            Nucleo.mediaClosed()
+        }
+        regla.runOnUiThread { Analisis.fuenteId = fuenteAntes }
+        avanzarMedidores()
+
         // Edición en la primera pista: elegir, cortar, mover, borrar, deshacer y rehacer.
         regla.runOnUiThread {
             if (Nucleo.isPlaying()) Mesa.reproducirPausar()

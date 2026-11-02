@@ -31,6 +31,7 @@
 #include "dsp/Dynamics.h"
 #include "dsp/Equalizer.h"
 #include "dsp/Limiter.h"
+#include "dsp/LiveSpectrogram.h"
 #include "dsp/Loudness.h"
 #include "dsp/Pitch.h"
 #include "dsp/PitchShifter.h"
@@ -44,6 +45,7 @@
 #include "engine/Exporter.h"
 #include "engine/Importer.h"
 #include "engine/LiveInput.h"
+#include "engine/MediaListen.h"
 #include "engine/Meters.h"
 #include "engine/Mixer.h"
 #include "engine/ShowRecorder.h"
@@ -4760,6 +4762,194 @@ TEST(instrumentosSuenan) {
         }
     }
     CHECK(inst::presetCount(inst::kDrums) >= 5 && inst::presetCount(inst::kSynth) >= 6);
+}
+
+// Un tono de 1 kHz en los dos canales, en cuadros intercalados de 16 bits.
+static std::vector<int16_t> tonoCelular(int frames, double amp, double hz = 1000.0, int64_t from = 0) {
+    std::vector<int16_t> v(static_cast<size_t>(frames) * 2);
+    for (int i = 0; i < frames; ++i) {
+        const auto x = static_cast<int16_t>(std::lround(amp * 32767.0 * std::sin(2 * M_PI * hz * (from + i) / 48000.0)));
+        v[2 * i] = v[2 * i + 1] = x;
+    }
+    return v;
+}
+
+// Lo que suena en el celular: llega al análisis solo si es la fuente, mide sus LUFS (un tono de
+// 1 kHz a −20 dBFS en los dos canales da −20 LUFS) y cuenta el silencio.
+TEST(escucharCelular) {
+    Mixer m(48000);
+    MediaListen media(m, 48000);
+    float st[MediaListen::kStateCount];
+    media.readState(st);
+    CHECK(st[0] == 0.0f);
+    // Sin abrir no hace nada.
+    std::vector<int16_t> tono = tonoCelular(960, 0.1);
+    media.push(tono.data(), 960);
+    float l[16], r[16];
+    CHECK(m.readTap(l, r, 0) == 0);
+    m.setAnalysisSource(Mixer::kTapMedia);
+    media.setActive(true, 2);
+    const uint32_t gen = media.requestLoudnessReset();
+    LoudnessMeter meter;
+    LoudnessBlock b[64];
+    for (int k = 0; k < 250; ++k) {  // 5 s en pedazos de 20 ms
+        tono = tonoCelular(960, 0.1, 1000.0, static_cast<int64_t>(k) * 960);
+        media.push(tono.data(), 960);
+        for (int n = media.readLoudness(b, 64), i = 0; i < n; ++i)
+            if (b[i].gen == gen) meter.add(b[i]);
+    }
+    const uint64_t w = m.readTap(l, r, 16);
+    CHECK(w == 250u * 960u);
+    CHECK(std::fabs(l[15]) <= 0.11f && std::fabs(l[15] - r[15]) < 1e-6f);
+    CHECK(std::fabs(meter.integrated() + 20.0f) < 0.5f);
+    if (std::fabs(meter.integrated() + 20.0f) >= 0.5f) std::printf("    integrado %.2f LUFS\n", meter.integrated());
+    media.readState(st);
+    CHECK(st[0] == 1.0f && std::fabs(st[1] - 0.1f) < 0.01f && std::fabs(st[2] - 0.1f) < 0.01f && st[3] < 0.05f);
+    // Los picos son desde la lectura anterior.
+    media.readState(st);
+    CHECK(st[1] == 0.0f);
+    // 2 s de silencio.
+    std::vector<int16_t> nada(960 * 2, 0);
+    for (int k = 0; k < 100; ++k) media.push(nada.data(), 960);
+    media.readState(st);
+    CHECK(std::fabs(st[3] - 2.0f) < 0.05f);
+    // Si se analiza otra cosa, no se escribe al análisis (pero sí se mide).
+    m.setAnalysisSource(-1);
+    media.push(tono.data(), 960);
+    CHECK(m.readTap(l, r, 0) == w + 100u * 960u);
+    CHECK(media.readLoudness(b, 64) > 0);
+    // Mono: los dos lados iguales.
+    m.setAnalysisSource(Mixer::kTapMedia);
+    media.setActive(true, 1);
+    std::vector<int16_t> mono(480);
+    for (int i = 0; i < 480; ++i) mono[i] = static_cast<int16_t>(i * 10);
+    media.push(mono.data(), 480);
+    m.readTap(l, r, 2);
+    CHECK(std::fabs(l[1] - 479 * 10 / 32768.0f) < 1e-6f && l[1] == r[1]);
+    media.setActive(false, 2);
+    media.readState(st);
+    CHECK(st[0] == 0.0f && st[3] == 0.0f);
+}
+
+// El espectrograma en vivo: una columna cada 50 ms, la más nueva a la derecha, y la banda del
+// tono es la más fuerte.
+TEST(espectrogramaEnVivo) {
+    Analyzer a(48000);
+    std::vector<float> L(Analyzer::kSpecSize), R(Analyzer::kSpecSize);
+    for (int i = 0; i < Analyzer::kSpecSize; ++i) L[i] = R[i] = 0.3f * static_cast<float>(std::sin(2 * M_PI * 1000.0 * i / 48000.0));
+    for (int k = 0; k < 30; ++k) a.updateFrom(L.data(), R.data());  // que el suavizado llegue
+    LiveSpectrogram sg;
+    std::vector<uint8_t> out(static_cast<size_t>(LiveSpectrogram::kCols) * LiveSpectrogram::kRows, 7);
+    sg.read(out.data());
+    CHECK(sg.count() == 0 && out[0] == 0 && out.back() == 0);
+    sg.push(a, 1000);
+    sg.push(a, 1020);  // todavía no toca otra
+    sg.push(a, 1100);  // dos más (1050 y 1100)
+    CHECK(sg.count() == 3);
+    sg.read(out.data());
+    const int rows = LiveSpectrogram::kRows;
+    const uint8_t *ultima = out.data() + static_cast<size_t>(LiveSpectrogram::kCols - 1) * rows;
+    int mejor = 0;
+    for (int r = 1; r < rows; ++r)
+        if (ultima[r] > ultima[mejor]) mejor = r;
+    // Fila de 1 kHz: 20 Hz · 1000^(r / filas).
+    const double hz = 20.0 * std::pow(1000.0, (mejor + 0.5) / rows);
+    CHECK(hz > 900 && hz < 1100 && ultima[mejor] > 180);
+    CHECK(out[static_cast<size_t>(LiveSpectrogram::kCols - 4) * rows + mejor] == 0);  // antes no había
+    // Una pausa larga no llena todo de columnas repetidas.
+    sg.push(a, 60000);
+    CHECK(sg.count() == 4);
+    sg.reset();
+    CHECK(sg.count() == 0);
+}
+
+// En el estudio: el celular como fuente del análisis, del volumen percibido y del espectrograma
+// en vivo; al volver a la mezcla, la medición empieza de nuevo.
+TEST(estudioCelular) {
+    const std::string dir = nuevaCarpeta("celular");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.clearProject();
+    s.setAnalysisSource(Studio::kMediaId);
+    s.mediaOpened(2);
+    float stats[AnalysisView::kStatCount];
+    int64_t now = 1000;
+    bool activo = false;
+    for (int k = 0; k < 200; ++k) {  // 4 s
+        const std::vector<int16_t> tono = tonoCelular(960, 0.1, 1000.0, static_cast<int64_t>(k) * 960);
+        s.mediaPush(tono.data(), 960);
+        now += 20;
+        s.analysisUpdate(now, false, stats);
+        activo = activo || stats[0] != 0.0f;
+    }
+    CHECK(activo && stats[0] != 0.0f && stats[1] != 0.0f);
+    // El espectro tiene su pico en 1 kHz.
+    std::vector<float> cols(200);
+    s.spectrumColumns(cols.data(), 200);
+    const int pico = static_cast<int>(std::max_element(cols.begin(), cols.end()) - cols.begin());
+    const double fPico = 20.0 * std::pow(1000.0, (pico + 0.5) / 200.0);
+    CHECK(fPico > 850 && fPico < 1150);
+    std::vector<uint8_t> sg(static_cast<size_t>(LiveSpectrogram::kCols) * LiveSpectrogram::kRows);
+    const uint64_t n = s.liveSpectrogram(sg.data());
+    CHECK(n >= 60 && n <= 90);  // ~4 s a 20 columnas por segundo
+    // Volumen percibido del celular.
+    float lo[Studio::kLoudCount];
+    s.loudness(lo);
+    CHECK(std::fabs(lo[0] + 20.0f) < 0.6f && lo[7] > 3.0f);
+    float ms[Studio::kMediaStateCount];
+    s.mediaState(ms);
+    CHECK(ms[0] == 1.0f && ms[1] > 0.09f);
+    // Volver a la mezcla: la medición y el espectrograma empiezan de nuevo.
+    s.setAnalysisSource(-1);
+    s.loudness(lo);
+    CHECK(lo[7] == 0.0f);
+    CHECK(s.liveSpectrogram(sg.data()) == 0);
+    // Cerrado, el análisis vuelve a reposo.
+    s.setAnalysisSource(Studio::kMediaId);
+    s.mediaClosed();
+    now += 1000;
+    s.analysisUpdate(now, false, stats);
+    CHECK(stats[0] == 0.0f);
+    s.mediaState(ms);
+    CHECK(ms[0] == 0.0f);
+}
+
+// El audio del celular llega desde el hilo de la captura mientras la pantalla analiza, mide y
+// cambia de fuente (para el detector de carreras).
+TEST(celularEnOtroHilo) {
+    const std::string dir = nuevaCarpeta("celular-hilos");
+    Studio s;
+    s.open(dir, dir);
+    CHECK(s.waitIdle(30000));
+    s.clearProject();
+    s.mediaOpened(2);
+    std::atomic<bool> seguir{true};
+    std::thread captura([&] {
+        int64_t t = 0;
+        while (seguir.load()) {
+            const std::vector<int16_t> tono = tonoCelular(480, 0.2, 440.0, t);
+            s.mediaPush(tono.data(), 480);
+            t += 480;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
+    float stats[AnalysisView::kStatCount], lo[Studio::kLoudCount], ms[Studio::kMediaStateCount];
+    std::vector<uint8_t> sg(static_cast<size_t>(LiveSpectrogram::kCols) * LiveSpectrogram::kRows);
+    bool activo = false;
+    for (int k = 0; k < 300; ++k) {
+        s.setAnalysisSource(k % 100 < 80 ? Studio::kMediaId : -1);
+        s.analysisUpdate(1000 + k * 10, k % 2 == 0, stats);
+        activo = activo || stats[0] != 0.0f;
+        s.loudness(lo);
+        s.mediaState(ms);
+        s.liveSpectrogram(sg.data());
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    seguir.store(false);
+    captura.join();
+    s.mediaClosed();
+    CHECK(activo);
 }
 
 // El piano: se apaga solo (los agudos antes que los graves), el apagador lo calla al soltar y

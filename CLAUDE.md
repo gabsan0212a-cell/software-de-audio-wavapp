@@ -77,6 +77,12 @@
   cola cuenta en `active()`), y estilos (`inst::style`, `Studio::addStyle`: varias pistas con la
   misma idea; sin canción, su tempo y tonalidad). Los presets se buscan por nombre
   (`presetIndex`); los tipos nuevos van al final de `inst::Kind` (la sesión guarda el número).
+- Escuchar el celular (1.4.0): `EscucharCelular.kt` (servicio `mediaProjection`, AudioRecord con
+  `AudioPlaybackCaptureConfiguration`, sin lo de WavApp) manda los pedazos tal cual a
+  `Nucleo.mediaPush` → `core/engine/MediaListen` (al análisis con `Mixer::kTapMedia` si es la fuente,
+  y bloques de LUFS: el volumen percibido sigue al celular mientras se analiza). `dsp/LiveSpectrogram`
+  es el espectrograma en vivo de lo que no es una pista. Pantalla: fuente "Celular" en
+  `ui/AnalisisPanel.kt` (`Studio::kMediaId`); el permiso se pide en `ui/Plataforma.kt`.
 - Portada: `tools/portada/hacer_portada.py` (desde `original.jpg`) hace el ícono adaptativo, la
   pantalla al abrir (tema `Tema`, Android 12+) y `res/drawable-nodpi/portada.webp`, que la pantalla
   carga con `imagenPortada()` de `ui/Plataforma.kt` (`PortadaApp` en `ui/Medidores.kt`).

@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Escuchar lo que suena en el celular (otras apps) para analizarlo: con el permiso de
+         grabar o transmitir que da el usuario, en un servicio en primer plano. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <application
         android:label="WavApp"
         android:icon="@mipmap/ic_launcher"
@@ -29,5 +32,9 @@
             android:name=".TrabajoLargo"
             android:exported="false"
             android:foregroundServiceType="dataSync|mediaProcessing" />
+        <service
+            android:name=".EscucharCelular"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>

@@ -325,8 +325,8 @@ bool Mixer::needsOutput() const {
     return in && in->monitoring();
 }
 
-void Mixer::writeInputTap(const float *l, const float *r, int n) {
-    if (mTapSource.load(std::memory_order_relaxed) != kTapInput) return;
+void Mixer::writeExternalTap(int source, const float *l, const float *r, int n) {
+    if (mTapSource.load(std::memory_order_relaxed) != source) return;
     const uint64_t w = mTapWrite.load(std::memory_order_relaxed);
     for (int i = 0; i < n; ++i) {
         const size_t k = static_cast<size_t>((w + i) & (kTapSize - 1));
@@ -660,7 +660,7 @@ void Mixer::finishBus(int n, bool rolling) {
         std::copy(mMixL, mMixL + n, mBlkTapL);
         std::copy(mMixR, mMixR + n, mBlkTapR);
     }
-    if (!mOffline && tapSource != kTapInput) {
+    if (!mOffline && tapSource != kTapInput && tapSource != kTapMedia) {
         const uint64_t w = mTapWrite.load(std::memory_order_relaxed);
         for (int i = 0; i < n; ++i) {
             const size_t k = static_cast<size_t>((w + i) & (kTapSize - 1));

@@ -33,6 +33,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.wavapp.mezcla.Analisis
 import com.wavapp.mezcla.Mesa
 import com.wavapp.mezcla.Nucleo
 import java.util.Locale
@@ -66,6 +67,18 @@ internal fun textoVeredictoLufs(codigo: Int, diferencia: Float, objetivo: Int): 
         1 -> "$d dB más baja que ${textoObjetivo(objetivo)} LUFS: en $quien sonará más bajita que otras canciones. " +
             "Puedes ajustarla al exportar."
         else -> "Reproduce desde el inicio para medir la canción."
+    }
+}
+
+/** Lo que suena en el celular ya viene de otra app: se compara con el objetivo, sin consejos de exportar. */
+private fun textoVeredictoCelular(codigo: Int, diferencia: Float, objetivo: Int): String {
+    val d = String.format(Locale.US, "%.1f", abs(diferencia))
+    val nivel = "${textoObjetivo(objetivo)} LUFS, el de ${nombreObjetivo(objetivo)}"
+    return when (codigo) {
+        2 -> "Suena en el nivel de ${nombreObjetivo(objetivo)} (${textoObjetivo(objetivo)} LUFS)."
+        3 -> "Suena $d dB más fuerte que $nivel."
+        1 -> "Suena $d dB más bajo que $nivel."
+        else -> "Pon algo a sonar para medirlo."
     }
 }
 
@@ -128,8 +141,9 @@ fun TarjetaLufs() {
             BotonTexto("Reiniciar", { Mesa.reiniciarLufs() }, estilo = Tipo.subtitulo, habilitado = v.segundos > 0f)
         }
         Texto(
-            textoVeredictoLufs(v.veredicto, v.diferencia, Mesa.objetivoLufs), Tipo.subtitulo, colorVeredicto(v.veredicto),
-            Modifier.padding(top = 4.dp),
+            if (Analisis.deCelular) textoVeredictoCelular(v.veredicto, v.diferencia, Mesa.objetivoLufs)
+            else textoVeredictoLufs(v.veredicto, v.diferencia, Mesa.objetivoLufs),
+            Tipo.subtitulo, colorVeredicto(v.veredicto), Modifier.padding(top = 4.dp),
         )
         Spacer(Modifier.height(12.dp))
         Segmentado(

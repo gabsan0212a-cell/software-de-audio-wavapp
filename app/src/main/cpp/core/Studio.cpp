@@ -1305,6 +1305,8 @@ void Studio::setAnalysisSource(int id) {
     int slot = -1;
     if (id == kInputId) {
         slot = Mixer::kTapInput;
+    } else if (id == kMediaId) {
+        slot = Mixer::kTapMedia;
     } else if (id > 0) {
         std::lock_guard<std::mutex> lk(mModel);
         if (const TrackModel *t = findLocked(id)) slot = t->slot;
@@ -1312,15 +1314,32 @@ void Studio::setAnalysisSource(int id) {
     if (mMixer.analysisSource() != slot) {
         mMixer.setAnalysisSource(slot);
         mAnalyzer.reset(mMixer);  // que no se cuele lo de la fuente anterior
+        mLiveSg.reset();
     }
+    // El volumen percibido es el de lo que suena en el celular mientras se analiza eso.
+    const bool media = slot == Mixer::kTapMedia;
+    bool reset;
+    {
+        std::lock_guard<std::mutex> lk(mLoudMutex);
+        reset = media != mLoudMedia;
+        mLoudMedia = media;
+    }
+    if (reset) resetLoudness();
 }
 
 bool Studio::analysisUpdate(int64_t now, bool classic, float *stats) {
-    // La entrada se analiza aunque la mezcla no suene.
-    const bool live = mMixer.analysisSource() == Mixer::kTapInput && mInput.active();
+    // La entrada y el celular se analizan aunque la mezcla no suene.
+    const int source = mMixer.analysisSource();
+    const bool live = (source == Mixer::kTapInput && mInput.active()) || (source == Mixer::kTapMedia && mMedia.active());
     const bool changed = mView.update(mAnalyzer, mMixer, mMixer.isPlaying() || live, now, classic);
     mView.stats(stats);
+    if (changed && mView.active() && source < 0) mLiveSg.push(mAnalyzer, now);
     return changed;
+}
+
+uint64_t Studio::liveSpectrogram(uint8_t *out) const {
+    mLiveSg.read(out);
+    return mLiveSg.count();
 }
 
 void Studio::spectrumColumns(float *out, int cols) const {
@@ -2255,11 +2274,18 @@ std::string Studio::endTouchLocked() {
 // ---------------------------------------------------------------- volumen percibido (LUFS)
 
 void Studio::pumpLoudnessLocked() {
+    // Se leen las dos colas (que no se llenen); cuenta la de lo que se está midiendo.
     LoudnessBlock b[64];
     for (;;) {
         const int n = mMixer.readLoudness(b, 64);
         for (int i = 0; i < n; ++i)
-            if (b[i].gen == mLoudGen) mLoud.add(b[i]);
+            if (!mLoudMedia && b[i].gen == mLoudGen) mLoud.add(b[i]);
+        if (n < 64) break;
+    }
+    for (;;) {
+        const int n = mMedia.readLoudness(b, 64);
+        for (int i = 0; i < n; ++i)
+            if (mLoudMedia && b[i].gen == mMediaLoudGen) mLoud.add(b[i]);
         if (n < 64) break;
     }
 }
@@ -2304,6 +2330,7 @@ void Studio::loudnessHistory(float *momentary, float *shortTerm, int n) {
 void Studio::resetLoudness() {
     std::lock_guard<std::mutex> lk(mLoudMutex);
     mLoudGen = mMixer.requestLoudnessReset();
+    mMediaLoudGen = mMedia.requestLoudnessReset();
     mLoud.reset();
 }
 

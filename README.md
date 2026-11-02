@@ -91,6 +91,11 @@ internet).
       **Estilos** de un toque: "Indie oscuro" (85 BPM, Sol menor: guitarra que flota, bajo, piano,
       pad y batería), "Trap", "Reggaetón" y "Lo-fi", con ideas en los mismos acordes. La imagen de
       la portada como ícono de la app
+- [x] 17. Escuchar lo que suena en el celular (Análisis → **Celular**, 1.4.0): con el permiso de
+      Android ("grabar o transmitir"), la app escucha la música o los videos de otras apps (Spotify,
+      YouTube, TikTok, juegos…; Android 10 o más nuevo) y lo muestra en vivo: espectro, espectrograma
+      en vivo (los últimos 12 s), fase y paneo, zumbido y volumen percibido (LUFS). No suena, no se
+      graba ni se guarda. Las apps que protegen su contenido no se dejan escuchar
 
 Sin plugins VST en Android.
 
@@ -108,6 +113,14 @@ Sin plugins VST en Android.
    cuánto falta para entrar (los últimos 3 segundos en rojo) y **¡Canta!** mientras dura cada
    parte. Al terminar toca el cuadro rojo.
 6. **Guardar** deja la presentación en el teléfono como WAV (con el formato de exportar).
+
+## Cómo ver lo que suena en el celular
+1. Pestaña **Análisis** → **Celular** → **Empezar a escuchar**. Android pide el micrófono (lo exige
+   para esto) y el permiso de "grabar o transmitir la pantalla": WavApp solo escucha el sonido.
+2. Pon música o un video en otra app. En Análisis lo ves en vivo: LUFS (a cuánto suena, comparado con
+   Spotify o YouTube), fase y paneo, espectro y el espectrograma de los últimos 12 segundos.
+3. **Dejar de escuchar** (o desde el aviso) termina. Si dice "no llega sonido" con algo sonando, esa
+   app no deja que otras la escuchen.
 
 ## Cómo crear un beat
 0. Lo más rápido: en **Empezar con un estilo** toca **Indie oscuro** (como "Daddy Issues": lento,
@@ -160,6 +173,8 @@ Sin plugins VST en Android.
     con fundidos; cada trozo se guarda para seguir si se interrumpe).
   - `dsp/Pitch` (tono con YIN) y `dsp/SongAnalysis` (tonalidad con perfiles de Krumhansl,
     tempo y pulsos, dónde canta la voz).
+  - Lo que suena en el celular: `engine/MediaListen` (recibe lo capturado, lo pasa al análisis y
+    mide sus LUFS) y `dsp/LiveSpectrogram` (el espectrograma en vivo de lo que se analiza).
   - La voz en vivo: `dsp/PitchTracker` (tono en vivo cada 4 ms con YIN anclado a lo más
     reciente), `dsp/PitchShifter` (cambia el tono leyendo una línea de retardo a otra velocidad y
     saltando períodos completos con fundido: 1 a 6 ms de retraso), `dsp/AutoTune` (la nota de la
@@ -181,7 +196,9 @@ Sin plugins VST en Android.
 - `app/src/main/java/.../`: **solo pantalla**. `Nucleo.kt` (el puente), `Mesa.kt` (espejo del
   estado del núcleo para Compose), `Analisis.kt` y `Edicion.kt` (lo que recuerda cada panel),
   `TrabajoLargo.kt` (lo que obliga Android para que quitar la voz siga con la pantalla apagada:
-  servicio en primer plano con su aviso) y `ui/` (Compose, solo `foundation`: sin Material).
+  servicio en primer plano con su aviso), `EscucharCelular.kt` (el permiso de grabar o transmitir y
+  la captura de lo que suena en otras apps, que pasa tal cual al núcleo) y `ui/` (Compose, solo
+  `foundation`: sin Material).
   - `Tema.kt` (colores y tipografía de iOS), `Iconos.kt` (íconos dibujados con rutas),
     `Componentes.kt` (botones, píldoras, interruptor, segmentado, deslizadores, tarjetas) y
     `Superpuestos.kt` (hojas, menús de acciones, alertas, barra de arriba).

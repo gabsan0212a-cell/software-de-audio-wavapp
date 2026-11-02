@@ -21,7 +21,7 @@ object Analisis {
 
     /** Panel de análisis abierto. */
     var abierto by mutableStateOf(false)
-    /** -1 = mezcla completa; si no, id de la pista. */
+    /** -1 = mezcla completa, ID_ENTRADA = el micrófono, ID_CELULAR = lo que suena en el celular; si no, id de la pista. */
     var fuenteId by mutableIntStateOf(-1)
     var modoClasico by mutableStateOf(false)
     val notch: Int get() = Mesa.notch
@@ -30,6 +30,9 @@ object Analisis {
     /** Se está analizando la entrada en vivo. */
     val deEntrada: Boolean
         get() = Mesa.eqAbierta?.esEntrada ?: (fuenteForzada ?: fuenteId) == Nucleo.ID_ENTRADA
+    /** Se está analizando lo que suena en el celular. */
+    val deCelular: Boolean
+        get() = Mesa.eqAbierta == null && (fuenteForzada ?: fuenteId) == Nucleo.ID_CELULAR
 
     var correlacion by mutableFloatStateOf(1f)
         private set
@@ -54,6 +57,12 @@ object Analisis {
 
     private val stats = FloatArray(Nucleo.DATOS_ANALISIS)
 
+    /** Espectrograma en vivo (de lo que no es una pista): cambia `versionVivo` cuando llega otra columna. */
+    val espectrogramaVivo = ByteArray(Nucleo.SG_VIVO_COLUMNAS * Nucleo.SG_VIVO_FILAS)
+    var versionVivo by mutableIntStateOf(0)
+        private set
+    private var columnasVivo = -1L
+
     /** Espectrogramas que ya llegaron del núcleo, por id de pista. */
     val espectrogramas = mutableStateMapOf<Int, ByteArray>()
     private val pedidos = mutableSetOf<Int>()
@@ -70,6 +79,7 @@ object Analisis {
             eq != null -> eq.id
             forzada != null -> forzada
             fuenteId == Nucleo.ID_ENTRADA -> if (Mesa.entrada.abierta) Nucleo.ID_ENTRADA else -1
+            fuenteId == Nucleo.ID_CELULAR -> Nucleo.ID_CELULAR
             else -> Mesa.pistas.firstOrNull { it.id == fuenteId }?.id ?: -1
         }
         Nucleo.setAnalysisSource(fuente)
@@ -87,6 +97,14 @@ object Analisis {
         zumbidoDb = stats[9].toInt()
         gananciaGonio = Math.round(stats[10])
         version++
+        // La mezcla, el micrófono y el celular tienen espectrograma en vivo (las pistas, el del archivo).
+        if (fuente == -1 || fuente == Nucleo.ID_ENTRADA || fuente == Nucleo.ID_CELULAR) {
+            val n = Nucleo.liveSpectrogram(espectrogramaVivo)
+            if (n != columnasVivo) {
+                columnasVivo = n
+                versionVivo++
+            }
+        }
     }
 
     /** Veredicto de fase y paneo, con los mismos textos que el prototipo. */
@@ -94,6 +112,7 @@ object Analisis {
         if (codigoVeredicto == 0) {
             return when {
                 deEntrada -> (if (Mesa.entrada.abierta) "Silencio en la entrada." else "La entrada está cerrada.") to false
+                deCelular -> (if (Mesa.celular.escuchando) "Silencio: pon música o un video en otra app." else "Toca Escuchar para ver lo que suena en el celular.") to false
                 Mesa.reproduciendo -> "Silencio." to false
                 else -> "Reproduce para medir." to false
             }
@@ -109,13 +128,19 @@ object Analisis {
     }
 
     fun textoZumbido(): Pair<String, Boolean> {
-        if (!activo) return (if (deEntrada) "Zumbido: haz sonar la entrada para analizar." else "Zumbido: reproduce para analizar.") to false
+        if (!activo) {
+            return when {
+                deEntrada -> "Zumbido: haz sonar la entrada para analizar."
+                deCelular -> "Zumbido: escucha lo que suena en el celular para analizar."
+                else -> "Zumbido: reproduce para analizar."
+            } to false
+        }
         if (zumbidoHz > 0) {
-            val extra = if (notch == zumbidoHz) "" else " Prueba el notch de $zumbidoHz Hz."
+            val extra = if (notch == zumbidoHz || deCelular) "" else " Prueba el notch de $zumbidoHz Hz."
             return "Posible zumbido de $zumbidoHz Hz: $zumbidoArmonicos de 4 armónicos marcados, unos +$zumbidoDb dB " +
                 "sobre el piso.$extra" to true
         }
-        return (if (notch > 0) "Sin zumbido a la salida con el notch de $notch Hz."
+        return (if (notch > 0 && !deCelular) "Sin zumbido a la salida con el notch de $notch Hz."
         else "Sin zumbido evidente en 50/60 Hz ni armónicos.") to false
     }
 
@@ -143,6 +168,6 @@ object Analisis {
         val ids = Mesa.pistas.map { it.id }.toSet()
         espectrogramas.keys.filter { it !in ids }.forEach { espectrogramas.remove(it) }
         pedidos.retainAll(ids)
-        if (fuenteId != -1 && fuenteId != Nucleo.ID_ENTRADA && fuenteId !in ids) fuenteId = -1
+        if (fuenteId > 0 && fuenteId !in ids) fuenteId = -1
     }
 }

@@ -98,7 +98,8 @@ JNI(jintArray, outputInfo)(JNIEnv *env, jobject) {
 //  entrada, id del EQ de la entrada, primera versión por espacio, versiones por espacio, datos de
 //  automationNow por espacio, datos de trackParams, datos de masterState, de loudness y de
 //  songLoudness, parámetros de efectos, primer medidor de compresor, versión de la canción
-//  preparada, datos de separationState]
+//  preparada, datos de separationState, ..., id del celular para el análisis, datos de
+//  mediaState, columnas y filas del espectrograma en vivo]
 JNI(jintArray, constants)(JNIEnv *env, jobject) {
     const int32_t v[] = {kMaxTracks, kMaxBands, MeterBallistics::kCount, AnalysisView::kStatCount,
                          Studio::kVersionCount, Studio::kSpectrogramCols, Studio::kSpectrogramRows, Studio::kRate,
@@ -107,7 +108,8 @@ JNI(jintArray, constants)(JNIEnv *env, jobject) {
                          Studio::kTrackParamCount, Studio::kMasterStateCount, Studio::kLoudCount,
                          Studio::kSongLoudCount, fx::kCount, MeterBallistics::kCompressor, Studio::kVerSong,
                          Studio::kSepStateCount, vfx::kCount, VoiceFx::kMeterCount, Studio::kShowStateCount,
-                         Studio::kCueCount, Studio::kVerMusic, Studio::kMusicStateCount, inst::kParamCount};
+                         Studio::kCueCount, Studio::kVerMusic, Studio::kMusicStateCount, inst::kParamCount,
+                         Studio::kMediaId, Studio::kMediaStateCount, LiveSpectrogram::kCols, LiveSpectrogram::kRows};
     const jsize n = static_cast<jsize>(sizeof v / sizeof v[0]);
     jintArray a = env->NewIntArray(n);
     env->SetIntArrayRegion(a, 0, n, v);
@@ -250,6 +252,33 @@ JNI(jbyteArray, spectrogram)(JNIEnv *env, jobject, jint id) {
     jbyteArray a = env->NewByteArray(static_cast<jsize>(v.size()));
     env->SetByteArrayRegion(a, 0, static_cast<jsize>(v.size()), reinterpret_cast<const jbyte *>(v.data()));
     return a;
+}
+
+JNI(jlong, liveSpectrogram)(JNIEnv *env, jobject, jbyteArray out) {
+    static uint8_t buf[LiveSpectrogram::kCols * LiveSpectrogram::kRows];  // solo el hilo de la pantalla
+    const uint64_t n = gStudio.liveSpectrogram(buf);
+    const jsize len = std::min<jsize>(env->GetArrayLength(out), static_cast<jsize>(sizeof buf));
+    env->SetByteArrayRegion(out, 0, len, reinterpret_cast<const jbyte *>(buf));
+    return static_cast<jlong>(n);
+}
+
+// ---------- Lo que suena en el celular: la plataforma lo captura (con permiso) y lo manda aquí.
+JNI(void, mediaOpened)(JNIEnv *, jobject, jint channels) { gStudio.mediaOpened(channels); }
+JNI(void, mediaClosed)(JNIEnv *, jobject) { gStudio.mediaClosed(); }
+JNI(void, mediaPush)(JNIEnv *env, jobject, jshortArray pcm, jint frames) {
+    const jsize n = env->GetArrayLength(pcm);
+    const int f = std::min<int>(frames, n / std::max(1, gStudio.mediaChannels()));
+    if (f <= 0) return;
+    // El núcleo no se bloquea ni llama a Java mientras lo lee: se puede usar sin copiarlo.
+    void *p = env->GetPrimitiveArrayCritical(pcm, nullptr);
+    if (!p) return;
+    gStudio.mediaPush(static_cast<const int16_t *>(p), f);
+    env->ReleasePrimitiveArrayCritical(pcm, p, JNI_ABORT);
+}
+JNI(void, mediaState)(JNIEnv *env, jobject, jfloatArray out) {
+    float v[Studio::kMediaStateCount];
+    gStudio.mediaState(v);
+    env->SetFloatArrayRegion(out, 0, std::min<jsize>(Studio::kMediaStateCount, env->GetArrayLength(out)), v);
 }
 
 // ---------- Entrada en vivo y grabación

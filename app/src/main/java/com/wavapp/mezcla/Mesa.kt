@@ -273,6 +273,13 @@ class Entrada {
     val pista by lazy { Pista(-1, Nucleo.ID_ENTRADA, "Micrófono", 1, 0, "entrada en vivo") }
 }
 
+/** Lo que suena en el celular (otras apps), mientras se escucha para analizarlo. */
+class Celular {
+    var escuchando by mutableStateOf(false)
+    /** Hace rato que no llega sonido (nada suena, o la app que suena no deja escucharla). */
+    var callado by mutableStateOf(false)
+}
+
 /**
  * La voz en vivo (auto-tune y efectos de la entrada), como la tiene el núcleo. Lo que cambia en
  * cada cuadro (la nota, la compuerta, cuánto bajan el de-esser y el compresor) se lee al dibujar.
@@ -387,6 +394,8 @@ object Mesa {
 
     val master = MedidorMaster()
     val entrada = Entrada()
+    val celular = Celular()
+    private val bufCelular = FloatArray(Nucleo.DATOS_CELULAR)
     val volumen = Volumen()
     /** LUFS de referencia: −14 (Spotify, YouTube), −16 (Apple Music) o −23 (radio y TV). */
     var objetivoLufs by mutableIntStateOf(-14)
@@ -1067,11 +1076,19 @@ object Mesa {
         e.medidor.r = bufMedidores[k + 1]
         e.satura = bufMedidores[k + 2] != 0f
         if (e.grabando) leerEntrada()  // los segundos grabados
+        leerCelular()
         if (e.abierta && voz.encendida) leerMedidoresVoz()
         if (presentacion.grabando) leerPresentacion()
         if (escenario) leerCuenta()
         val abierto = instrumentoAbierto
         pasoAhora = if (abierto > 0 && reproduciendo) Nucleo.instPosition(abierto).toFloat() else -1f
+    }
+
+    private fun leerCelular() {
+        Nucleo.mediaState(bufCelular)
+        val c = celular
+        c.escuchando = bufCelular[0] != 0f
+        c.callado = c.escuchando && bufCelular[3] > 3f
     }
 
     private fun leerMedidoresVoz() {

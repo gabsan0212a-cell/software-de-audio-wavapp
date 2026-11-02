@@ -15,10 +15,12 @@
 #include "Worker.h"
 #include "dsp/AnalysisView.h"
 #include "dsp/Analyzer.h"
+#include "dsp/LiveSpectrogram.h"
 #include "engine/Decoder.h"
 #include "engine/Exporter.h"
 #include "engine/Importer.h"
 #include "engine/LiveInput.h"
+#include "engine/MediaListen.h"
 #include "engine/Meters.h"
 #include "engine/Mixer.h"
 #include "engine/ShowRecorder.h"
@@ -60,6 +62,9 @@ public:
     static constexpr int kVersionCount = kVerMusic + 1;
     // El EQ de la entrada en vivo se maneja con las mismas funciones del EQ, con este id.
     static constexpr int kInputId = 0;
+    // Analizar lo que suena en el celular (setAnalysisSource), con este id.
+    static constexpr int kMediaId = -2;
+    static constexpr int kMediaStateCount = MediaListen::kStateCount;
     // inputState(): [abierta, canales, ganancia dB, escucha, volumen de escucha dB,
     // retraso de ida y vuelta (ms), grabando, segundos grabados]
     static constexpr int kInputStateCount = 8;
@@ -242,13 +247,25 @@ public:
     // ---------- Medidores y análisis (desde el hilo de la pantalla)
     void meters(int64_t nowMs, float *out);  // MeterBallistics::kCount valores
     void clearClip() { mMeters.clearClip(); }
-    void setAnalysisSource(int id);  // -1 = la mezcla
+    void setAnalysisSource(int id);  // -1 = la mezcla, kInputId = la entrada, kMediaId = el celular
     bool analysisUpdate(int64_t nowMs, bool classic, float *stats);  // AnalysisView::kStatCount
     int goniometer(float *out, int max) const { return mView.goniometer(out, max); }
     void spectrumColumns(float *out, int cols) const;
+    // Espectrograma en vivo de lo que se analiza (no de una pista: esas tienen el del archivo),
+    // LiveSpectrogram::kCols × kRows. Devuelve cuántas columnas van (si no cambió, es el mismo).
+    uint64_t liveSpectrogram(uint8_t *out) const;
     // Espectrograma de la pista (antes del EQ), kSpectrogramCols × kSpectrogramRows. La primera
     // vez se calcula aparte y devuelve false; cuando está listo cambia kVerBackground.
     bool spectrogram(int id, std::vector<uint8_t> &out);
+
+    // ---------- Lo que suena en el celular (otras apps), para analizarlo
+    // La plataforma empezó a capturarlo (1 o 2 canales) o paró; push() desde su hilo, cuadros
+    // intercalados de 16 bits a la frecuencia del proyecto.
+    void mediaOpened(int channels) { mMedia.setActive(true, channels); }
+    void mediaClosed() { mMedia.setActive(false, 2); }
+    void mediaPush(const int16_t *pcm, int frames) { mMedia.push(pcm, frames); }
+    int mediaChannels() const { return mMedia.channels(); }
+    void mediaState(float *out) { mMedia.readState(out); }  // kMediaStateCount valores
 
     // ---------- Entrada en vivo y grabación
     // La plataforma abrió (con 1 o 2 canales) o cerró la entrada.
@@ -505,6 +522,7 @@ private:
     const DecodeFunction mDecoder;
     Mixer mMixer{kRate};
     LiveInput mInput{kRate, mMixer};
+    MediaListen mMedia{mMixer, kRate};
     ShowRecorder mShow{kRate};
     std::atomic<double> mShowSeconds{0.0};  // la última presentación grabada (0 = no hay)
     std::atomic<int> mLatIn{-1}, mLatOut{-1};
@@ -537,7 +555,8 @@ private:
     // Volumen percibido: en vivo y de la canción completa.
     mutable std::mutex mLoudMutex;
     LoudnessMeter mLoud;
-    uint32_t mLoudGen = 0;
+    uint32_t mLoudGen = 0, mMediaLoudGen = 0;
+    bool mLoudMedia = false;  // con mLoudMutex: el volumen percibido es el del celular
     int mSongState = 0;  // 0 nada, 1 midiendo, 2 lista
     int64_t mSongChanges = 0;
     LoudnessReport mSongReport;
@@ -556,6 +575,7 @@ private:
     // Hilo de la pantalla
     Analyzer mAnalyzer{kRate};
     AnalysisView mView;
+    LiveSpectrogram mLiveSg;
     MeterBallistics mMeters;
 
     std::mutex mSgMutex;

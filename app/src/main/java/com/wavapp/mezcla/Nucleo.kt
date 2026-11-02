@@ -52,6 +52,12 @@ object Nucleo {
     val DATOS_MUSICA = c[28]
     /** Cuántos ajustes tiene el sonido de un instrumento (ver los INST_ de abajo). */
     val INST_AJUSTES = c[29]
+    /** Analizar lo que suena en el celular (setAnalysisSource). */
+    val ID_CELULAR = c[30]
+    val DATOS_CELULAR = c[31]
+    /** Espectrograma en vivo: columnas (de la más vieja a la más nueva) y filas (de 20 Hz a 20 kHz). */
+    val SG_VIVO_COLUMNAS = c[32]
+    val SG_VIVO_FILAS = c[33]
     /** "Sin dato" en los valores de LUFS. */
     const val SIN_DATO = -200f
 
@@ -263,7 +269,7 @@ object Nucleo {
     // ---------- Medidores y análisis
     external fun meters(nowMs: Long, out: FloatArray)
     external fun clearClip()
-    /** -1 = la mezcla. */
+    /** -1 = la mezcla, ID_ENTRADA = el micrófono, ID_CELULAR = lo que suena en el celular. */
     external fun setAnalysisSource(id: Int)
     /**
      * Llamar en cada cuadro mientras se muestra el análisis. stats: activo, fuerte, correlación,
@@ -277,6 +283,16 @@ object Nucleo {
     external fun spectrumColumns(out: FloatArray)
     /** 0..255 [col * filas + fila], fila 0 = 20 Hz. null mientras se calcula. */
     external fun spectrogram(id: Int): ByteArray?
+    /** Espectrograma en vivo (SG_VIVO_COLUMNAS × SG_VIVO_FILAS, igual que spectrogram); devuelve cuántas columnas van. */
+    external fun liveSpectrogram(out: ByteArray): Long
+
+    // Lo que suena en el celular (la plataforma lo captura con permiso y lo manda; el núcleo lo analiza).
+    external fun mediaOpened(channels: Int)
+    external fun mediaClosed()
+    /** Cuadros intercalados de 16 bits, a 48 kHz. */
+    external fun mediaPush(pcm: ShortArray, frames: Int)
+    /** [escuchando, pico L, pico R (desde la lectura anterior), segundos sin sonido]. */
+    external fun mediaState(out: FloatArray)
 
     // ---------- Entrada en vivo (micrófono o interfaz USB) y grabación
     /** Abre la entrada (deviceId 0 = la del sistema; 1 o 2 canales). Devuelve los canales abiertos o 0. */
